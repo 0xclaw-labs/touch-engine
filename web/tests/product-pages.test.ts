@@ -8,6 +8,17 @@ function read(rel: string): string {
   return readFileSync(path.join(root, rel), "utf8");
 }
 
+// HUI-2628 W2：错误态形状集中到共享 LoadErrorState 后，来源守卫沿“生效来源”
+// 检查——路由自己或它引入的错误态组件，必须真的带错误相与重试控件。守卫强度
+// 不变：任何错误面失去可点的重试控件仍然红。
+function errorStateSource(rel: string): string {
+  const source = read(rel);
+  if (source.includes('from "@/components/work/load-error-state"')) {
+    return source + "\n" + read("components/work/load-error-state.tsx");
+  }
+  return source;
+}
+
 function walk(dir: string): string[] {
   const out: string[] = [];
   for (const name of readdirSync(dir)) {
@@ -63,9 +74,11 @@ describe("代表页面是真实路由", () => {
 
   it("活动、奖励、统计页面覆盖空、加载、错误和活动状态", () => {
     const campaign = read("app/work/campaigns/page.tsx");
-    for (const state of ["empty", "loading", "error", "expired", "paused", "ended"]) {
+    for (const state of ["empty", "loading", "expired", "paused", "ended"]) {
       expect(campaign).toContain(`data-state="${state}"`);
     }
+    // 错误相由共享 LoadErrorState 承载（W2 组件化），守卫沿生效来源检查。
+    expect(errorStateSource("app/work/campaigns/page.tsx")).toContain('data-state="error"');
     // HUI-2628 r2：奖励未知样式经 rewardPresentation().className 下发（unknown→tk-unknown 行为已锁定），
     // 页面不再出现字面量 tk-ok/tk-unknown（uifinish unknown_reward_success_green 静态闸要求）。
     expect(read("app/work/rewards/page.tsx")).toContain("presented.className");
@@ -178,7 +191,7 @@ describe("错误态有恢复动作", () => {
       "app/work/campaigns/[id]/page.tsx",
     ];
     for (const rel of surfaces) {
-      const source = read(rel);
+      const source = errorStateSource(rel);
       expect(source, rel).toContain('data-state="error"');
       expect(source, `${rel} 缺重试控件`).toContain('data-action="retry"');
     }

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { failureText, useSession } from "@/components/work/merchant-session";
+import { LoadErrorState } from "@/components/work/load-error-state";
 import { isPastEnd, surfaceLabel } from "@/lib/product-finish";
 
 interface Campaign {
@@ -83,12 +84,7 @@ export default function CampaignsPage() {
         ))}
       </div>
       {phase === "loading" ? <p className="tk-state" data-state="loading">{surfaceLabel("loading")}</p> : null}
-      {phase === "error" ? (
-        <p className="tk-state tk-danger" data-state="error">
-          {error || surfaceLabel("error")}
-          <button className="tk-quiet" type="button" data-action="retry" onClick={() => void load()}>重试</button>
-        </p>
-      ) : null}
+      {phase === "error" ? <LoadErrorState message={error || surfaceLabel("error")} onRetry={() => void load()} /> : null}
       {showEmpty ? <p className="tk-state" data-state="empty">{filter ? `没有${labelFor(filter)}的活动。` : "还没有活动。下面可以建一个草稿。"}</p> : null}
       {filter === "paused" && visible.length === 0 && phase === "ready" ? <p data-state="paused">{surfaceLabel("paused")}的活动还没有。</p> : null}
       {filter === "ended" && visible.length === 0 && phase === "ready" ? <p data-state="ended">{surfaceLabel("ended")}的活动还没有。</p> : null}
