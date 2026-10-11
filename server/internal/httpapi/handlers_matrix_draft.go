@@ -198,7 +198,7 @@ func (s *Server) matrixVideo(tenantID string, assets []store.CampaignAsset) (mat
 		if !hit {
 			continue
 		}
-		found = matrixhandoff.Asset{ID: lib.AssetRef, Hash: lib.SHA256, Kind: "video"}
+		found = matrixhandoff.Asset{ID: lib.AssetRef, Hash: lib.SHA256, Kind: "video", GrantRef: lib.GrantRef}
 		version = campaignAssetVersion(asset.Version)
 		ok = true
 	}

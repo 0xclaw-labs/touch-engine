@@ -79,19 +79,26 @@ type countingSink struct {
 	available bool
 	ack       matrixconsume.DraftAck
 	last      matrixhandoff.Draft
+	lastAuth  matrixconsume.Authority
 }
 
 func (c *countingSink) Available() bool { return c.available }
 
-func (c *countingSink) PutDraft(_ context.Context, doc matrixhandoff.Draft) (matrixconsume.DraftAck, error) {
+func (c *countingSink) PutDraft(_ context.Context, doc matrixhandoff.Draft, auth matrixconsume.Authority) (matrixconsume.DraftAck, error) {
 	c.puts++
 	c.last = doc
+	c.lastAuth = auth
 	return c.ack, nil
 }
 
 func readyMatrix(sink *countingSink, effects *matrixhandoff.EffectSink) *matrixconsume.Consumer {
 	gate := matrixconsume.PermissionFunc(func(context.Context, string, string, string) (matrixconsume.Permission, error) {
-		return matrixconsume.Permission{Allowed: true, Supply: matrixconsume.SupplyReady, Reason: "ok"}, nil
+		return matrixconsume.Permission{
+			Allowed: true, Supply: matrixconsume.SupplyReady, Reason: "ok",
+			Authority: matrixconsume.Authority{
+				PayerID: "pay_http", LicenseRef: "lic_http", LicenseExpiresAt: time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC),
+			},
+		}, nil
 	})
 	return matrixconsume.New(gate, sink, effects)
 }

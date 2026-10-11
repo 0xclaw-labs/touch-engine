@@ -11,7 +11,10 @@ import (
 )
 
 func readyPermission(_ context.Context, _, _, _ string) (Permission, error) {
-	return Permission{Allowed: true, Supply: SupplyReady, Reason: "brand_publish"}, nil
+	return Permission{
+		Allowed: true, Supply: SupplyReady, Reason: "brand_publish",
+		Authority: Authority{PayerID: "pay_t", LicenseRef: "lic_t", LicenseExpiresAt: time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)},
+	}, nil
 }
 
 func missingPermission(_ context.Context, _, _, _ string) (Permission, error) {
@@ -24,13 +27,15 @@ type scriptedSink struct {
 	err       error
 	puts      int
 	last      matrixhandoff.Draft
+	lastAuth  Authority
 }
 
 func (s *scriptedSink) Available() bool { return s != nil && s.available }
 
-func (s *scriptedSink) PutDraft(_ context.Context, doc matrixhandoff.Draft) (DraftAck, error) {
+func (s *scriptedSink) PutDraft(_ context.Context, doc matrixhandoff.Draft, auth Authority) (DraftAck, error) {
 	s.puts++
 	s.last = doc
+	s.lastAuth = auth
 	if s.err != nil {
 		return DraftAck{}, s.err
 	}
@@ -109,6 +114,28 @@ func TestMissingSupplyDisablesOnlyMatrixButton(t *testing.T) {
 	}
 }
 
+// An allowed permission without the payer/license authority never reaches the
+// matrix: no post, no record, a precise reason, other surfaces untouched.
+func TestAllowedWithoutAuthorityBlocksPost(t *testing.T) {
+	gate := PermissionFunc(func(_ context.Context, _, _, _ string) (Permission, error) {
+		return Permission{Allowed: true, Supply: SupplyReady, Reason: "ok"}, nil
+	})
+	sink := &scriptedSink{available: true, ack: DraftAck{PlanID: "pln_1", Status: "draft"}}
+	c := New(gate, sink, &matrixhandoff.EffectSink{})
+	out, err := c.Schedule(context.Background(), time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), Actor{
+		PrincipalID: "usr_a", TenantID: "tnt_a", BrandID: "br_a", Role: "org_owner",
+	}, sampleRequest(), Surfaces{LeadEnabled: true, UGCEnabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sink.puts != 0 || out.MatrixButton.Enabled || out.MatrixButton.Reason != ReasonAuthorityMissing {
+		t.Fatalf("gap posted: puts=%d button=%+v", sink.puts, out.MatrixButton)
+	}
+	if len(c.Drafts()) != 0 || out.OutboundComplete || !out.LeadButton.Enabled {
+		t.Fatalf("outcome = %+v", out)
+	}
+}
+
 func TestMatrixSupplyMissingDoesNotRecordDraft(t *testing.T) {
 	c := New(PermissionFunc(readyPermission), &scriptedSink{available: false}, &matrixhandoff.EffectSink{})
 	out, err := c.Schedule(context.Background(), time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), Actor{
@@ -182,7 +209,8 @@ func TestRepeatScheduleAfterRevokeIsRefusedWithoutPost(t *testing.T) {
 	allowed := true
 	gate := PermissionFunc(func(_ context.Context, _, _, _ string) (Permission, error) {
 		if allowed {
-			return Permission{Allowed: true, Supply: SupplyReady, Reason: "brand_publish"}, nil
+			return Permission{Allowed: true, Supply: SupplyReady, Reason: "brand_publish",
+				Authority: Authority{PayerID: "pay_t", LicenseRef: "lic_t", LicenseExpiresAt: time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)}}, nil
 		}
 		return Permission{Allowed: false, Supply: SupplyReady, Reason: "grant_revoked"}, nil
 	})

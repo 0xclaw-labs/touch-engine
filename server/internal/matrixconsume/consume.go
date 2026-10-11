@@ -20,6 +20,7 @@ const (
 	ReasonPermissionSupply = "permission_supply_missing"
 	ReasonMatrixSupply     = "matrix_supply_missing"
 	ReasonAckNotDraft      = "matrix_ack_not_draft"
+	ReasonAuthorityMissing = "matrix_draft_authority_missing"
 	ReasonCrossTenant      = "cross_tenant"
 	ReasonForbidden        = "forbidden"
 	ReasonDraftRecorded    = "draft_recorded"
@@ -30,12 +31,44 @@ var (
 	ErrCrossTenant = errors.New("matrixconsume: actor tenant does not own the activity")
 )
 
+// Authority carries the payer and license facts the real matrix draft API
+// requires on every create. They come from the permission authority, not from
+// Touch's own data model, so Touch never invents them. A zero LicenseExpiresAt
+// means the permission read did not declare one.
+type Authority struct {
+	PayerID          string
+	LicenseRef       string
+	LicenseExpiresAt time.Time
+}
+
+// Complete reports whether the facts are complete enough to post. The draft
+// API validates payer and license ids and honours an expiry, so a read that
+// lacks any of them is not a postable permission.
+func (a Authority) Complete() bool {
+	return strings.TrimSpace(a.PayerID) != "" && strings.TrimSpace(a.LicenseRef) != "" && !a.LicenseExpiresAt.IsZero()
+}
+
 // Permission is one public-permission read. Supply "missing" means the
 // permission API is not configured or did not answer; it is not a grant.
+// Authority is the optional payer/license block: a permission that is allowed
+// without complete authority still refuses the post (fail closed).
 type Permission struct {
-	Allowed bool
-	Supply  string
-	Reason  string
+	Allowed   bool
+	Supply    string
+	Reason    string
+	Authority Authority
+}
+
+// DraftError is a precise refusal from the matrix draft API. Reason is the
+// button code: "matrix_" plus the matrix error code, passed through verbatim.
+type DraftError struct{ Reason string }
+
+// Error returns the reason as the message.
+func (e *DraftError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return "matrixconsume: " + e.Reason
 }
 
 // PermissionGate is the AG01 public permission port. A nil gate is missing supply.
@@ -66,7 +99,7 @@ type DraftAck struct {
 // is missing; only the matrix button is disabled.
 type DraftSink interface {
 	Available() bool
-	PutDraft(ctx context.Context, doc matrixhandoff.Draft) (DraftAck, error)
+	PutDraft(ctx context.Context, doc matrixhandoff.Draft, auth Authority) (DraftAck, error)
 }
 
 // Actor is the signed-in member. The tenant comes from membership resolution,
@@ -163,6 +196,13 @@ func (c *Consumer) Schedule(ctx context.Context, now time.Time, actor Actor, req
 		out.MatrixButton = Button{Enabled: false, Reason: reason}
 		return out, nil
 	}
+	// An allowed permission without the payer/license authority is not a
+	// postable permission. The matrix is never dialed on a gap; the reason
+	// names the missing authority instead of pretending the matrix refused.
+	if !perm.Authority.Complete() {
+		out.MatrixButton = Button{Enabled: false, Reason: ReasonAuthorityMissing}
+		return out, nil
+	}
 	// Permission is decided above on every call. Only after it passes is the
 	// draft already recorded for this identity reused, so a repeat click,
 	// a timeout retry, or a re-login never posts a second matrix plan.
@@ -180,8 +220,13 @@ func (c *Consumer) Schedule(ctx context.Context, now time.Time, actor Actor, req
 		return out, nil
 	}
 	preview := previewDraft(req)
-	ack, err := c.sink.PutDraft(ctx, preview)
+	ack, err := c.sink.PutDraft(ctx, preview, perm.Authority)
 	if err != nil {
+		var refuse *DraftError
+		if errors.As(err, &refuse) && refuse != nil && refuse.Reason != "" {
+			out.MatrixButton = Button{Enabled: false, Reason: refuse.Reason}
+			return out, nil
+		}
 		out.MatrixButton = Button{Enabled: false, Reason: ReasonMatrixSupply}
 		return out, nil
 	}
@@ -235,9 +280,13 @@ func (c *Consumer) remember(now time.Time, actor Actor, req matrixhandoff.Reques
 func previewDraft(req matrixhandoff.Request) matrixhandoff.Draft {
 	ids := make([]string, 0, len(req.Assets))
 	hashes := make([]string, 0, len(req.Assets))
+	grant := ""
 	for _, asset := range req.Assets {
 		ids = append(ids, strings.TrimSpace(asset.ID))
 		hashes = append(hashes, strings.TrimSpace(asset.Hash))
+		if grant == "" {
+			grant = strings.TrimSpace(asset.GrantRef)
+		}
 	}
 	version := req.ActivityVersion
 	if version < 1 {
@@ -252,6 +301,7 @@ func previewDraft(req matrixhandoff.Request) matrixhandoff.Draft {
 			Version:     version,
 			AssetIDs:    ids,
 			AssetHashes: hashes,
+			GrantRef:    grant,
 			OfferText:   strings.TrimSpace(req.OfferText),
 			OfferExpiry: req.OfferExpiry.UTC(),
 			Disclosure:  strings.TrimSpace(req.Disclosure),

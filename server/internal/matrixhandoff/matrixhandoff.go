@@ -688,9 +688,13 @@ func build(req Request, id string, version int, status, copy string) Draft {
 	assets := normalizeAssets(req.Assets)
 	ids := make([]string, 0, len(assets))
 	hashes := make([]string, 0, len(assets))
+	grant := ""
 	for _, asset := range assets {
 		ids = append(ids, asset.ID)
 		hashes = append(hashes, asset.Hash)
+		if grant == "" {
+			grant = strings.TrimSpace(asset.GrantRef)
+		}
 	}
 	return Draft{
 		ID:      id,
@@ -703,6 +707,7 @@ func build(req Request, id string, version int, status, copy string) Draft {
 			Version:     req.ActivityVersion,
 			AssetIDs:    ids,
 			AssetHashes: hashes,
+			GrantRef:    grant,
 			OfferText:   strings.TrimSpace(req.OfferText),
 			OfferExpiry: req.OfferExpiry.UTC(),
 			Disclosure:  strings.TrimSpace(req.Disclosure),

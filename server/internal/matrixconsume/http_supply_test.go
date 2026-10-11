@@ -38,19 +38,23 @@ func TestHTTPSupplyAcceptsDraftAndRejectsPublished(t *testing.T) {
 				t.Errorf("query %s", r.URL.RawQuery)
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"allowed":true,"supply":"ready","reason":"ok"}`))
-		case "/drafts":
+			_, _ = w.Write([]byte(`{"allowed":true,"supply":"ready","reason":"ok","payer_id":"pay","license_ref":"lic","license_expires_at":"2027-01-01T00:00:00Z"}`))
+		case "/v1/matrix-drafts":
 			sawDraft = true
+			if r.Header.Get("X-Matrix-Tenant") != "ten" {
+				t.Errorf("tenant header %q", r.Header.Get("X-Matrix-Tenant"))
+			}
 			raw, _ := io.ReadAll(r.Body)
 			var posted map[string]any
 			if err := json.Unmarshal(raw, &posted); err != nil {
 				t.Errorf("draft json: %v", err)
 			}
-			if posted["activity_version"] != float64(3) || posted["sha256"] != strings.Repeat("ab", 32) || posted["disclosure"] == "" || posted["return_location_token"] != "return:cmp" || posted["offer_expiry"] == nil || posted["offer_expiry"] == "" {
+			if posted["schema_version"] != "matrix-draft-request/v1" || posted["source_app"] != "touch" || posted["content_type"] != "activity" || posted["campaign_id"] != "cmp" || posted["revision"] != float64(3) || posted["grant_ref"] == "" || posted["payer_id"] != "pay" {
 				t.Errorf("draft body = %s", raw)
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"plan_id":"pln","status":"draft","executed":false}`))
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"draft_id":"md_1","status":"draft","published":false,"charged":false,"idempotent_replay":false}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -63,7 +67,7 @@ func TestHTTPSupplyAcceptsDraftAndRejectsPublished(t *testing.T) {
 		PrincipalID: "usr", TenantID: "ten", BrandID: "brd", Role: "org_owner",
 	}, matrixhandoff.Request{
 		TenantID: "ten", BrandID: "brd", StoreID: "sto", ActivityID: "cmp", ActivityVersion: 3,
-		Assets:              []matrixhandoff.Asset{{ID: "ast", Hash: strings.Repeat("ab", 32), Kind: "video"}},
+		Assets:              []matrixhandoff.Asset{{ID: "ast", Hash: strings.Repeat("ab", 32), Kind: "video", GrantRef: "grant_x"}},
 		OfferText:           "到店有礼",
 		OfferExpiry:         time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC),
 		Disclosure:          "这是商家活动草稿，不是已经发出的内容。",
@@ -78,17 +82,17 @@ func TestHTTPSupplyAcceptsDraftAndRejectsPublished(t *testing.T) {
 
 	published := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/permissions" {
-			_, _ = w.Write([]byte(`{"allowed":true,"supply":"ready","reason":"ok"}`))
+			_, _ = w.Write([]byte(`{"allowed":true,"supply":"ready","payer_id":"pay","license_ref":"lic","license_expires_at":"2027-01-01T00:00:00Z"}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"plan_id":"pln","status":"published","executed":false}`))
+		_, _ = w.Write([]byte(`{"draft_id":"md_2","status":"draft","published":true,"charged":false,"idempotent_replay":false}`))
 	}))
 	defer published.Close()
 	_, err = New(NewHTTPPermission(published.URL, published.Client()), NewHTTPDraftSink(published.URL, published.Client()), nil).Schedule(
 		context.Background(), time.Now().UTC(), Actor{PrincipalID: "usr", TenantID: "ten", BrandID: "brd", Role: "org_owner"},
 		matrixhandoff.Request{
-			TenantID: "ten", BrandID: "brd", StoreID: "sto", ActivityID: "cmp", ActivityVersion: 1,
-			Assets:              []matrixhandoff.Asset{{ID: "ast", Hash: strings.Repeat("cd", 32), Kind: "video"}},
+			TenantID: "ten", BrandID: "brd", StoreID: "sto", ActivityID: "cmp2", ActivityVersion: 1,
+			Assets:              []matrixhandoff.Asset{{ID: "ast", Hash: strings.Repeat("cd", 32), Kind: "video", GrantRef: "grant_y"}},
 			OfferText:           "到店有礼",
 			OfferExpiry:         time.Now().Add(24 * time.Hour),
 			Disclosure:          "这是商家活动草稿，不是已经发出的内容。",
