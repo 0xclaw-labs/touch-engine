@@ -10,9 +10,10 @@ type RouteDef = { slug: string; path: string; auth: boolean };
 // HUI-2628 r3：增 1440（17→25 张）。
 // HUI-2628 fix2（gate-r2 矩阵缺口）：增 1024 整腿、1920 补齐全页、
 // /work/campaigns（路由表 List）独立截图不再由 detail 代表、/admin（路由表 Home）三张——
-// admin 登录视图如实呈现手填租户 ID 表单（r2 已留档的风险点，不美化）。
+// admin 登录视图只保留邮箱和密码。组织从成员关系解析。
 // axe 阻断面保持 8 代表页（+work-campaigns 记录性扫描不阻断）；/admin 工具页不入阻断面
-// （手填租户 ID 风险已留档，避免 self-imposed 扩闸）。
+// （登录不再手填组织编号。/admin 工具页仍不入 axe 阻断面）。
+
 const ROUTES: RouteDef[] = [
   { slug: "home", path: "/", auth: true },
   { slug: "work-stores", path: "/work/stores", auth: true },
@@ -80,7 +81,7 @@ test("a11y + screenshots across representative pages", async ({ page }) => {
 });
 
 test("admin 路由表 Home 页截图（登录视图如实呈现 + 登录后壳）", async ({ page }) => {
-  // 登录视图（未带会话）——手填租户 ID 表单原样呈现，不美化（gate-r2 unknowns 留档项）
+  // 登录视图（未带会话）。组织不在这张表单里手填。
   await page.context().clearCookies();
   await page.goto("/admin");
   await page.evaluate(() => window.localStorage.removeItem("touch_admin_tenant"));

@@ -1,0 +1,21 @@
+2026/10/11 18:26:03 touch-server: starting env=development app_id=touch-engine addr=127.0.0.1:18460 db=/tmp/ag07-evidence/touch.db features(upload=true,notify=false,task=false,leads=false,dashboard=false,brand=false) identity=platform
+2026/10/11 18:26:03 GET /healthz -> 200 (1ms) guest
+2026/10/11 18:26:03 POST /api/v1/auth/login -> 200 (10ms) guest
+2026/10/11 18:26:03 GET /api/v1/session/memberships -> 200 (2ms) guest
+2026/10/11 18:26:03 GET /api/v1/whoami -> 200 (1ms) guest
+2026/10/11 18:26:03 POST /api/v1/stores -> 201 (2ms) guest
+2026/10/11 18:26:03 POST /api/v1/assets -> 201 (3ms) guest
+2026/10/11 18:26:03 POST /api/v1/campaigns -> 201 (1ms) guest
+2026/10/11 18:26:03 POST /api/v1/campaigns/cmp_4983f630161c5cf398752ae73884c3a6/status -> 200 (2ms) guest
+2026/10/11 18:26:03 POST /api/v1/campaigns/cmp_4983f630161c5cf398752ae73884c3a6/assets -> 201 (3ms) guest
+2026/10/11 18:26:03 matrixconsume: dial permission http://127.0.0.1:18743/permissions?action=brand_matrix_draft&brand_id=br_live_1&principal_id=usr_ag07_owner&tenant_id=tnt_b6b3bb817ae4d0ac05be77bc9eeec74c status=200 supply=ready authority=true
+2026/10/11 18:26:04 matrixconsume: dial draft http://127.0.0.1:18741/v1/matrix-drafts status=201 draft_id=md_84ecac562dc801f1 draft_status=draft published=false charged=false replay=false
+2026/10/11 18:26:04 POST /api/v1/campaigns/cmp_4983f630161c5cf398752ae73884c3a6/matrix-draft -> 200 (10ms) guest
+2026/10/11 18:26:04 POST /api/v1/assets -> 201 (1ms) guest
+2026/10/11 18:26:04 POST /api/v1/campaigns -> 201 (1ms) guest
+2026/10/11 18:26:04 POST /api/v1/campaigns/cmp_14f16ce1e4a025ec6f3befd1ebc93bc4/status -> 200 (1ms) guest
+2026/10/11 18:26:04 POST /api/v1/campaigns/cmp_14f16ce1e4a025ec6f3befd1ebc93bc4/assets -> 201 (1ms) guest
+2026/10/11 18:26:04 matrixconsume: dial permission http://127.0.0.1:18743/permissions?action=brand_matrix_draft&brand_id=br_live_1&principal_id=usr_ag07_owner&tenant_id=tnt_b6b3bb817ae4d0ac05be77bc9eeec74c status=200 supply=ready authority=true
+2026/10/11 18:26:04 matrixconsume: dial draft http://127.0.0.1:18741/v1/matrix-drafts status=403 body={"error":{"code":"grant_revoked","message":"grant revoked"}}
+2026/10/11 18:26:04 POST /api/v1/campaigns/cmp_14f16ce1e4a025ec6f3befd1ebc93bc4/matrix-draft -> 200 (4ms) guest
+2026/10/11 18:26:11 touch-server: shut down cleanly

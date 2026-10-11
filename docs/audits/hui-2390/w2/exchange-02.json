@@ -1,0 +1,25 @@
+{
+  "note": "recorded by the transparent proxy; the answer comes from the pinned matrixdraft binary",
+  "request": {
+    "method": "POST",
+    "url": "/v1/matrix-drafts",
+    "headers": {
+      "host": "127.0.0.1:18741",
+      "user-agent": "Go-http-client/1.1",
+      "content-length": "629",
+      "content-type": "application/json",
+      "x-matrix-tenant": "tnt_b6b3bb817ae4d0ac05be77bc9eeec74c",
+      "accept-encoding": "gzip"
+    },
+    "body": "{\"schema_version\":\"matrix-draft-request/v1\",\"source_app\":\"touch\",\"source_project_id\":\"cmp_14f16ce1e4a025ec6f3befd1ebc93bc4\",\"campaign_id\":\"cmp_14f16ce1e4a025ec6f3befd1ebc93bc4\",\"revision\":1,\"asset_id\":\"upl_video_dead\",\"asset_hash\":\"47e9c19437ed864b9792697a1e2cda4019e25291a0a1e1caa89d2273e7b62e31\",\"content_type\":\"activity\",\"grant_ref\":\"grant_dead_1\",\"tenant_id\":\"tnt_b6b3bb817ae4d0ac05be77bc9eeec74c\",\"brand_id\":\"br_live_1\",\"payer_id\":\"pay_operator_main\",\"license_ref\":\"lic_touch_video_v1\",\"license_expires_at\":\"2027-10-12T00:00:00Z\",\"return_target\":{\"app\":\"touch\",\"path\":\"/work/campaigns/cmp_14f16ce1e4a025ec6f3befd1ebc93bc4\"}}"
+  },
+  "response": {
+    "status": 403,
+    "headers": {
+      "content-type": "application/json",
+      "date": "Sun, 11 Oct 2026 18:26:04 GMT",
+      "content-length": "61"
+    },
+    "body": "{\"error\":{\"code\":\"grant_revoked\",\"message\":\"grant revoked\"}}\n"
+  }
+}

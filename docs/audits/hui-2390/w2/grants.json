@@ -1,0 +1,12 @@
+[
+  {
+    "tenant_id": "tnt_b6b3bb817ae4d0ac05be77bc9eeec74c",
+    "grant_ref": "grant_live_1",
+    "status": "active"
+  },
+  {
+    "tenant_id": "tnt_b6b3bb817ae4d0ac05be77bc9eeec74c",
+    "grant_ref": "grant_dead_1",
+    "status": "revoked"
+  }
+]

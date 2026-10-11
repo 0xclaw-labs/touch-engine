@@ -1,0 +1,25 @@
+{
+  "campaign_id": "cmp_14f16ce1e4a025ec6f3befd1ebc93bc4",
+  "http_status": 200,
+  "response": {
+    "copy": "",
+    "draft_id": "",
+    "draft_status": "",
+    "lead_button": {
+      "enabled": false,
+      "reason": ""
+    },
+    "matrix_button": {
+      "enabled": false,
+      "reason": "matrix_grant_revoked"
+    },
+    "outbound_complete": false,
+    "ugc_button": {
+      "enabled": true,
+      "reason": ""
+    }
+  },
+  "exchange_files": [
+    "exchange-02.json"
+  ]
+}

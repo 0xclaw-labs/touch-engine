@@ -175,6 +175,30 @@ func (s *Store) UpdateMemberScoped(id string, role *string, enabled *bool, displ
 	return cur, err
 }
 
+// ListMembershipsByPrincipal returns the principal's enabled memberships.
+// Disabled rows and other principals are not included.
+func (s *Store) ListMembershipsByPrincipal(principalRef string) ([]Member, error) {
+	rows, err := s.DB.Query(
+		`SELECT `+memberCols+` FROM members WHERE principal_ref=? AND enabled=1 ORDER BY created_at`, principalRef)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Member, 0)
+	for rows.Next() {
+		var m Member
+		var enabled int
+		var storeScope sql.NullString
+		if err := rows.Scan(&m.ID, &m.TenantID, &m.PrincipalRef, &m.Role, &storeScope, &enabled, &m.DisplayName, &m.CreatedBy, &m.CreatedAt, &m.UpdatedAt); err != nil {
+			return nil, err
+		}
+		m.Enabled = enabled == 1
+		m.StoreScope = storeScope.String
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ListMembers(tenantID string) ([]Member, error) {
 	rows, err := s.DB.Query(
 		`SELECT `+memberCols+` FROM members WHERE tenant_id=? ORDER BY created_at`, tenantID)

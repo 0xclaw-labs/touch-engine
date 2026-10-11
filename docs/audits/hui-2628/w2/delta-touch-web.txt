@@ -1,0 +1,428 @@
+==== BASE rerun-1 (scanned 946c1d1b1683...)
+product touch-web: passed=False pass/fail/total=2/4/6
+/  [Entry]  verdict=pass  scanned_sha=946c1d1b1683
+/admin  [Home]  verdict=fail  scanned_sha=946c1d1b1683
+    L99 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id TenantId
+    L99 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L172 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L173 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L176 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id TenantId
+    L185 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenant-id
+    L185 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L192 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L235 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenant-id
+    L235 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L252 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L256 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L257 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L274 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L277 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L278 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L301 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L303 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id TenantId
+    L304 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id TenantId
+    L322 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id TenantId
+    L322 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id TenantId
+    L323 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id TenantId
+    L343 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L344 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id 租户 ID
+    L567 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenant-id
+    L567 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L640 off_design_system_table_form_button — 未经设计系统的 form
+    L641 unstyled_native_control — 原生 input 未走设计系统控件
+    L642 unstyled_native_control — 原生 input 未走设计系统控件
+    L643 unstyled_native_control — 原生 input 未走设计系统控件
+    L644 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id 租户 ID
+    L645 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L647 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id TenantId
+    L652 off_design_system_table_form_button — 未经设计系统的 button
+    L652 unstyled_native_control — 原生 button 未走设计系统控件
+    L674 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L690 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L692 off_design_system_table_form_button — 未经设计系统的 button
+    L692 unstyled_native_control — 原生 button 未走设计系统控件
+    L698 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L698 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L725 off_design_system_table_form_button — 未经设计系统的 form
+    L726 unstyled_native_control — 原生 input 未走设计系统控件
+    L727 unstyled_native_control — 原生 input 未走设计系统控件
+    L728 off_design_system_table_form_button — 未经设计系统的 button
+    L728 unstyled_native_control — 原生 button 未走设计系统控件
+    L729 off_design_system_table_form_button — 未经设计系统的 button
+    L729 unstyled_native_control — 原生 button 未走设计系统控件
+    L738 off_design_system_table_form_button — 未经设计系统的 button
+    L738 unstyled_native_control — 原生 button 未走设计系统控件
+    L740 off_design_system_table_form_button — 未经设计系统的 button
+    L740 unstyled_native_control — 原生 button 未走设计系统控件
+    L741 off_design_system_table_form_button — 未经设计系统的 button
+    L741 unstyled_native_control — 原生 button 未走设计系统控件
+    L749 off_design_system_table_form_button — 未经设计系统的 form
+    L750 unstyled_native_control — 原生 input 未走设计系统控件
+    L751 unstyled_native_control — 原生 input 未走设计系统控件
+    L752 off_design_system_table_form_button — 未经设计系统的 button
+    L752 unstyled_native_control — 原生 button 未走设计系统控件
+    L759 off_design_system_table_form_button — 未经设计系统的 table
+    L773 off_design_system_table_form_button — 未经设计系统的 button
+    L773 unstyled_native_control — 原生 button 未走设计系统控件
+    L774 off_design_system_table_form_button — 未经设计系统的 button
+    L774 unstyled_native_control — 原生 button 未走设计系统控件
+    L775 off_design_system_table_form_button — 未经设计系统的 button
+    L775 unstyled_native_control — 原生 button 未走设计系统控件
+    L776 off_design_system_table_form_button — 未经设计系统的 button
+    L776 unstyled_native_control — 原生 button 未走设计系统控件
+    L777 off_design_system_table_form_button — 未经设计系统的 button
+    L777 unstyled_native_control — 原生 button 未走设计系统控件
+    L778 off_design_system_table_form_button — 未经设计系统的 button
+    L778 unstyled_native_control — 原生 button 未走设计系统控件
+    L795 unstyled_native_control — 原生 select 未走设计系统控件
+    L808 off_design_system_table_form_button — 未经设计系统的 button
+    L808 unstyled_native_control — 原生 button 未走设计系统控件
+    L822 off_design_system_table_form_button — 未经设计系统的 form
+    L823 unstyled_native_control — 原生 input 未走设计系统控件
+    L824 unstyled_native_control — 原生 input 未走设计系统控件
+    L825 unstyled_native_control — 原生 input 未走设计系统控件
+    L826 unstyled_native_control — 原生 input 未走设计系统控件
+    L827 unstyled_native_control — 原生 select 未走设计系统控件
+    L833 unstyled_native_control — 原生 input 未走设计系统控件
+    L834 off_design_system_table_form_button — 未经设计系统的 button
+    L834 unstyled_native_control — 原生 button 未走设计系统控件
+    L842 unstyled_native_control — 原生 select 未走设计系统控件
+    L848 unstyled_native_control — 原生 input 未走设计系统控件
+    L849 unstyled_native_control — 原生 select 未走设计系统控件
+    L855 unstyled_native_control — 原生 input 未走设计系统控件
+    L856 unstyled_native_control — 原生 select 未走设计系统控件
+    L861 unstyled_native_control — 原生 input 未走设计系统控件
+    L862 unstyled_native_control — 原生 select 未走设计系统控件
+    L867 unstyled_native_control — 原生 input 未走设计系统控件
+    L868 unstyled_native_control — 原生 select 未走设计系统控件
+    L873 unstyled_native_control — 原生 input 未走设计系统控件
+    L874 unstyled_native_control — 原生 input 未走设计系统控件
+    L875 unstyled_native_control — 原生 textarea 未走设计系统控件
+    L877 off_design_system_table_form_button — 未经设计系统的 button
+    L877 unstyled_native_control — 原生 button 未走设计系统控件
+    L878 off_design_system_table_form_button — 未经设计系统的 button
+    L878 unstyled_native_control — 原生 button 未走设计系统控件
+    L879 off_design_system_table_form_button — 未经设计系统的 button
+    L879 unstyled_native_control — 原生 button 未走设计系统控件
+    L880 off_design_system_table_form_button — 未经设计系统的 button
+    L880 unstyled_native_control — 原生 button 未走设计系统控件
+    L881 off_design_system_table_form_button — 未经设计系统的 button
+    L881 unstyled_native_control — 原生 button 未走设计系统控件
+    L882 off_design_system_table_form_button — 未经设计系统的 button
+    L882 unstyled_native_control — 原生 button 未走设计系统控件
+    L935 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L935 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L940 off_design_system_table_form_button — 未经设计系统的 form
+    L941 unstyled_native_control — 原生 select 未走设计系统控件
+    L947 unstyled_native_control — 原生 input 未走设计系统控件
+    L948 unstyled_native_control — 原生 input 未走设计系统控件
+    L949 off_design_system_table_form_button — 未经设计系统的 button
+    L949 unstyled_native_control — 原生 button 未走设计系统控件
+    L960 off_design_system_table_form_button — 未经设计系统的 form
+    L961 unstyled_native_control — 原生 input 未走设计系统控件
+    L962 off_design_system_table_form_button — 未经设计系统的 button
+    L962 unstyled_native_control — 原生 button 未走设计系统控件
+    L970 off_design_system_table_form_button — 未经设计系统的 button
+    L970 unstyled_native_control — 原生 button 未走设计系统控件
+    L979 off_design_system_table_form_button — 未经设计系统的 form
+    L982 unstyled_native_control — 原生 select 未走设计系统控件
+    L988 unstyled_native_control — 原生 select 未走设计系统控件
+    L992 unstyled_native_control — 原生 input 未走设计系统控件
+    L993 unstyled_native_control — 原生 select 未走设计系统控件
+    L1000 unstyled_native_control — 原生 select 未走设计系统控件
+    L1007 unstyled_native_control — 原生 input 未走设计系统控件
+    L1008 off_design_system_table_form_button — 未经设计系统的 button
+    L1008 unstyled_native_control — 原生 button 未走设计系统控件
+    L1015 unstyled_native_control — 原生 input 未走设计系统控件
+    L1032 unstyled_native_control — 原生 select 未走设计系统控件
+    L1039 unstyled_native_control — 原生 select 未走设计系统控件
+    L1046 unstyled_native_control — 原生 select 未走设计系统控件
+    L1051 off_design_system_table_form_button — 未经设计系统的 button
+    L1051 unstyled_native_control — 原生 button 未走设计系统控件
+    L1056 off_design_system_table_form_button — 未经设计系统的 table
+    L1072 unstyled_native_control — 原生 input 未走设计系统控件
+    L1078 off_design_system_table_form_button — 未经设计系统的 button
+    L1078 unstyled_native_control — 原生 button 未走设计系统控件
+    L1083 off_design_system_table_form_button — 未经设计系统的 button
+    L1083 unstyled_native_control — 原生 button 未走设计系统控件
+    L1084 off_design_system_table_form_button — 未经设计系统的 button
+    L1084 unstyled_native_control — 原生 button 未走设计系统控件
+    L1085 off_design_system_table_form_button — 未经设计系统的 button
+    L1085 unstyled_native_control — 原生 button 未走设计系统控件
+    L1088 off_design_system_table_form_button — 未经设计系统的 button
+    L1088 unstyled_native_control — 原生 button 未走设计系统控件
+    L1103 unstyled_native_control — 原生 select 未走设计系统控件
+    L1109 unstyled_native_control — 原生 select 未走设计系统控件
+    L1115 off_design_system_table_form_button — 未经设计系统的 button
+    L1115 unstyled_native_control — 原生 button 未走设计系统控件
+/work/campaigns  [List]  verdict=fail  scanned_sha=946c1d1b1683
+    L89 off_design_system_table_form_button — 未经设计系统的 button
+    L89 unstyled_native_control — 原生 button 未走设计系统控件
+    L108 off_design_system_table_form_button — 未经设计系统的 button
+    L108 unstyled_native_control — 原生 button 未走设计系统控件
+    L109 off_design_system_table_form_button — 未经设计系统的 button
+    L109 unstyled_native_control — 原生 button 未走设计系统控件
+    L110 off_design_system_table_form_button — 未经设计系统的 button
+    L110 unstyled_native_control — 原生 button 未走设计系统控件
+    L111 off_design_system_table_form_button — 未经设计系统的 button
+    L111 unstyled_native_control — 原生 button 未走设计系统控件
+    L117 off_design_system_table_form_button — 未经设计系统的 form
+    L119 unstyled_native_control — 原生 input 未走设计系统控件
+    L120 unstyled_native_control — 原生 input 未走设计系统控件
+    L121 unstyled_native_control — 原生 input 未走设计系统控件
+    L122 unstyled_native_control — 原生 input 未走设计系统控件
+    L123 unstyled_native_control — 原生 select 未走设计系统控件
+    L129 off_design_system_table_form_button — 未经设计系统的 button
+    L129 unstyled_native_control — 原生 button 未走设计系统控件
+/work/campaigns/[id]  [Detail]  verdict=fail  scanned_sha=946c1d1b1683
+    L97 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenant-id
+    L97 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L123 off_design_system_table_form_button — 未经设计系统的 button
+    L123 unstyled_native_control — 原生 button 未走设计系统控件
+    L139 off_design_system_table_form_button — 未经设计系统的 button
+    L139 unstyled_native_control — 原生 button 未走设计系统控件
+    L140 off_design_system_table_form_button — 未经设计系统的 button
+    L140 unstyled_native_control — 原生 button 未走设计系统控件
+    L141 off_design_system_table_form_button — 未经设计系统的 button
+    L141 unstyled_native_control — 原生 button 未走设计系统控件
+    L142 off_design_system_table_form_button — 未经设计系统的 button
+    L142 unstyled_native_control — 原生 button 未走设计系统控件
+    L154 off_design_system_table_form_button — 未经设计系统的 button
+    L154 unstyled_native_control — 原生 button 未走设计系统控件
+    L157 unstyled_native_control — 原生 select 未走设计系统控件
+    L164 off_design_system_table_form_button — 未经设计系统的 button
+    L164 unstyled_native_control — 原生 button 未走设计系统控件
+    L173 off_design_system_table_form_button — 未经设计系统的 button
+    L173 unstyled_native_control — 原生 button 未走设计系统控件
+    L181 off_design_system_table_form_button — 未经设计系统的 button
+    L181 unstyled_native_control — 原生 button 未走设计系统控件
+    L199 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L199 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+/work/materials  [Main Action]  verdict=fail  scanned_sha=946c1d1b1683
+    L93 off_design_system_table_form_button — 未经设计系统的 button
+    L93 unstyled_native_control — 原生 button 未走设计系统控件
+    L118 off_design_system_table_form_button — 未经设计系统的 form
+    L120 unstyled_native_control — 原生 select 未走设计系统控件
+    L124 unstyled_native_control — 原生 input 未走设计系统控件
+    L125 unstyled_native_control — 原生 input 未走设计系统控件
+    L126 off_design_system_table_form_button — 未经设计系统的 button
+    L126 unstyled_native_control — 原生 button 未走设计系统控件
+/c/[code]/contact  [Result]  verdict=pass  scanned_sha=946c1d1b1683
+==== CURRENT W2 (scanned c7c42aa...)
+product touch-web: passed=False pass/fail/total=2/4/6
+/  [Entry]  verdict=pass  scanned_sha=c7c42aa8d7ff
+/admin  [Home]  verdict=fail  scanned_sha=c7c42aa8d7ff
+    L109 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id TenantId
+    L109 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L184 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L185 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L189 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L192 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenant-id
+    L192 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L195 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L197 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id TenantId
+    L209 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L213 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L216 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id TenantId
+    L226 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L229 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L230 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id TenantId
+    L230 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L252 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L257 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id TenantId
+    L271 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenant-id
+    L271 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L278 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L321 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenant-id
+    L321 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L338 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L342 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L343 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L360 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L363 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L364 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L379 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L393 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L395 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id TenantId
+    L397 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id TenantId
+    L397 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenant_id
+    L418 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id TenantId
+    L421 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenant_id
+    L661 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenant-id
+    L661 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L740 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenant_id
+    L740 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenant_id
+    L740 off_design_system_table_form_button — 未经设计系统的 button
+    L740 unstyled_native_control — 原生 button 未走设计系统控件
+    L762 off_design_system_table_form_button — 未经设计系统的 form
+    L763 unstyled_native_control — 原生 input 未走设计系统控件
+    L764 unstyled_native_control — 原生 input 未走设计系统控件
+    L765 off_design_system_table_form_button — 未经设计系统的 button
+    L765 unstyled_native_control — 原生 button 未走设计系统控件
+    L805 off_design_system_table_form_button — 未经设计系统的 button
+    L805 unstyled_native_control — 原生 button 未走设计系统控件
+    L811 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L811 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L838 off_design_system_table_form_button — 未经设计系统的 form
+    L839 unstyled_native_control — 原生 input 未走设计系统控件
+    L840 unstyled_native_control — 原生 input 未走设计系统控件
+    L841 off_design_system_table_form_button — 未经设计系统的 button
+    L841 unstyled_native_control — 原生 button 未走设计系统控件
+    L842 off_design_system_table_form_button — 未经设计系统的 button
+    L842 unstyled_native_control — 原生 button 未走设计系统控件
+    L851 off_design_system_table_form_button — 未经设计系统的 button
+    L851 unstyled_native_control — 原生 button 未走设计系统控件
+    L853 off_design_system_table_form_button — 未经设计系统的 button
+    L853 unstyled_native_control — 原生 button 未走设计系统控件
+    L854 off_design_system_table_form_button — 未经设计系统的 button
+    L854 unstyled_native_control — 原生 button 未走设计系统控件
+    L862 off_design_system_table_form_button — 未经设计系统的 form
+    L863 unstyled_native_control — 原生 input 未走设计系统控件
+    L864 unstyled_native_control — 原生 input 未走设计系统控件
+    L865 off_design_system_table_form_button — 未经设计系统的 button
+    L865 unstyled_native_control — 原生 button 未走设计系统控件
+    L880 off_design_system_table_form_button — 未经设计系统的 button
+    L880 unstyled_native_control — 原生 button 未走设计系统控件
+    L881 off_design_system_table_form_button — 未经设计系统的 button
+    L881 unstyled_native_control — 原生 button 未走设计系统控件
+    L882 off_design_system_table_form_button — 未经设计系统的 button
+    L882 unstyled_native_control — 原生 button 未走设计系统控件
+    L883 off_design_system_table_form_button — 未经设计系统的 button
+    L883 unstyled_native_control — 原生 button 未走设计系统控件
+    L884 off_design_system_table_form_button — 未经设计系统的 button
+    L884 unstyled_native_control — 原生 button 未走设计系统控件
+    L885 off_design_system_table_form_button — 未经设计系统的 button
+    L885 unstyled_native_control — 原生 button 未走设计系统控件
+    L889 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L889 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L902 unstyled_native_control — 原生 select 未走设计系统控件
+    L915 off_design_system_table_form_button — 未经设计系统的 button
+    L915 unstyled_native_control — 原生 button 未走设计系统控件
+    L929 off_design_system_table_form_button — 未经设计系统的 form
+    L930 unstyled_native_control — 原生 input 未走设计系统控件
+    L931 unstyled_native_control — 原生 input 未走设计系统控件
+    L932 unstyled_native_control — 原生 input 未走设计系统控件
+    L933 unstyled_native_control — 原生 input 未走设计系统控件
+    L934 unstyled_native_control — 原生 select 未走设计系统控件
+    L940 unstyled_native_control — 原生 input 未走设计系统控件
+    L941 off_design_system_table_form_button — 未经设计系统的 button
+    L941 unstyled_native_control — 原生 button 未走设计系统控件
+    L949 unstyled_native_control — 原生 select 未走设计系统控件
+    L955 unstyled_native_control — 原生 input 未走设计系统控件
+    L956 unstyled_native_control — 原生 select 未走设计系统控件
+    L962 unstyled_native_control — 原生 input 未走设计系统控件
+    L963 unstyled_native_control — 原生 select 未走设计系统控件
+    L968 unstyled_native_control — 原生 input 未走设计系统控件
+    L969 unstyled_native_control — 原生 select 未走设计系统控件
+    L974 unstyled_native_control — 原生 input 未走设计系统控件
+    L975 unstyled_native_control — 原生 select 未走设计系统控件
+    L980 unstyled_native_control — 原生 input 未走设计系统控件
+    L981 unstyled_native_control — 原生 input 未走设计系统控件
+    L982 unstyled_native_control — 原生 textarea 未走设计系统控件
+    L984 off_design_system_table_form_button — 未经设计系统的 button
+    L984 unstyled_native_control — 原生 button 未走设计系统控件
+    L985 off_design_system_table_form_button — 未经设计系统的 button
+    L985 unstyled_native_control — 原生 button 未走设计系统控件
+    L986 off_design_system_table_form_button — 未经设计系统的 button
+    L986 unstyled_native_control — 原生 button 未走设计系统控件
+    L987 off_design_system_table_form_button — 未经设计系统的 button
+    L987 unstyled_native_control — 原生 button 未走设计系统控件
+    L988 off_design_system_table_form_button — 未经设计系统的 button
+    L988 unstyled_native_control — 原生 button 未走设计系统控件
+    L989 off_design_system_table_form_button — 未经设计系统的 button
+    L989 unstyled_native_control — 原生 button 未走设计系统控件
+    L1042 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L1042 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L1047 off_design_system_table_form_button — 未经设计系统的 form
+    L1048 unstyled_native_control — 原生 select 未走设计系统控件
+    L1054 unstyled_native_control — 原生 input 未走设计系统控件
+    L1055 unstyled_native_control — 原生 input 未走设计系统控件
+    L1056 off_design_system_table_form_button — 未经设计系统的 button
+    L1056 unstyled_native_control — 原生 button 未走设计系统控件
+    L1067 off_design_system_table_form_button — 未经设计系统的 form
+    L1068 unstyled_native_control — 原生 input 未走设计系统控件
+    L1069 off_design_system_table_form_button — 未经设计系统的 button
+    L1069 unstyled_native_control — 原生 button 未走设计系统控件
+    L1077 off_design_system_table_form_button — 未经设计系统的 button
+    L1077 unstyled_native_control — 原生 button 未走设计系统控件
+    L1086 off_design_system_table_form_button — 未经设计系统的 form
+    L1089 unstyled_native_control — 原生 select 未走设计系统控件
+    L1095 unstyled_native_control — 原生 select 未走设计系统控件
+    L1099 unstyled_native_control — 原生 input 未走设计系统控件
+    L1100 unstyled_native_control — 原生 select 未走设计系统控件
+    L1107 unstyled_native_control — 原生 select 未走设计系统控件
+    L1114 unstyled_native_control — 原生 input 未走设计系统控件
+    L1115 off_design_system_table_form_button — 未经设计系统的 button
+    L1115 unstyled_native_control — 原生 button 未走设计系统控件
+    L1122 unstyled_native_control — 原生 input 未走设计系统控件
+    L1139 unstyled_native_control — 原生 select 未走设计系统控件
+    L1146 unstyled_native_control — 原生 select 未走设计系统控件
+    L1153 unstyled_native_control — 原生 select 未走设计系统控件
+    L1158 off_design_system_table_form_button — 未经设计系统的 button
+    L1158 unstyled_native_control — 原生 button 未走设计系统控件
+    L1173 unstyled_native_control — 原生 input 未走设计系统控件
+    L1179 off_design_system_table_form_button — 未经设计系统的 button
+    L1179 unstyled_native_control — 原生 button 未走设计系统控件
+    L1184 off_design_system_table_form_button — 未经设计系统的 button
+    L1184 unstyled_native_control — 原生 button 未走设计系统控件
+    L1185 off_design_system_table_form_button — 未经设计系统的 button
+    L1185 unstyled_native_control — 原生 button 未走设计系统控件
+    L1186 off_design_system_table_form_button — 未经设计系统的 button
+    L1186 unstyled_native_control — 原生 button 未走设计系统控件
+    L1189 off_design_system_table_form_button — 未经设计系统的 button
+    L1189 unstyled_native_control — 原生 button 未走设计系统控件
+    L1203 unstyled_native_control — 原生 select 未走设计系统控件
+    L1209 unstyled_native_control — 原生 select 未走设计系统控件
+    L1215 off_design_system_table_form_button — 未经设计系统的 button
+    L1215 unstyled_native_control — 原生 button 未走设计系统控件
+/work/campaigns  [List]  verdict=fail  scanned_sha=c7c42aa8d7ff
+    L1 missing_loading_empty_error — 主页面缺少 error
+    L104 off_design_system_table_form_button — 未经设计系统的 button
+    L104 unstyled_native_control — 原生 button 未走设计系统控件
+    L105 off_design_system_table_form_button — 未经设计系统的 button
+    L105 unstyled_native_control — 原生 button 未走设计系统控件
+    L106 off_design_system_table_form_button — 未经设计系统的 button
+    L106 unstyled_native_control — 原生 button 未走设计系统控件
+    L107 off_design_system_table_form_button — 未经设计系统的 button
+    L107 unstyled_native_control — 原生 button 未走设计系统控件
+    L113 off_design_system_table_form_button — 未经设计系统的 form
+    L115 unstyled_native_control — 原生 input 未走设计系统控件
+    L116 unstyled_native_control — 原生 input 未走设计系统控件
+    L117 unstyled_native_control — 原生 input 未走设计系统控件
+    L118 unstyled_native_control — 原生 input 未走设计系统控件
+    L119 unstyled_native_control — 原生 select 未走设计系统控件
+    L125 off_design_system_table_form_button — 未经设计系统的 button
+    L125 unstyled_native_control — 原生 button 未走设计系统控件
+/work/campaigns/[id]  [Detail]  verdict=fail  scanned_sha=c7c42aa8d7ff
+    L97 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenant-id
+    L97 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L123 off_design_system_table_form_button — 未经设计系统的 button
+    L123 unstyled_native_control — 原生 button 未走设计系统控件
+    L139 off_design_system_table_form_button — 未经设计系统的 button
+    L139 unstyled_native_control — 原生 button 未走设计系统控件
+    L140 off_design_system_table_form_button — 未经设计系统的 button
+    L140 unstyled_native_control — 原生 button 未走设计系统控件
+    L141 off_design_system_table_form_button — 未经设计系统的 button
+    L141 unstyled_native_control — 原生 button 未走设计系统控件
+    L142 off_design_system_table_form_button — 未经设计系统的 button
+    L142 unstyled_native_control — 原生 button 未走设计系统控件
+    L154 off_design_system_table_form_button — 未经设计系统的 button
+    L154 unstyled_native_control — 原生 button 未走设计系统控件
+    L157 unstyled_native_control — 原生 select 未走设计系统控件
+    L164 off_design_system_table_form_button — 未经设计系统的 button
+    L164 unstyled_native_control — 原生 button 未走设计系统控件
+    L173 off_design_system_table_form_button — 未经设计系统的 button
+    L173 unstyled_native_control — 原生 button 未走设计系统控件
+    L181 off_design_system_table_form_button — 未经设计系统的 button
+    L181 unstyled_native_control — 原生 button 未走设计系统控件
+    L199 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+    L199 hand_filled_tenant_or_internal_id — 手填 tenant id 或 internal id tenantId
+/work/materials  [Main Action]  verdict=fail  scanned_sha=c7c42aa8d7ff
+    L1 missing_loading_empty_error — 主页面缺少 error
+    L114 off_design_system_table_form_button — 未经设计系统的 form
+    L116 unstyled_native_control — 原生 select 未走设计系统控件
+    L120 unstyled_native_control — 原生 input 未走设计系统控件
+    L121 unstyled_native_control — 原生 input 未走设计系统控件
+    L122 off_design_system_table_form_button — 未经设计系统的 button
+    L122 unstyled_native_control — 原生 button 未走设计系统控件
+/c/[code]/contact  [Result]  verdict=pass  scanned_sha=c7c42aa8d7ff

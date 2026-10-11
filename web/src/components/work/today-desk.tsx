@@ -87,7 +87,7 @@ function TodayBody() {
 
   return (
     <main className="tk-page">
-      <p className="tk-kicker">{session.tenantName || "门店"}</p>
+      <p className="tk-kicker">{session.tenantName || "当前组织"}</p>
       <h1 className="tk-title">今天</h1>
       <ul className="tk-nav">
         <li><a href="/work/stores">门店</a></li>

@@ -121,8 +121,11 @@ test("offline：公共页真实断网提交报网络异常；路由中止驱动�
   await screenshot(page, "state-offline-public-network-error");
   await page.unroute("**/api/public/links/**");
 
-  // 4) 商家侧：whoami 路由中止 → MerchantGate 应用内离线错误 + 重试 → 恢复闭环
-  // （直接种 localStorage 租户，不走登录流程——登录的 refresh 也依赖 whoami）
+  // 4) 商家侧：会话引导路由中止 → MerchantGate 应用内离线错误 + 重试 → 恢复闭环
+  // （直接种 localStorage 租户，不走登录流程。组织登录改造后门面引导先打
+  // session/memberships、whoami 跟随；两路一起断才等价“连不上服务”，
+  // 断言与重试闭环本身不变。）
+  await page.route("**/api/session/memberships", (route) => route.abort());
   await page.route("**/api/whoami", (route) => route.abort());
   await page.goto("/admin");
   await page.evaluate((tenant) => window.localStorage.setItem("touch_admin_tenant", tenant), codes.tenantId);
@@ -130,6 +133,7 @@ test("offline：公共页真实断网提交报网络异常；路由中止驱动�
   await expect(page.getByText("没有连上服务")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole("button", { name: "重试" })).toBeVisible();
   await screenshot(page, "state-offline-merchant-inapp");
+  await page.unroute("**/api/session/memberships");
   await page.unroute("**/api/whoami");
   await page.getByRole("button", { name: "重试" }).click();
   await expect(page.getByRole("heading", { name: "今天" })).toBeVisible({ timeout: 15_000 });

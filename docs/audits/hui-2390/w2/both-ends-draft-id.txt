@@ -1,0 +1,3 @@
+matrixdraft issued draft_id: md_84ecac562dc801f1
+stored in matrix.sqlite: see matrix-sqlite-dump.txt match
+ack recorded by touch-server log: draft_id=md_84ecac562dc801f1

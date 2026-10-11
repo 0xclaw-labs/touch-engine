@@ -12,20 +12,17 @@ export async function seedCodes(): Promise<Record<string, string>> {
 
 /**
  * 走 /admin 登录表单建立商家会话。
- * 真实表单是三字段（邮箱/密码/租户 ID，web/src/app/admin/page.tsx）：
- * handleLogin 在 res.ok 且 tenantId 非空时直接 refresh()，所以三个字段一次填齐、一次提交。
+ * 表单只有邮箱和密码。单一成员关系由服务端自动选中，不手填租户编号。
  * 凭据只来自 seed.json（env.mjs seed 写入），本文件不硬编码第二份。
  */
 export async function login(page: Page): Promise<void> {
   const seed = await seedCodes();
-  if (!seed.tenantId) throw new Error("[helpers] seed.json 缺 tenantId（env.mjs seed 未写入？）");
   if (!seed.email || !seed.password) throw new Error("[helpers] seed.json 缺 owner 凭据（env.mjs seed 未写入？）");
   await page.goto("/admin");
   await page.getByPlaceholder("平台账号邮箱").fill(seed.email);
   await page.getByPlaceholder("密码", { exact: true }).fill(seed.password);
-  await page.getByPlaceholder(/租户 ID/).fill(seed.tenantId);
   await page.getByRole("button", { name: "登录" }).click();
-  // 登录视图是 main.tk-admin-narrow；会话建立后渲染 AdminShell 的 main.tk-admin-shell
+  // 登录视图是 main.tk-admin-narrow；单一成员关系选中后渲染 main.tk-admin-shell
   await expect(page.locator("main.tk-admin-shell")).toBeVisible({ timeout: 15_000 });
 }
 

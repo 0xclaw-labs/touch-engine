@@ -39,11 +39,11 @@ const (
 
 // Sync states of a lead submission (lead_submissions.sync_state).
 const (
-	StateAccepted     = "accepted"      // 本地已接受
-	StatePendingSync  = "pending_sync"  // 已交 notify,待 CRM 确认
-	StateCRMReceived  = "crm_received"  // CRM 已接收
-	StateRejected     = "rejected"      // 目标拒绝/死信
-	StateRevoked      = "revoked"       // 已撤销(终态)
+	StateAccepted    = "accepted"     // 本地已接受
+	StatePendingSync = "pending_sync" // 已交 notify,待 CRM 确认
+	StateCRMReceived = "crm_received" // CRM 已接收
+	StateRejected    = "rejected"     // 目标拒绝/死信
+	StateRevoked     = "revoked"      // 已撤销(终态)
 )
 
 // Notice is the fixed minimal consent notice shown to the consumer. Version is
@@ -161,16 +161,16 @@ type Envelope struct {
 }
 
 type EventProfile struct {
-	ProfileVersion string         `json:"profile_version"`
-	EventID        string         `json:"event_id"`
-	EventType      string         `json:"event_type"`
-	SourceApp      string         `json:"source_app"`
-	TargetApp      string         `json:"target_app"`
-	TenantScope    string         `json:"tenant_scope"`
-	SourceRef      string         `json:"source_ref"`
-	SourceVersion  int            `json:"source_version"`
-	Correlation    Correlation    `json:"correlation"`
-	PayloadRef     PayloadRef     `json:"payload_ref"`
+	ProfileVersion string      `json:"profile_version"`
+	EventID        string      `json:"event_id"`
+	EventType      string      `json:"event_type"`
+	SourceApp      string      `json:"source_app"`
+	TargetApp      string      `json:"target_app"`
+	TenantScope    string      `json:"tenant_scope"`
+	SourceRef      string      `json:"source_ref"`
+	SourceVersion  int         `json:"source_version"`
+	Correlation    Correlation `json:"correlation"`
+	PayloadRef     PayloadRef  `json:"payload_ref"`
 }
 
 type Correlation struct {
@@ -202,6 +202,36 @@ type PayloadMetadata struct {
 	// target_app / tenant_scope and is never the display name.
 	BrandDisplayName     string `json:"brand_display_name,omitempty"`
 	NotificationBrandRef string `json:"notification_brand_ref,omitempty"`
+	// Source trace shared with the campaign handoff. These are references,
+	// not a second asset library and not contact fields.
+	TraceID         string `json:"trace_id,omitempty"`
+	GrantRef        string `json:"grant_ref,omitempty"`
+	ReturnTarget    string `json:"return_target,omitempty"`
+	CampaignVersion string `json:"campaign_version,omitempty"`
+}
+
+// SourceTrace is the campaign version, grant and return kept on one trace.
+type SourceTrace struct {
+	TraceID         string
+	GrantRef        string
+	ReturnTarget    string
+	CampaignVersion string
+	AssetRef        string
+}
+
+// AttachSourceTrace copies server-derived provenance onto the fact.
+// It does not change source_app, target_app, or tenant_scope.
+func (e *Envelope) AttachSourceTrace(trace SourceTrace) {
+	if e == nil {
+		return
+	}
+	if trace.AssetRef != "" {
+		e.Payload.AssetRef = trace.AssetRef
+	}
+	e.Payload.TraceID = trace.TraceID
+	e.Payload.GrantRef = trace.GrantRef
+	e.Payload.ReturnTarget = trace.ReturnTarget
+	e.Payload.CampaignVersion = trace.CampaignVersion
 }
 
 // RecordRef is the source-private URI the target may resolve under its own
@@ -303,7 +333,7 @@ var piiKeyNames = []string{
 }
 
 var (
-	emailShape   = regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}`)
+	emailShape = regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}`)
 	// Word boundaries keep hex identifiers (sha256/event ids) out of the shape
 	// checks: digit runs inside a hex string are letter-bounded, not word-bounded.
 	e164Shape    = regexp.MustCompile(`\b\+?[1-9][0-9]{7,14}\b`)

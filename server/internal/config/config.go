@@ -99,6 +99,14 @@ type Config struct {
 	LeadsFollowUpBaseURL string
 	LeadsFollowUpToken   string
 
+	// PublicPermissionURL and MatrixDraftURL are optional supply bases.
+	// Empty means that supply is missing: the server still starts, and only
+	// the matrix button is disabled. These are not part of Gate and are not
+	// a production default. Local acceptance may set both to
+	// http://127.0.0.1:18741, which dials only while that process is listening.
+	PublicPermissionURL string
+	MatrixDraftURL      string
+
 	// PublicBaseURL is the H5 origin guests reach (QR payload base, HUI-1664),
 	// e.g. https://h5.example.com. Used ONLY to build the canonical short-code
 	// URL <base>/c/<code>; never taken from request input. QR endpoints fail
@@ -163,6 +171,8 @@ func Load(get func(string) string) Config {
 		LeadsPhonePepper:      get("LEADS_PHONE_PEPPER"),
 		LeadsFollowUpBaseURL:  strings.TrimRight(strings.TrimSpace(get("LEADS_FOLLOW_UP_BASE_URL")), "/"),
 		LeadsFollowUpToken:    get("LEADS_FOLLOW_UP_TOKEN"),
+		PublicPermissionURL:   strings.TrimRight(strings.TrimSpace(get("TOUCH_PUBLIC_PERMISSION_URL")), "/"),
+		MatrixDraftURL:        strings.TrimRight(strings.TrimSpace(get("TOUCH_MATRIX_DRAFT_URL")), "/"),
 		PublicBaseURL:         strings.TrimSpace(get("PUBLIC_BASE_URL")),
 		FeatureUpload:         isTruthy(get(EnvFeatureUpload)),
 		FeatureNotify:         isTruthy(get(EnvFeatureNotify)),

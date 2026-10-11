@@ -437,6 +437,9 @@ func TestLeadsE2EHappyPath(t *testing.T) {
 		payload["marketing_optin"] != true || payload["campaign_ref"] != f.campaignID {
 		t.Fatalf("payload = %v", payload)
 	}
+	if payload["trace_id"] != "lead:"+ref || payload["return_target"] != "/c/"+f.code {
+		t.Fatalf("source trace = %v", payload)
+	}
 	notifyID, nerr := f.s.St.NotifyEventID(ref, "submit")
 	if nerr != nil || notifyID == "" || notifyID == ref || notifyID != "evt_"+ref {
 		t.Fatalf("stored notify id = %q %v", notifyID, nerr)

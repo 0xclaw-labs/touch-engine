@@ -492,6 +492,19 @@ func (s *Store) MarkOutboxForwarded(eventID, notifyEventID string) error {
 	return err
 }
 
+// LeadOutboxPayload returns the fact already stored for one submission kind.
+// Callers copy that document; they do not rebuild it from the current campaign.
+func (s *Store) LeadOutboxPayload(submissionRef, kind string) (string, error) {
+	var payload string
+	err := s.DB.QueryRow(
+		`SELECT payload_json FROM leads_outbox WHERE submission_ref=? AND kind=? ORDER BY created_at LIMIT 1`,
+		submissionRef, kind).Scan(&payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return payload, err
+}
+
 // NotifyEventID returns the platform-notify id stored for one forwarded fact.
 // An empty string means that fact was never accepted; callers must not invent
 // a receipt from the submission ref.

@@ -33,6 +33,7 @@ import (
 	"github.com/bianjiefilm/touch-engine/server/internal/db"
 	"github.com/bianjiefilm/touch-engine/server/internal/identity"
 	"github.com/bianjiefilm/touch-engine/server/internal/leads"
+	"github.com/bianjiefilm/touch-engine/server/internal/matrixconsume"
 	"github.com/bianjiefilm/touch-engine/server/internal/readcache"
 	"github.com/bianjiefilm/touch-engine/server/internal/redact"
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
@@ -65,6 +66,10 @@ type Server struct {
 	// LeadsLimiter gates the public lead-write surface per client IP
 	// (single-process sliding window; not distributed by design for T1).
 	LeadsLimiter *leads.RateLimiter
+
+	// Matrix consumes a public-permission read and a matrix draft sink.
+	// Nil means that supply is missing: only the matrix button is disabled.
+	Matrix *matrixconsume.Consumer
 
 	// PubCache / DashCache (HUI-2981 option C) are the bounded local read
 	// caches behind FEATURE_PUBLIC_CACHE / FEATURE_DASHBOARD_CACHE. They are
@@ -112,6 +117,7 @@ func New(cfg config.Config, database *sql.DB, idc *identity.Client, upc *upload.
 	return &Server{
 		Cfg: cfg, St: st, ID: idc, Upload: upc, Log: logger,
 		LeadsLimiter: leads.NewRateLimiter(leadsRatePerMinute, time.Minute),
+		Matrix:       matrixFromConfig(cfg),
 		PubCache: readcache.New[store.ResolvedRows](readcache.Options{
 			Capacity: publicCacheCapacity, TTL: publicCacheTTL, Jitter: publicCacheJitter,
 			Epoch: st.Epoch,
@@ -121,6 +127,18 @@ func New(cfg config.Config, database *sql.DB, idc *identity.Client, upc *upload.
 			Epoch: st.Epoch,
 		}),
 	}
+}
+
+// matrixFromConfig installs the permission and draft clients only when a base
+// URL is configured. Both empty keeps Matrix nil, which the handler treats as
+// missing supply without opening a connection.
+func matrixFromConfig(cfg config.Config) *matrixconsume.Consumer {
+	perm := strings.TrimSpace(cfg.PublicPermissionURL)
+	draft := strings.TrimSpace(cfg.MatrixDraftURL)
+	if perm == "" && draft == "" {
+		return nil
+	}
+	return matrixconsume.New(matrixconsume.NewHTTPPermission(perm, nil), matrixconsume.NewHTTPDraftSink(draft, nil), nil)
 }
 
 // Open opens the database and returns a ready Server.
@@ -226,6 +244,7 @@ func (s *Server) Handler() http.Handler {
 
 	// authenticated admin surface (商家后台)
 	mux.Handle("GET /api/v1/whoami", s.requireSession(s.handleWhoami))
+	mux.Handle("GET /api/v1/session/memberships", s.requirePrincipal(s.handleSessionMemberships))
 	mux.Handle("GET /api/v1/workbench", s.requireSession(s.handleWorkbench))
 
 	mux.Handle("GET /api/v1/stores", s.requireSession(s.handleStoreList))
@@ -241,6 +260,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/campaigns/{id}", s.requireSession(s.handleCampaignGet))
 	mux.Handle("PATCH /api/v1/campaigns/{id}", s.requireSession(s.handleCampaignPatch))
 	mux.Handle("POST /api/v1/campaigns/{id}/status", s.requireSession(s.handleCampaignStatus))
+	mux.Handle("POST /api/v1/campaigns/{id}/matrix-draft", s.requireSession(s.handleMatrixDraft))
 
 	mux.Handle("GET /api/v1/campaigns/{id}/assets", s.requireSession(s.handleAssetList))
 	mux.Handle("POST /api/v1/campaigns/{id}/assets", s.requireSession(s.handleAssetAdd))
@@ -488,6 +508,16 @@ func (s *Server) requireInternal(next http.HandlerFunc) http.Handler {
 // tenant membership resolve. It is the single identity path; there is no
 // alternate or stub mode.
 func (s *Server) requireSession(next http.HandlerFunc) http.Handler {
+	return s.requireIdentity(next, true)
+}
+
+// requirePrincipal resolves the platform session without a hand-filled tenant.
+// Membership lists are read from the principal, not from X-Tenant-ID.
+func (s *Server) requirePrincipal(next http.HandlerFunc) http.Handler {
+	return s.requireIdentity(next, false)
+}
+
+func (s *Server) requireIdentity(next http.HandlerFunc, withTenant bool) http.Handler {
 	return s.requireInternal(func(w http.ResponseWriter, r *http.Request) {
 		if problems := s.Cfg.Gate(); len(problems) > 0 {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
@@ -515,6 +545,13 @@ func (s *Server) requireSession(next http.HandlerFunc) http.Handler {
 					"message": "platform identity could not be reached; refusing to act (fail-closed)",
 				})
 			}
+			return
+		}
+
+		if !withTenant {
+			c := &caller{Principal: principal}
+			ctx := context.WithValue(r.Context(), callerKey, c)
+			next(w, r.WithContext(ctx))
 			return
 		}
 

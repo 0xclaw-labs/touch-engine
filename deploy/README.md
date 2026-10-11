@@ -5,6 +5,8 @@
 
 - `touch-server.env.example`:Go 服务。含 app 配置、platform identity(必配)、
   upload(素材引用校验,默认 off)、notify/task(仅脚手架,默认 off)。
+  `TOUCH_PUBLIC_PERMISSION_URL` 与 `TOUCH_MATRIX_DRAFT_URL` 默认空,空则不拨号。
+  本地验收可在 127.0.0.1:18741 在听时写成 `http://127.0.0.1:18741`,这不是生产默认值。
 - `touch-web.env.example`:Next.js BFF。只指向 loopback 的 Go 服务。
 
 键名约定:

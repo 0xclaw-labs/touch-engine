@@ -4,14 +4,26 @@
 // 由服务端做平台会话解析 + 租户成员校验。本页面不持有任何凭证。
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AdminDataTable } from "@/components/admin/AdminDataTable";
 import { ExtraJumpPanel } from "@/components/admin/ExtraJumpPanel";
 import { AdminShell } from "@/components/admin/AdminShell";
+import { MatrixDraftButton } from "@/components/admin/MatrixDraftButton";
 import { MerchantWorkbench } from "@/components/admin/MerchantWorkbench";
 import { TaskHandoffActions } from "@/components/admin/TaskHandoffActions";
+import { adminHeaderTenantName } from "@/lib/admin-header-tenant";
 import { copyJobClosed, copyJobKey, copyUsability, handoffHasFormalJump } from "@/lib/copy-draft";
 import { acceptTenantPayload } from "@/lib/eco-nav/touch-shell";
 import { failureText } from "@/lib/failure-copy";
 import { toJsonBody } from "@/lib/http-json";
+import {
+  beginTenantOp,
+  currentTenantOp,
+  decideTenantConfirm,
+  resolveWorkspaceTenant,
+  TENANT_STORAGE_KEY,
+  writeTenantMemory,
+  type MembershipScope,
+} from "@/lib/workspace-tenant";
 
 interface Campaign {
   id: string;
@@ -68,8 +80,6 @@ interface AssetRec {
   version: string;
 }
 
-const TENANT_KEY = "touch_admin_tenant";
-
 // fix2：交接资料字段呈现（server/internal/copydraft Handoff 的 JSON 字段名 → 中文标签）
 type ProfessionalHandoff = Record<string, unknown> & {
   store_name?: unknown;
@@ -102,6 +112,8 @@ export default function AdminPage() {
   const [email_, setEmailMasked] = useState("");
   const [workbar, setWorkbar] = useState("");
   const [tenantName, setTenantName] = useState("");
+  const [scopes, setScopes] = useState<MembershipScope[]>([]);
+  const [orgPhase, setOrgPhase] = useState<"boot" | "login" | "choose" | "none" | "ready">("boot");
   const [brandName, setBrandName] = useState("");
   const [supportLine, setSupportLine] = useState("");
   const [error, setError] = useState("");
@@ -171,10 +183,84 @@ export default function AdminPage() {
 
   const tenantRef = useRef(tenantId);
   tenantRef.current = tenantId;
+  const scopesRef = useRef(scopes);
+  scopesRef.current = scopes;
+
+  const confirmAdminTenant = useCallback(async (seq: number, tenantId: string, displayName: string, roleHint: string, items: MembershipScope[]) => {
+    let res: Response;
+    try {
+      res = await fetch("/api/whoami", { headers: { "x-tenant-id": tenantId } });
+    } catch {
+      if (seq !== currentTenantOp()) return;
+      writeTenantMemory("reject", tenantId, window.localStorage);
+      setRole("");
+      setTenantId("");
+      setTenantName("");
+      setError("没有读到当前组织。没有沿用上一户的数据。");
+      setOrgPhase("login");
+      return;
+    }
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    const decision = decideTenantConfirm({
+      seq,
+      whoamiOk: res.ok,
+      enabled: data.enabled,
+      role: data.role,
+      tenantId,
+      items,
+    });
+    if (decision === "stale") return;
+    writeTenantMemory(decision, tenantId, window.localStorage);
+    if (decision !== "accept") {
+      setRole("");
+      setTenantId("");
+      setTenantName("");
+      setError("没有读到当前组织。没有沿用上一户的数据。");
+      setOrgPhase("login");
+      return;
+    }
+    const role = typeof data.role === "string" && data.role ? data.role : roleHint;
+    const name = adminHeaderTenantName({
+      whoamiName: data.tenant_name,
+      members: items,
+      tenantId,
+      kept: displayName,
+    });
+    tenantRef.current = tenantId;
+    setTenantId(tenantId);
+    setTenantName(name);
+    setRole(role);
+    setError("");
+    setOrgPhase("ready");
+  }, []);
+
+  const loadMemberships = useCallback(async () => {
+    const seq = beginTenantOp();
+    const remembered = window.localStorage.getItem(TENANT_STORAGE_KEY);
+    const res = await fetch("/api/session/memberships");
+    if (seq !== currentTenantOp()) return;
+    const data = (await res.json().catch(() => ({}))) as { items?: MembershipScope[] };
+    if (!res.ok) {
+      setRole("");
+      setOrgPhase("login");
+      return;
+    }
+    const items = data.items ?? [];
+    setScopes(items);
+    const resolved = resolveWorkspaceTenant(items, remembered);
+    if (resolved.status === "selected") {
+      await confirmAdminTenant(seq, resolved.tenantId, resolved.displayName, resolved.role, items);
+      return;
+    }
+    if (seq !== currentTenantOp()) return;
+    setRole("");
+    setTenantId("");
+    setOrgPhase(resolved.status === "choose" ? "choose" : "none");
+  }, [confirmAdminTenant]);
 
   useEffect(() => {
-    setTenantId(localStorage.getItem(TENANT_KEY) ?? "");
-  }, []);
+    void loadMemberships();
+  }, [loadMemberships]);
 
   const api = useCallback(
     async (method: string, path: string, body?: unknown) => {
@@ -286,7 +372,13 @@ export default function AdminPage() {
     setStoreScope(String(who.data.store_scope ?? ""));
     setEmailMasked(String(who.data.email ?? ""));
     setWorkbar(typeof who.data.workbar === "string" ? who.data.workbar : "");
-    setTenantName(typeof who.data.tenant_name === "string" ? who.data.tenant_name : "");
+    const headerMembers = scopesRef.current;
+    setTenantName((current) => adminHeaderTenantName({
+      whoamiName: who.data.tenant_name,
+      members: headerMembers,
+      tenantId: requested,
+      kept: current,
+    }));
     const brand = who.data.brand as { display_name?: string; support_name?: string; support_contact?: string } | undefined;
     setBrandName(brand?.display_name ?? "");
     setSupportLine([brand?.support_name, brand?.support_contact].filter(Boolean).join(" · "));
@@ -301,7 +393,10 @@ export default function AdminPage() {
   }, [api, tenantId, loadTags]);
 
   function switchMerchant(nextTenantId: string) {
-    tenantRef.current = nextTenantId;
+    const items = scopes;
+    const hit = items.find((item) => item.enabled && item.source === "membership" && item.tenant_id === nextTenantId);
+    if (!hit) return;
+    const seq = beginTenantOp();
     setCampaigns([]);
     setStores([]);
     setQrFor(null);
@@ -319,8 +414,11 @@ export default function AdminPage() {
     setCopyJob(null);
     setCopyJobBound("");
     setCopyError("");
-    setTenantId(nextTenantId);
-    localStorage.setItem(TENANT_KEY, nextTenantId);
+    setRole("");
+    setTenantId("");
+    setTenantName("");
+    setOrgPhase("boot");
+    void confirmAdminTenant(seq, hit.tenant_id, hit.display_name, hit.role, items);
   }
 
   useEffect(() => {
@@ -340,11 +438,7 @@ export default function AdminPage() {
       setError(failureText(res.status, data));
       return;
     }
-    if (!tenantId) {
-      setError("登录成功。请填写租户 ID(由运维提供,形如 tnt_*)后刷新。");
-      return;
-    }
-    await refresh();
+    await loadMemberships();
   }
 
   async function transition(id: string, status: string) {
@@ -630,6 +724,34 @@ export default function AdminPage() {
   }
 
   if (!role) {
+    if (orgPhase === "boot") {
+      return (
+        <main className="tk-admin-narrow">
+          <p data-state="loading">正在读取组织</p>
+        </main>
+      );
+    }
+    if (orgPhase === "choose") {
+      return (
+        <main className="tk-admin-narrow">
+          <h1>选择组织</h1>
+          <p>用组织名称进入。不需要填写编号。</p>
+          {scopes.map((item) => (
+            <button key={item.tenant_id} type="button" className="tk-admin-btn" onClick={() => switchMerchant(item.tenant_id)}>
+              {item.display_name}
+            </button>
+          ))}
+        </main>
+      );
+    }
+    if (orgPhase === "none") {
+      return (
+        <main className="tk-admin-narrow">
+          <h1>商家后台</h1>
+          <p data-state="empty">当前账号没有可进入的组织。</p>
+        </main>
+      );
+    }
     return (
       <main className="tk-admin-narrow">
         {/* 三态静态声明（HUI-2628 fix2，现行 detector 口径；口径议题归 HUI-2619） */}
@@ -640,15 +762,6 @@ export default function AdminPage() {
         <form onSubmit={handleLogin} className="tk-admin-form">
           <input placeholder="平台账号邮箱" value={email} onChange={(e) => setEmail(e.target.value)} className="tk-admin-input" />
           <input placeholder="密码" type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="tk-admin-input" />
-          <input
-            placeholder="租户 ID(tnt_*,由运维提供)"
-            value={tenantId}
-            onChange={(e) => {
-              setTenantId(e.target.value);
-              localStorage.setItem(TENANT_KEY, e.target.value);
-            }}
-            className="tk-admin-input"
-          />
           <button type="submit" className="tk-admin-btn">登录</button>
         </form>
         {error && <p className="tk-admin-danger">{error}</p>}
@@ -671,7 +784,7 @@ export default function AdminPage() {
           <div>
             <strong>{brandName || "品牌"}</strong>
             <span className="tk-admin-dim"> / </span>
-            <span>{tenantName || tenantId}</span>
+            <span>{tenantName || "当前组织"}</span>
           </div>
           {supportLine && <span className="tk-admin-dim-soft tk-admin-fs-13">客服 {supportLine}</span>}
         </div>
@@ -687,7 +800,7 @@ export default function AdminPage() {
                 ? " · 总部(全门店)"
                 : ""}
             {" · "}
-            {tenantId}
+            {tenantName || "当前组织"}
           </span>
           <button onClick={logout} className="tk-admin-btn">退出</button>
         </div>
@@ -756,13 +869,7 @@ export default function AdminPage() {
 
       <section className="tk-admin-section">
         <h2>活动</h2>
-        <table className="tk-admin-table">
-          <thead>
-            <tr>
-              <th>标题</th><th>状态</th><th>有效期</th><th>订单引用</th><th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
+        <AdminDataTable head={["标题", "状态", "有效期", "订单引用", "操作"]}>
             {campaigns.map((c) => (
               <tr key={c.id} id={`campaign-${c.id}`} className="tk-admin-divider-soft">
                 <td>{c.title}</td>
@@ -779,11 +886,11 @@ export default function AdminPage() {
                     {qrFor === c.id ? "收起二维码" : "二维码"}
                   </button>
                   <TaskHandoffActions campaignId={c.id} onPlanned={setTaskNotice} />
+                  <MatrixDraftButton campaignId={c.id} tenantId={tenantId} />
                 </td>
               </tr>
             ))}
-          </tbody>
-        </table>
+        </AdminDataTable>
         {taskNotice ? <p data-testid="task-notice">{taskNotice}</p> : null}
 
         {qrFor && (
@@ -1053,13 +1160,7 @@ export default function AdminPage() {
         </div>
 
         {/* 标签表 */}
-        <table className="tk-admin-table">
-          <thead>
-            <tr>
-              <th>标签</th><th>短码 / URL</th><th>门店</th><th>分组</th><th>状态</th><th>UID 提示(写入后回填)</th><th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
+        <AdminDataTable head={["标签", "短码 / URL", "门店", "分组", "状态", "UID 提示(写入后回填)", "操作"]}>
             {tags.map((t) => (
               <tr key={t.id} className="tk-admin-divider-soft">
                 <td>{t.label}</td>
@@ -1092,8 +1193,7 @@ export default function AdminPage() {
             {tags.length === 0 && (
               <tr><td colSpan={7} className="tk-admin-muted">暂无标签;先用上方向导批量生成,再导出 CSV 交给 NFC 写入工具。</td></tr>
             )}
-          </tbody>
-        </table>
+        </AdminDataTable>
 
         {/* 换绑面板 */}
         {rebind && (

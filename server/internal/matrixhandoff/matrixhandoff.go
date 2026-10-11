@@ -58,11 +58,13 @@ const (
 )
 
 // Asset is one selected activity file. Kind "video" is the only kind a
-// video-only fixture can hand off.
+// video-only fixture can hand off. GrantRef is the asset's own authorization
+// reference; the real matrix draft API requires it per asset.
 type Asset struct {
-	ID   string
-	Hash string
-	Kind string
+	ID       string
+	Hash     string
+	Kind     string
+	GrantRef string
 }
 
 // Request is the selected Touch activity plus fields this package refuses to
@@ -92,6 +94,8 @@ type Actor struct {
 }
 
 // TouchActivity is the campaign being handed off. It is not a matrix plan.
+// GrantRef keeps the selected asset's authorization reference with the record
+// so the wire document and the source-side record stay one fact.
 type TouchActivity struct {
 	TenantID    string    `json:"tenant_id"`
 	BrandID     string    `json:"brand_id"`
@@ -100,6 +104,7 @@ type TouchActivity struct {
 	Version     int       `json:"version"`
 	AssetIDs    []string  `json:"asset_ids"`
 	AssetHashes []string  `json:"asset_hashes"`
+	GrantRef    string    `json:"grant_ref,omitempty"`
 	OfferText   string    `json:"offer_text"`
 	OfferExpiry time.Time `json:"offer_expiry"`
 	Disclosure  string    `json:"disclosure"`
@@ -372,6 +377,23 @@ func (s *Service) List() []Draft {
 		return out[i].ID < out[j].ID
 	})
 	return out
+}
+
+// Existing returns the draft already recorded for the same identity (tenant,
+// brand, activity, version, assets, expiry) when it holds a matrix plan id and
+// is still a draft. It does not call the matrix.
+func (s *Service) Existing(req Request) (Draft, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id, ok := s.byKey[identityKey(req)]
+	if !ok {
+		return Draft{}, false
+	}
+	doc, ok := s.docs[id]
+	if !ok || doc.Status != StatusDraft || strings.TrimSpace(doc.Plan.ID) == "" {
+		return Draft{}, false
+	}
+	return doc, true
 }
 
 // CreateDraft stores a draft or returns needs_video. It does not publish.
@@ -666,9 +688,13 @@ func build(req Request, id string, version int, status, copy string) Draft {
 	assets := normalizeAssets(req.Assets)
 	ids := make([]string, 0, len(assets))
 	hashes := make([]string, 0, len(assets))
+	grant := ""
 	for _, asset := range assets {
 		ids = append(ids, asset.ID)
 		hashes = append(hashes, asset.Hash)
+		if grant == "" {
+			grant = strings.TrimSpace(asset.GrantRef)
+		}
 	}
 	return Draft{
 		ID:      id,
@@ -681,6 +707,7 @@ func build(req Request, id string, version int, status, copy string) Draft {
 			Version:     req.ActivityVersion,
 			AssetIDs:    ids,
 			AssetHashes: hashes,
+			GrantRef:    grant,
 			OfferText:   strings.TrimSpace(req.OfferText),
 			OfferExpiry: req.OfferExpiry.UTC(),
 			Disclosure:  strings.TrimSpace(req.Disclosure),

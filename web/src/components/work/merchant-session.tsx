@@ -3,8 +3,15 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { failureText } from "@/lib/failure-copy";
 import { surfaceLabel } from "@/lib/product-finish";
-
-const TENANT_KEY = "touch_admin_tenant";
+import {
+  beginTenantOp,
+  currentTenantOp,
+  decideTenantConfirm,
+  resolveWorkspaceTenant,
+  TENANT_STORAGE_KEY,
+  writeTenantMemory,
+  type MembershipScope,
+} from "@/lib/workspace-tenant";
 
 export interface MerchantResult {
   ok: boolean;
@@ -17,9 +24,10 @@ export interface MerchantSession {
   role: string;
   email: string;
   tenantName: string;
-  phase: "loading" | "anonymous" | "ready" | "error";
+  phase: "loading" | "anonymous" | "choose" | "none" | "ready" | "error";
   error: string;
-  login: (email: string, password: string, tenantId: string) => Promise<void>;
+  options: MembershipScope[];
+  login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   switchTenant: (tenantId: string) => void;
   api: (method: string, path: string, body?: unknown) => Promise<MerchantResult>;
@@ -51,9 +59,16 @@ export function MerchantGate({ children }: { children: ReactNode }) {
       <main className="tk-page">
         <p className="tk-state tk-danger" data-state="error">
           {session.error}
-          {/* fix2：连接类错误（断网/断服）也走「应用内恢复动作」——attempt+1 重跑 whoami（r3 同型） */}
           <button className="tk-quiet" type="button" data-action="retry" onClick={session.retryConnection}>重试</button>
         </p>
+      </main>
+    );
+  }
+  if (session.phase === "choose") return <OrgChoices session={session} />;
+  if (session.phase === "none") {
+    return (
+      <main className="tk-page">
+        <p className="tk-state" data-state="empty">当前账号没有可进入的组织。</p>
       </main>
     );
   }
@@ -64,7 +79,6 @@ export function MerchantGate({ children }: { children: ReactNode }) {
 function Login({ session }: { session: MerchantSession }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [tenantId, setTenantId] = useState(session.tenantId);
   const [error, setError] = useState("");
 
   return (
@@ -77,7 +91,7 @@ function Login({ session }: { session: MerchantSession }) {
         onSubmit={(event) => {
           event.preventDefault();
           setError("");
-          void session.login(email, password, tenantId).catch((err: unknown) => {
+          void session.login(email, password).catch((err: unknown) => {
             setError(err instanceof Error ? err.message : "没有登录");
           });
         }}
@@ -90,15 +104,33 @@ function Login({ session }: { session: MerchantSession }) {
           密码
           <input className="tk-input" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required />
         </label>
-        <label className="tk-label">
-          租户编号
-          <input className="tk-input" value={tenantId} onChange={(event) => setTenantId(event.target.value)} required />
-        </label>
         <button className="tk-button" type="submit">登录并查看今天</button>
       </form>
       {error ? <p className="tk-danger" data-state="error">{error}</p> : null}
     </main>
   );
+}
+
+function OrgChoices({ session }: { session: MerchantSession }) {
+  return (
+    <main className="tk-page">
+      <h1 className="tk-title">选择组织</h1>
+      <p className="tk-lead">用组织名称进入。不需要填写编号。</p>
+      {session.options.map((item) => (
+        <button key={item.tenant_id} className="tk-button" type="button" onClick={() => session.switchTenant(item.tenant_id)}>
+          {item.display_name}
+        </button>
+      ))}
+    </main>
+  );
+}
+
+async function readScopes(): Promise<MembershipScope[] | null> {
+  const res = await fetch("/api/session/memberships");
+  if (res.status === 401) return null;
+  if (!res.ok) throw new Error("没有读到组织");
+  const data = (await res.json().catch(() => ({}))) as { items?: MembershipScope[] };
+  return data.items ?? [];
 }
 
 function useMerchantSession(): MerchantSession {
@@ -108,34 +140,81 @@ function useMerchantSession(): MerchantSession {
   const [tenantName, setTenantName] = useState("");
   const [phase, setPhase] = useState<MerchantSession["phase"]>("loading");
   const [error, setError] = useState("");
+  const [options, setOptions] = useState<MembershipScope[]>([]);
   const [attempt, setAttempt] = useState(0);
 
-  const applyWho = useCallback(async (nextTenant: string) => {
-    const res = await fetch("/api/whoami", { headers: { "x-tenant-id": nextTenant } });
-    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-    if (!res.ok || typeof data.role !== "string" || data.role === "") {
+  const confirmTenant = useCallback(async (seq: number, nextTenant: string, displayName: string, items: MembershipScope[]) => {
+    let res: Response;
+    try {
+      res = await fetch("/api/whoami", { headers: { "x-tenant-id": nextTenant } });
+    } catch {
+      if (seq !== currentTenantOp()) return;
+      writeTenantMemory("reject", nextTenant, window.localStorage);
       setRole("");
-      setPhase("anonymous");
+      setTenantId("");
+      setTenantName("");
+      setError("没有读到当前组织。没有沿用上一户的数据。");
+      setPhase("error");
       return;
     }
-    setRole(data.role);
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    const decision = decideTenantConfirm({
+      seq,
+      whoamiOk: res.ok,
+      enabled: data.enabled,
+      role: data.role,
+      tenantId: nextTenant,
+      items,
+    });
+    if (decision === "stale") return;
+    writeTenantMemory(decision, nextTenant, window.localStorage);
+    if (decision !== "accept") {
+      setRole("");
+      setTenantId("");
+      setTenantName("");
+      setError("没有读到当前组织。没有沿用上一户的数据。");
+      setPhase("error");
+      return;
+    }
+    setRole(typeof data.role === "string" ? data.role : "");
     setEmail(typeof data.email === "string" ? data.email : "");
-    setTenantName(typeof data.tenant_name === "string" ? data.tenant_name : "");
+    setTenantName(typeof data.tenant_name === "string" && data.tenant_name ? data.tenant_name : displayName);
+    setTenantId(nextTenant);
+    setError("");
     setPhase("ready");
   }, []);
 
-  useEffect(() => {
-    const stored = window.localStorage.getItem(TENANT_KEY) ?? "";
-    setTenantId(stored);
-    if (!stored) {
-      setPhase("anonymous");
+  const applyScopes = useCallback(async (items: MembershipScope[], remembered: string | null, seq: number) => {
+    if (seq !== currentTenantOp()) return;
+    setOptions(items);
+    const resolved = resolveWorkspaceTenant(items, remembered);
+    if (resolved.status === "selected") {
+      await confirmTenant(seq, resolved.tenantId, resolved.displayName, items);
       return;
     }
-    void applyWho(stored).catch(() => {
+    if (seq !== currentTenantOp()) return;
+    setTenantId("");
+    setRole("");
+    setTenantName("");
+    setPhase(resolved.status === "choose" ? "choose" : "none");
+  }, [confirmTenant]);
+
+  useEffect(() => {
+    const seq = beginTenantOp();
+    const remembered = window.localStorage.getItem(TENANT_STORAGE_KEY);
+    void readScopes().then((items) => {
+      if (seq !== currentTenantOp()) return;
+      if (items === null) {
+        setPhase("anonymous");
+        return;
+      }
+      return applyScopes(items, remembered, seq);
+    }).catch(() => {
+      if (seq !== currentTenantOp()) return;
       setError("没有连上服务。登录状态未知，没有把它当成已登录。");
       setPhase("error");
     });
-  }, [applyWho, attempt]);
+  }, [applyScopes, attempt]);
 
   const retryConnection = useCallback(() => {
     setPhase("loading");
@@ -156,7 +235,7 @@ function useMerchantSession(): MerchantSession {
     return { ok: res.ok, status: res.status, data };
   }, [tenantId]);
 
-  const login = useCallback(async (nextEmail: string, password: string, nextTenant: string) => {
+  const login = useCallback(async (nextEmail: string, password: string) => {
     const res = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -164,10 +243,12 @@ function useMerchantSession(): MerchantSession {
     });
     const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     if (!res.ok) throw new Error(failureText(res.status, data));
-    window.localStorage.setItem(TENANT_KEY, nextTenant);
-    setTenantId(nextTenant);
-    await applyWho(nextTenant);
-  }, [applyWho]);
+    const seq = beginTenantOp();
+    const items = await readScopes();
+    if (seq !== currentTenantOp()) return;
+    if (items === null) throw new Error("登录后没有读到组织");
+    await applyScopes(items, window.localStorage.getItem(TENANT_STORAGE_KEY), seq);
+  }, [applyScopes]);
 
   const logout = useCallback(async () => {
     await fetch("/api/auth/logout", { method: "POST" });
@@ -177,15 +258,23 @@ function useMerchantSession(): MerchantSession {
   }, []);
 
   const switchTenant = useCallback((nextTenant: string) => {
-    window.localStorage.setItem(TENANT_KEY, nextTenant);
-    setTenantId(nextTenant);
+    const items = options;
+    const hit = items.find((item) => item.tenant_id === nextTenant && item.enabled && item.source === "membership");
+    if (!hit) return;
+    const seq = beginTenantOp();
+    setTenantId("");
     setRole("");
+    setTenantName("");
     setPhase("loading");
-    void applyWho(nextTenant).catch(() => {
+    void confirmTenant(seq, hit.tenant_id, hit.display_name, items).catch(() => {
+      if (seq !== currentTenantOp()) return;
+      writeTenantMemory("reject", hit.tenant_id, window.localStorage);
       setError("切换后没有读到身份。没有沿用上一户的数据。");
+      setRole("");
+      setTenantId("");
       setPhase("error");
     });
-  }, [applyWho]);
+  }, [confirmTenant, options]);
 
   return useMemo(() => ({
     tenantId,
@@ -194,12 +283,13 @@ function useMerchantSession(): MerchantSession {
     tenantName,
     phase,
     error,
+    options,
     login,
     logout,
     switchTenant,
     api,
     retryConnection,
-  }), [api, email, error, login, logout, phase, retryConnection, role, switchTenant, tenantId, tenantName]);
+  }), [api, email, error, login, logout, options, phase, retryConnection, role, switchTenant, tenantId, tenantName]);
 }
 
 export { failureText };

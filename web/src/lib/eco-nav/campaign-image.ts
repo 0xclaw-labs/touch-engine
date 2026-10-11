@@ -142,3 +142,60 @@ export async function acceptCampaignImage(
     charges_customer: false,
   };
 }
+
+export type CampaignImageLaunchInput = {
+  traceId: string;
+  campaignId: string;
+  campaignVersion: string;
+  assetRef: string;
+  sha256: string;
+  grantRef: string;
+  returnTargetId: string;
+};
+
+export type CampaignImageLaunch = {
+  trace_id: string;
+  campaign_id: string;
+  campaign_version: string;
+  asset_ref: string;
+  sha256: string;
+  grant_ref: string;
+  return_target_id: string;
+  candidate: true;
+  generated: false;
+  charges_customer: false;
+};
+
+// launchCampaignImage builds the campaign-to-product-image entry.
+// It does not call product-image and does not carry asset bytes.
+export function launchCampaignImage(input: CampaignImageLaunchInput): CampaignImageLaunch {
+  const sha = input.sha256.trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(sha)) throw new Error("bad_sha256");
+  const traceId = input.traceId.trim();
+  const campaignId = input.campaignId.trim();
+  const assetRef = input.assetRef.trim();
+  const grantRef = input.grantRef.trim();
+  const returnTargetId = input.returnTargetId.trim();
+  if (!traceId || !campaignId || !assetRef || !grantRef || !returnTargetId) throw new Error("missing_trace");
+  return {
+    trace_id: traceId,
+    campaign_id: campaignId,
+    campaign_version: input.campaignVersion.trim() || "1",
+    asset_ref: assetRef,
+    sha256: sha,
+    grant_ref: grantRef,
+    return_target_id: returnTargetId,
+    candidate: true,
+    generated: false,
+    charges_customer: false,
+  };
+}
+
+// receiveCandidate keeps a returned reference beside the official row.
+// An upstream claim of generation or publish is refused.
+export function receiveCandidate(upstream: Record<string, unknown>, launch: CampaignImageLaunch): CampaignImageLaunch {
+  if (upstream.executed === true || upstream.generated === true || upstream.status === "published" || upstream.status === "executed" || upstream.status === "generated") {
+    throw new Error("upstream_claimed_generation");
+  }
+  return { ...launch, candidate: true, generated: false, charges_customer: false };
+}

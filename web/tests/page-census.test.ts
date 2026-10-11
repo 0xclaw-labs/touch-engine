@@ -211,8 +211,8 @@ describe("半成品标记", () => {
   it("记下的命中和重新扫描该页面文件一致", () => {
     const want = new Map<string, Marker[]>([
       ["/", []],
-      // HUI-2628 r2：admin/page.tsx 行内样式与裸 hex 清零后账本同步。
-      ["/admin", ["raw button", "raw input", "raw table"]],
+      // HUI-2628：两张表移入 AdminDataTable 后，页面源不再记 raw table。
+      ["/admin", ["raw button", "raw input"]],
       ["/admin/preview", []],
       ["/work/stores", ["raw button", "raw input"]],
       ["/work/campaigns", ["raw button", "raw input"]],

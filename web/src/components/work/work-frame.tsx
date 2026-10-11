@@ -12,10 +12,11 @@ const LINKS = [
   { href: "/work/analytics", label: "统计" },
 ];
 
-export function WorkFrame({ children }: { children: ReactNode }) {
+export function WorkFrame({ children, tenantName }: { children: ReactNode; tenantName?: string }) {
   const path = usePathname();
   return (
     <div className="tk-page">
+      <p className="tk-kicker">{tenantName || "当前组织"}</p>
       <ul className="tk-nav">
         {LINKS.map((item) => {
           const current = item.href === "/" ? path === "/" : path === item.href || path.startsWith(item.href + "/");

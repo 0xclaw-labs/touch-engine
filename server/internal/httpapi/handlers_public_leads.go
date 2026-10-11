@@ -221,6 +221,7 @@ func (s *Server) handlePublicLeadSubmit(w http.ResponseWriter, r *http.Request) 
 			envelope.ApplyBrandTemplate(d.Shell.DisplayName, "")
 		}
 	}
+	envelope.AttachSourceTrace(s.campaignLeadTrace(res.Campaign, res.Link.Code, ref))
 	payload, err := leads.MarshalEnvelope(envelope)
 	if errors.Is(err, leads.ErrPIIDetected) {
 		// structurally impossible today; kept as a hard stop if the payload grows
@@ -358,11 +359,22 @@ func (s *Server) handlePublicLeadRevoke(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	stored, err := s.St.LeadOutboxPayload(lead.SubmissionRef, "submit")
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "submit fact lookup failed")
+		return
+	}
+	trace, err := traceFromSubmitFact(stored)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "submit fact unreadable")
+		return
+	}
 	revokeVersion := lead.SourceVersion + 1
 	revokeEnv := leads.BuildRevokeEnvelope(
 		s.Cfg.AppID, s.Cfg.LeadsTargetApp, lead.TenantID, lead.CampaignID,
 		lead.SubmissionRef, lead.ConsentAt, revokeVersion,
 		lead.Name, lead.Phone, lead.Wechat)
+	revokeEnv.AttachSourceTrace(trace)
 	revokePayload, err := leads.MarshalEnvelope(revokeEnv)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "internal", "revoke fact refused by PII scan")

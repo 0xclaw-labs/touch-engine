@@ -24,7 +24,7 @@ function WorkShell({ children }: { children: ReactNode }) {
       onLogout={() => void session.logout()}
       onTenantChange={session.switchTenant}
     >
-      <WorkFrame>{children}</WorkFrame>
+      <WorkFrame tenantName={session.tenantName}>{children}</WorkFrame>
     </AdminShell>
   );
 }

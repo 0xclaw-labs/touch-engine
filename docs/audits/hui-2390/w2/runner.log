@@ -1,0 +1,22 @@
+[2026-10-11T18:26:02.600Z] provisioned tenant tnt_b6b3bb817ae4d0ac05be77bc9eeec74c
+[2026-10-11T18:26:03.960Z] login -> 200
+[2026-10-11T18:26:03.965Z] memberships -> 200 tenant tnt_b6b3bb817ae4d0ac05be77bc9eeec74c role org_owner
+[2026-10-11T18:26:03.968Z] whoami -> 200 {"email":"o***@ag07evidence.test","enabled":true,"principal_ref":"usr_ag07_owner","role":"org_owner","store_scope":"","tenant_id":"tnt_b6b3bb817ae4d0ac05be77bc9eeec74c"}
+[2026-10-11T18:26:03.974Z] store -> 201 sto_bca11502854e0082889780b2ea86090a
+[2026-10-11T18:26:03.975Z] journey active: register lib asset upl_video_live (grant grant_live_1)
+[2026-10-11T18:26:03.980Z] journey active: lib register -> 201 {"id":"las_b2fb431cf4ac34e7428c72f09b42c8c9","tenant_id":"tnt_b6b3bb817ae4d0ac05be77bc9eeec74c","asset_ref":"upl_video_live","sha256":"47e9c19437ed864b9792697a1e2cda4019e25291a0a1e1caa89d2273e7b62e31"
+[2026-10-11T18:26:03.983Z] journey active: campaign -> 201 cmp_4983f630161c5cf398752ae73884c3a6
+[2026-10-11T18:26:03.987Z] journey active: status active -> 200
+[2026-10-11T18:26:03.991Z] journey active: attach asset -> 201 {"id":"ast_223a2b558911ff2328b39feb36c78d79","tenant_id":"tnt_b6b3bb817ae4d0ac05be77bc9eeec74c","campaign_id":"cmp_4983f630161c5cf398752ae73884c3a6","asset_id":"upl_video_live","version":"47e9c19437ed
+[2026-10-11T18:26:04.003Z] journey active: matrix-draft -> 200 {"copy":"已记下商家矩阵草稿。活动仍开放，这里没有执行。","draft_id":"mh_cae851de71582fe2b0e9e9d1","draft_status":"draft","lead_button":{"enabled":false,"reason":""},"matrix_button":{"enabled":true,"reason":"draft_recorded"},"outbound_complete":false,"ugc_button":{"enabled":true,"reason":""}}
+
+[2026-10-11T18:26:04.003Z] journey revoked: register lib asset upl_video_dead (grant grant_dead_1)
+[2026-10-11T18:26:04.005Z] journey revoked: lib register -> 201 {"id":"las_0fbe1af09748dcca820728bd6ba2d9ec","tenant_id":"tnt_b6b3bb817ae4d0ac05be77bc9eeec74c","asset_ref":"upl_video_dead","sha256":"47e9c19437ed864b9792697a1e2cda4019e25291a0a1e1caa89d2273e7b62e31"
+[2026-10-11T18:26:04.007Z] journey revoked: campaign -> 201 cmp_14f16ce1e4a025ec6f3befd1ebc93bc4
+[2026-10-11T18:26:04.008Z] journey revoked: status active -> 200
+[2026-10-11T18:26:04.009Z] journey revoked: attach asset -> 201 {"id":"ast_ea4d70eade73b2bd85a294053f883d56","tenant_id":"tnt_b6b3bb817ae4d0ac05be77bc9eeec74c","campaign_id":"cmp_14f16ce1e4a025ec6f3befd1ebc93bc4","asset_id":"upl_video_dead","version":"47e9c19437ed
+[2026-10-11T18:26:04.013Z] journey revoked: matrix-draft -> 200 {"copy":"","draft_id":"","draft_status":"","lead_button":{"enabled":false,"reason":""},"matrix_button":{"enabled":false,"reason":"matrix_grant_revoked"},"outbound_complete":false,"ugc_button":{"enabled":true,"reason":""}}
+
+[2026-10-11T18:26:04.018Z] note: touch log hash line check — see captures for asset_hash
+[2026-10-11T18:26:04.018Z] sqlite dump written
+[2026-10-11T18:26:04.018Z] RUNNER OK: local touch draft mh_cae851de71582fe2b0e9e9d1; matrix draft md_84ecac562dc801f1; revoked refused with matrix_grant_revoked
