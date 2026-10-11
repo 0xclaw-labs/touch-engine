@@ -1,0 +1,25 @@
+{
+  "campaign_id": "cmp_4983f630161c5cf398752ae73884c3a6",
+  "http_status": 200,
+  "response": {
+    "copy": "已记下商家矩阵草稿。活动仍开放，这里没有执行。",
+    "draft_id": "mh_cae851de71582fe2b0e9e9d1",
+    "draft_status": "draft",
+    "lead_button": {
+      "enabled": false,
+      "reason": ""
+    },
+    "matrix_button": {
+      "enabled": true,
+      "reason": "draft_recorded"
+    },
+    "outbound_complete": false,
+    "ugc_button": {
+      "enabled": true,
+      "reason": ""
+    }
+  },
+  "exchange_files": [
+    "exchange-01.json"
+  ]
+}
