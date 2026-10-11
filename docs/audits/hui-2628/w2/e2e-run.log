@@ -1,0 +1,88 @@
+[run] next build
+
+> touch-engine-web@0.1.0 build
+> next build
+
+ ⚠ Warning: Next.js inferred your workspace root, but it may not be correct.
+ We detected multiple lockfiles and selected the directory of /Volumes/MobileHD/Work/派诺生态/package-lock.json as the root directory.
+ To silence this warning, set `outputFileTracingRoot` in your Next.js config, or consider removing one of the lockfiles if it's not needed.
+   See https://nextjs.org/docs/app/api-reference/config/next-config-js/output#caveats for more information.
+ Detected additional lockfiles: 
+   * /Volumes/MobileHD/Work/派诺生态/_worktrees/touch-engine/ag07-20261010/web/package-lock.json
+
+   ▲ Next.js 15.5.25
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully in 1188ms
+   Linting and checking validity of types ...
+   Collecting page data ...
+   Generating static pages (0/15) ...
+   Generating static pages (3/15) 
+   Generating static pages (7/15) 
+   Generating static pages (11/15) 
+ ✓ Generating static pages (15/15)
+   Finalizing page optimization ...
+   Collecting build traces ...
+
+Route (app)                                 Size  First Load JS
+┌ ○ /                                    4.13 kB         116 kB
+├ ○ /_not-found                            995 B         104 kB
+├ ○ /admin                               17.2 kB         131 kB
+├ ○ /admin/preview                       1.94 kB         113 kB
+├ ƒ /api/[...path]                         140 B         103 kB
+├ ƒ /api/eco-nav                           140 B         103 kB
+├ ƒ /api/eco-nav/campaign-image            140 B         103 kB
+├ ƒ /api/eco-nav/campaign-image/launch     140 B         103 kB
+├ ƒ /api/eco-nav/launches                  140 B         103 kB
+├ ƒ /c/[code]                              253 B         115 kB
+├ ƒ /c/[code]/contact                      402 B         115 kB
+├ ○ /work/analytics                      1.34 kB         108 kB
+├ ○ /work/campaigns                      2.09 kB         109 kB
+├ ƒ /work/campaigns/[id]                 4.82 kB         115 kB
+├ ○ /work/materials                      1.63 kB         109 kB
+├ ○ /work/rewards                        2.73 kB         110 kB
+└ ○ /work/stores                         1.68 kB         109 kB
++ First Load JS shared by all             103 kB
+  ├ chunks/255-37e0f0325134c4d7.js       46.4 kB
+  ├ chunks/4bd1b696-c023c6e3521b1417.js  54.2 kB
+  └ other shared chunks (total)          1.93 kB
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
+[env] provisioned tenant tnt_6ceae2fe2309313ce546063b3853b494
+[env] up complete
+
+Running 15 tests using 1 worker
+
+  ✓   1 e2e/specs/01-merchant-first-entry.spec.ts:5:5 › merchant first entry shows today desk with real data (799ms)
+  ✓   2 e2e/specs/02-public-states.spec.ts:8:5 › public page states (675ms)
+  ✓   3 e2e/specs/02-public-states.spec.ts:32:5 › public page loading state while link fetch is pending (395ms)
+  ✓   4 e2e/specs/03-contact-flow.spec.ts:8:5 › contact flow submit then revoke (538ms)
+  ✓   5 e2e/specs/04-reward-unknown.spec.ts:5:5 › unknown reward never shows success green (279ms)
+  ✓   6 e2e/specs/05-no-eco-nav-on-public.spec.ts:5:5 › no eco nav on public page (487ms)
+  ✓   7 e2e/specs/06-a11y-screenshots.spec.ts:39:5 › a11y + screenshots across representative pages (41.0s)
+  ✓   8 e2e/specs/06-a11y-screenshots.spec.ts:83:5 › admin 路由表 Home 页截图（登录视图如实呈现 + 登录后壳） (2.5s)
+  ✓   9 e2e/specs/07-narrow-nav-probe.spec.ts:7:5 › 390 下 EcoTopNav context 单行、无横向溢出、bar 56px (850ms)
+  ✓  10 e2e/specs/07-narrow-nav-probe.spec.ts:28:5 › 1440 下同一探针不受窄修影响 (810ms)
+  ✓  11 e2e/specs/08-blind-family-materials.spec.ts:22:5 › blind family 去品牌截图（1440，商家四页） (3.2s)
+  ✓  12 e2e/specs/09-a11y-evidence.spec.ts:55:5 › a11y 四项证据：keyboard 走查 + focus-visible + reduced-motion + touch-target (2.0s)
+  ✓  13 e2e/specs/10-state-scenarios.spec.ts:16:5 › partial：活动主体加载成功、短码/标签/留资统计单独失败 (571ms)
+  ✓  14 e2e/specs/10-state-scenarios.spec.ts:44:5 › disabled：门店停用 → 工作台标已停用、公共活动页标门店暂不可用（复位还原） (1.2s)
+  ✓  15 e2e/specs/10-state-scenarios.spec.ts:91:5 › offline：公共页真实断网提交报网络异常；路由中止驱动页面级离线态+重试；商家侧 Gate 重试闭环；浏览器边界留档 (1.6s)
+
+  15 passed (58.6s)
+[env] stopped identity pid 21651 (port 18461)
+[env] stopped identity pid 21738 (port 18461)
+[env] stopped web pid 21747 (port 18462)
+[run] playwright exit=0
+[gate] ---- 证据汇总 ----
+[gate] spec 文件数: 10（01-merchant-first-entry.spec.ts, 02-public-states.spec.ts, 03-contact-flow.spec.ts, 04-reward-unknown.spec.ts, 05-no-eco-nav-on-public.spec.ts, 06-a11y-screenshots.spec.ts, 07-narrow-nav-probe.spec.ts, 08-blind-family-materials.spec.ts, 09-a11y-evidence.spec.ts, 10-state-scenarios.spec.ts）
+[gate] 用例数: 15，passed=15，failed=0，skipped=0
+[gate] 验收截图: 48/48 在 evidence/（missing: 无）
+[gate] axe critical+serious: 0
+[gate] ----------------------
+[gate] 证据门通过
+[run] PASS
+E2E_RC=0
