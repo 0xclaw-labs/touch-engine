@@ -58,11 +58,13 @@ const (
 )
 
 // Asset is one selected activity file. Kind "video" is the only kind a
-// video-only fixture can hand off.
+// video-only fixture can hand off. GrantRef is the asset's own authorization
+// reference; the real matrix draft API requires it per asset.
 type Asset struct {
-	ID   string
-	Hash string
-	Kind string
+	ID       string
+	Hash     string
+	Kind     string
+	GrantRef string
 }
 
 // Request is the selected Touch activity plus fields this package refuses to
@@ -92,6 +94,8 @@ type Actor struct {
 }
 
 // TouchActivity is the campaign being handed off. It is not a matrix plan.
+// GrantRef keeps the selected asset's authorization reference with the record
+// so the wire document and the source-side record stay one fact.
 type TouchActivity struct {
 	TenantID    string    `json:"tenant_id"`
 	BrandID     string    `json:"brand_id"`
@@ -100,6 +104,7 @@ type TouchActivity struct {
 	Version     int       `json:"version"`
 	AssetIDs    []string  `json:"asset_ids"`
 	AssetHashes []string  `json:"asset_hashes"`
+	GrantRef    string    `json:"grant_ref,omitempty"`
 	OfferText   string    `json:"offer_text"`
 	OfferExpiry time.Time `json:"offer_expiry"`
 	Disclosure  string    `json:"disclosure"`
