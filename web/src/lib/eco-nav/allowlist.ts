@@ -3,10 +3,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * 允许列表来自已合并的 HUI-2228。
- * nav-manifest.json、sample-manifest.json、goboost-manifest.json 与 public-ai 逐字节相同。
+ * 允许列表来自已合并的 HUI-2228；登记真源自 HUI-2227（残差②）改为 public-ai
+ * production-manifest.json（生产实况，逐字节 vendored，见 registry/SOURCE.txt）。
  * 登记地址只有通过与 econavmanifest.emittable 相同的检查才返回。
- * .invalid、loopback、带端口的登记地址不返回。
+ * .invalid、loopback、带端口的登记地址不返回；生产表没有的行诚实缺失（null）。
  * 测试品牌只能把 ti-product-image-web 指到本机产品图，不能换成任意公网地址。
  */
 
@@ -45,10 +45,7 @@ function indexLaunchTargets(files: RegistryFile[]): Map<string, string> {
   return out;
 }
 
-const registeredTargets = indexLaunchTargets([
-  readRegistry("sample-manifest.json"),
-  readRegistry("goboost-manifest.json"),
-]);
+const registeredTargets = indexLaunchTargets([readRegistry("production-manifest.json")]);
 
 export function emittable(raw: string): boolean {
   let url: URL;
@@ -57,7 +54,10 @@ export function emittable(raw: string): boolean {
   } catch {
     return false;
   }
-  if (url.protocol !== "https:" || url.username || url.password || url.port || url.search || url.hash || url.pathname === "" || url.pathname === "/") {
+  // 与 public-ai internal/econavmanifest emittable 同口径：https、无凭据/端口/
+  // query/fragment、非空路径（根路径 "/" 合法——生产注册表含根路径登记）、
+  // host 非 loopback/invalid。
+  if (url.protocol !== "https:" || url.username || url.password || url.port || url.search || url.hash || url.pathname === "") {
     return false;
   }
   const host = url.hostname.toLowerCase();

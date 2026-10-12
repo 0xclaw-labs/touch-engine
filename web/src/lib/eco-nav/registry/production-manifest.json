@@ -1,0 +1,130 @@
+{
+  "manifest_version": "app-registry/v1",
+  "apps": [
+    {
+      "app_id": "goboost",
+      "display_name": "故事板与画布",
+      "enabled": true,
+      "supported_source_kinds": [
+        "standalone"
+      ],
+      "capabilities": [
+        {
+          "name": "storyboard.plan",
+          "menu_visible": true,
+          "requires_billing": false
+        },
+        {
+          "name": "canvas.create",
+          "menu_visible": true,
+          "requires_billing": false
+        },
+        {
+          "name": "draft.export",
+          "menu_visible": true,
+          "requires_billing": false
+        }
+      ],
+      "launch_targets": [
+        {
+          "target_id": "ti-goboost-web",
+          "kind": "launch",
+          "url": "https://goboost.modelxing.com/projects"
+        }
+      ],
+      "receipt_targets": []
+    },
+    {
+      "app_id": "aicut",
+      "display_name": "AiCut",
+      "enabled": true,
+      "supported_source_kinds": [
+        "standalone"
+      ],
+      "capabilities": [
+        {
+          "name": "aicut.render",
+          "menu_visible": true,
+          "requires_billing": false
+        }
+      ],
+      "launch_targets": [
+        {
+          "target_id": "ti-aicut-web",
+          "kind": "launch",
+          "url": "https://aicut.modelxing.com/"
+        }
+      ],
+      "receipt_targets": []
+    },
+    {
+      "app_id": "dhuman",
+      "display_name": "数海观澜数字人",
+      "enabled": true,
+      "supported_source_kinds": [
+        "standalone"
+      ],
+      "capabilities": [
+        {
+          "name": "dhuman.avatar",
+          "menu_visible": true,
+          "requires_billing": false
+        }
+      ],
+      "launch_targets": [
+        {
+          "target_id": "ti-dhuman-web",
+          "kind": "launch",
+          "url": "https://dhuman.modelxing.com/"
+        }
+      ],
+      "receipt_targets": []
+    },
+    {
+      "app_id": "pilotseaview",
+      "display_name": "星模",
+      "enabled": true,
+      "supported_source_kinds": [
+        "standalone"
+      ],
+      "capabilities": [
+        {
+          "name": "psv.catalog",
+          "menu_visible": true,
+          "requires_billing": false
+        }
+      ],
+      "launch_targets": [
+        {
+          "target_id": "ti-psv-web",
+          "kind": "launch",
+          "url": "https://modelxing.com/"
+        }
+      ],
+      "receipt_targets": []
+    },
+    {
+      "app_id": "agentbuddy",
+      "display_name": "随身搭子",
+      "enabled": true,
+      "supported_source_kinds": [
+        "standalone"
+      ],
+      "capabilities": [
+        {
+          "name": "agentbuddy.assist",
+          "menu_visible": true,
+          "requires_billing": false
+        }
+      ],
+      "launch_targets": [
+        {
+          "target_id": "ti-agentbuddy-web",
+          "kind": "launch",
+          "url": "https://agentbuddy.modelxing.com/"
+        }
+      ],
+      "receipt_targets": []
+    }
+  ]
+}
