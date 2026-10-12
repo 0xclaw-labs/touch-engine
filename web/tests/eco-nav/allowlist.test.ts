@@ -19,6 +19,19 @@ describe("已登记允许列表", () => {
     expect(resolveRegisteredLaunch("ti-product-image-web", {})).toBeNull();
   });
 
+  // HUI-2227 残差②：登记真源=public-ai production-manifest.json（生产实况）。
+  // 生产表没有的行诚实缺失（null），不再引用 PROVISIONAL .invalid 样例。
+  it("登记真源是生产注册表：aicut/dhuman 真实地址可解析，样例行缺失", () => {
+    expect(resolveRegisteredLaunch("ti-aicut-web", {})).toBe("https://aicut.modelxing.com/");
+    expect(resolveRegisteredLaunch("ti-dhuman-web", {})).toBe("https://dhuman.modelxing.com/");
+    expect(resolveRegisteredLaunch("ti-orders-web", {})).toBeNull();
+    expect(resolveRegisteredLaunch("ti-touch-engine-web", {})).toBeNull();
+    expect(resolveRegisteredLaunch("ti-leads-engine-web", {})).toBeNull();
+    expect(resolveRegisteredLaunch("ti-agentbuddy-web", {})).toBe("https://agentbuddy.modelxing.com/");
+    // PROVISIONAL 样例（.example.invalid）永不出现在允许列表
+    expect(JSON.stringify(resolveRegisteredLaunch("ti-touch-engine-web", {})) ?? "").not.toContain("invalid");
+  });
+
   it("GoBoost 只返回登记清单里的地址", () => {
     expect(resolveRegisteredLaunch("ti-goboost-web", {})).toBe("https://goboost.modelxing.com/projects");
   });

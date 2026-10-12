@@ -1,0 +1,15 @@
+upstream: bianjiefilm/public-ai
+path: docs/contracts/app-registry/v1/production-manifest.json
+pin: 15573a95 (blob, origin/main @ f9bf404c, 2026-10-12)
+tree: -
+status: VENDORED
+
+HUI-2227 残差②：登记真源从 PROVISIONAL sample-manifest.json（.example.invalid）
+换为 public-ai 生产注册表实况（goboost / aicut / dhuman / pilotseaview /
+agentbuddy，URL 来自生产 nginx 实况盘点）。本文件与 public-ai 逐字节相同
+（git blob 15573a95 对拍一致），只能整体替换，不得手改。
+
+同目录 nav-manifest.json / sample-manifest.json / goboost-manifest.json 为
+HUI-2228 时代的 pin 快照（历史溯源）；allowlist.ts 的登记索引只读
+production-manifest.json。生产表没有的行诚实缺失（resolveRegisteredLaunch
+返回 null），不得回填样例 .invalid 地址。
