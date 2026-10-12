@@ -9,7 +9,8 @@ HUI-2227 残差②：登记真源从 PROVISIONAL sample-manifest.json（.example
 agentbuddy，URL 来自生产 nginx 实况盘点）。本文件与 public-ai 逐字节相同
 （git blob 15573a95 对拍一致），只能整体替换，不得手改。
 
-同目录 nav-manifest.json / sample-manifest.json / goboost-manifest.json 为
-HUI-2228 时代的 pin 快照（历史溯源）；allowlist.ts 的登记索引只读
-production-manifest.json。生产表没有的行诚实缺失（resolveRegisteredLaunch
-返回 null），不得回填样例 .invalid 地址。
+同目录旧 nav-manifest.json / sample-manifest.json / goboost-manifest.json
+（HUI-2228 时代的 pin 快照，HUI-2227 起零消费）已删除：导航行来自运行时
+端点（PUBLIC_AI_ECO_NAV_URL），登记真源只有本文件。allowlist.ts 的登记
+索引只读 production-manifest.json。生产表没有的行诚实缺失
+（resolveRegisteredLaunch 返回 null），不得回填样例 .invalid 地址。
