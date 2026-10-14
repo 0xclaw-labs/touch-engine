@@ -22,3 +22,22 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_reward_operations_dedup
     ON reward_operations(tenant_id, dedup_key) WHERE dedup_key <> '';
 CREATE INDEX IF NOT EXISTS idx_reward_operations_benefit
     ON reward_operations(benefit_id, created_at);
+
+-- 官方发布事实(仅官方模式奖励的锚点)。0010 把 customer_publish_attempts 的
+-- 回执字段锁死为空(本部署渠道无法证明发布成功),所以官方事实只能落在
+-- reward 域自己的审计表里:由受信官方查询集成写入(今天不存在,故为零行,
+-- 仅官方活动诚实地等待);客户端口头的回执永不入表。attempt_id 只引用
+-- 本租户本活动真实存在的发布尝试行。UNIQUE 保证一个尝试最多被采信一次。
+CREATE TABLE IF NOT EXISTS reward_official_facts (
+    id               TEXT PRIMARY KEY,
+    tenant_id        TEXT NOT NULL REFERENCES tenants(id),
+    campaign_id      TEXT NOT NULL REFERENCES campaigns(id),
+    attempt_id       TEXT NOT NULL REFERENCES customer_publish_attempts(id),
+    platform         TEXT NOT NULL,
+    platform_post_id TEXT NOT NULL,
+    receipt_source   TEXT NOT NULL CHECK (receipt_source = 'official_query'),
+    consumed_by      TEXT NOT NULL DEFAULT '',
+    created_by       TEXT NOT NULL DEFAULT '',
+    created_at       TEXT NOT NULL,
+    UNIQUE (tenant_id, campaign_id, attempt_id)
+);
