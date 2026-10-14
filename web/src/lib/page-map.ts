@@ -65,6 +65,8 @@ const recorded: readonly { route: string; id: PatternId; regions: readonly strin
   { route: "/work/campaigns/[id]", id: "detail", regions: ["primary_action", "status", "empty"] },
   { route: "/work/materials", id: "list", regions: ["primary_action", "status", "empty"] },
   { route: "/work/rewards", id: "billing", regions: ["primary_action", "status", "empty"] },
+  // HUI-3562 店员确认与核销台:确认/核销是复核动作,记 review 模式。
+  { route: "/work/service", id: "review", regions: ["primary_action", "status", "empty"] },
   { route: "/work/analytics", id: "workspace", regions: ["primary_action", "status", "empty"] },
   { route: "/c/[code]", id: "public_consumer", regions: ["primary_action", "status", "empty"] },
   { route: "/c/[code]/contact", id: "public_consumer", regions: ["primary_action", "status", "empty"] },

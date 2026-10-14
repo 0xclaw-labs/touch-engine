@@ -33,7 +33,7 @@ describe("账上路由恰好一条普查", () => {
   it("和账本同一组路由，一条不多一条不少", () => {
     const ledger = pageLedger().map((page) => page.route);
     const census = pageCensus();
-    expect(ledger).toHaveLength(11);
+    expect(ledger).toHaveLength(12); // HUI-3562: /work/service 店员台入账
     expect(census.map((page) => page.route)).toEqual(ledger);
     expect(new Set(census.map((page) => page.route)).size).toBe(census.length);
     expect(census.some((page) => page.route === "/login" || page.route.startsWith("/api"))).toBe(false);
@@ -109,11 +109,12 @@ describe("surface 归类", () => {
       ["/work/campaigns/[id]", "work"],
       ["/work/materials", "work"],
       ["/work/rewards", "work"],
+      ["/work/service", "work"],
       ["/work/analytics", "work"],
       ["/c/[code]", "public"],
       ["/c/[code]/contact", "public"],
     ]);
-    expect(want.size).toBe(11);
+    expect(want.size).toBe(12); // HUI-3562: /work/service 店员台入账
     for (const page of pageCensus()) {
       expect(page.surface).toBe(classifySurface(page.route, page.id));
       expect(page.surface).toBe(want.get(page.route));
@@ -220,6 +221,8 @@ describe("半成品标记", () => {
       ["/work/materials", ["raw button", "raw input"]],
       // HUI-2628 r3：错误态补「重试」钮后各记 1 个 raw button（与 page-census.ts 账本同步）。
       ["/work/rewards", ["raw button", "raw input"]],
+      // HUI-3562：店员台页面是薄壳，交互全部在组件里，页面源零标记。
+      ["/work/service", []],
       ["/work/analytics", ["raw button"]],
       ["/c/[code]", []],
       ["/c/[code]/contact", []],

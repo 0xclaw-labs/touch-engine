@@ -58,6 +58,8 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"private_domain_entries",
 		"public_view_stats",
 		"publish_adapter_notes",
+		"publish_handoff_events",
+		"publish_handoffs",
 		"publish_reward_ledger",
 		"publish_reward_proofs",
 		"publish_reward_rules",

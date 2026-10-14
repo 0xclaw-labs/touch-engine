@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/bianjiefilm/touch-engine/server/internal/authz"
+	"github.com/bianjiefilm/touch-engine/server/internal/participation"
 	"github.com/bianjiefilm/touch-engine/server/internal/rewardops"
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
 )
@@ -47,6 +48,8 @@ func (s *Server) registerRewardOpsRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/v1/campaigns/{id}/reward-inventory", s.requireSession(s.handleRewardInventoryCreate))
 	mux.Handle("POST /api/v1/campaigns/{id}/reward-inventory/{invId}/status", s.requireSession(s.handleRewardInventoryStatus))
 	mux.Handle("GET /api/v1/campaigns/{id}/reward-benefits", s.requireSession(s.handleRewardBenefitsList))
+	// HUI-3562 店员台:扫券码定位核销卡(只读;核销仍走 redeem)。
+	mux.Handle("GET /api/v1/reward-benefits/by-code", s.requireSession(s.handleRewardBenefitByCode))
 	mux.Handle("GET /api/v1/campaigns/{id}/reward-review-requests", s.requireSession(s.handleRewardReviewRequests))
 	mux.Handle("POST /api/v1/campaigns/{id}/reward-confirm", s.requireSession(s.handleRewardConfirm))
 	mux.Handle("POST /api/v1/campaigns/{id}/reward-benefits/{benefitId}/redeem", s.requireSession(s.handleRewardRedeem))
@@ -231,6 +234,32 @@ func (s *Server) handleRewardBenefitsList(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+// handleRewardBenefitByCode (HUI-3562 店员台): 扫券码定位核销卡。租户内按码
+// 定位,权益行自己的门店做 read_record 作用域鉴权——错店店员对跨店券得到
+// 404 掩蔽(跨店记录不可见)。只读定位;核销仍走 redeem 端点(1671 单事务)。
+func (s *Server) handleRewardBenefitByCode(w http.ResponseWriter, r *http.Request) {
+	c := callerFrom(r)
+	if c == nil || c.Member == nil {
+		fail(w, http.StatusUnauthorized, "unauthenticated", "sign in required")
+		return
+	}
+	code := r.URL.Query().Get("code")
+	if strings.TrimSpace(code) == "" {
+		fail(w, http.StatusBadRequest, "bad_request", "code is required")
+		return
+	}
+	ben, err := s.St.GetRewardBenefitByCode(c.Member.TenantID, code)
+	if err != nil {
+		rewardError(w, err)
+		return
+	}
+	if !s.requireScopedAction(c, authz.ActionReadRecord,
+		authz.RecordScope{TenantID: c.Member.TenantID, StoreID: ben.StoreID}, true, w) {
+		return
+	}
+	writeJSON(w, http.StatusOK, ben)
+}
+
 func (s *Server) handleRewardReviewRequests(w http.ResponseWriter, r *http.Request) {
 	c := callerFrom(r)
 	camp, ok := s.campaignScoped(c, r.PathValue("id"), authz.ActionReadList, w)
@@ -281,6 +310,29 @@ func (s *Server) handleRewardConfirm(w http.ResponseWriter, r *http.Request) {
 	if !decision.Allowed {
 		fail(w, http.StatusForbidden, decision.Reason, "not allowed to confirm rewards")
 		return
+	}
+	// HUI-3562 店员台硬化:参与域上线的部署(FEATURE_PARTICIPATION on)里,
+	// 确认必须绑定本租户「真实存在」的参与(店员作用域内),且确认门店与
+	// 参与门店一致——编造参与引用/跨店确认在此拒绝,不进账本。off 部署
+	// (参与域未上线的存量商家)保持 1671 原语义,零行为变化。
+	if s.Cfg.FeatureParticipation && s.Participation != nil {
+		p, err := s.Participation.GetForStaff(r.Context(), body.ParticipationID, participation.StaffView{
+			TenantID: camp.TenantID, Role: string(c.Member.Role), StoreScope: c.Member.StoreScope,
+			Revoked: !c.Member.Enabled,
+		})
+		if err != nil {
+			writeParticipationError(w, err)
+			return
+		}
+		if p.Window.Expired(time.Now().UTC()) {
+			// 过期参与:窗口已关闭,不再发新承诺(读取仍允许顾客查看)。
+			writeParticipationError(w, participation.ErrFrozen)
+			return
+		}
+		if strings.TrimSpace(body.StoreID) != p.StoreID {
+			fail(w, http.StatusForbidden, "target_mismatch", "确认门店必须与参与门店一致。")
+			return
+		}
 	}
 	ben, outcome, err := s.St.ConfirmRewardBenefit(store.RewardConfirmInput{
 		TenantID: camp.TenantID, CampaignID: camp.ID,
