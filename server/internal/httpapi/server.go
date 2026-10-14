@@ -36,6 +36,7 @@ import (
 	"github.com/bianjiefilm/touch-engine/server/internal/leads"
 	"github.com/bianjiefilm/touch-engine/server/internal/matrixconsume"
 	"github.com/bianjiefilm/touch-engine/server/internal/participation"
+	"github.com/bianjiefilm/touch-engine/server/internal/publishhandoff"
 	"github.com/bianjiefilm/touch-engine/server/internal/readcache"
 	"github.com/bianjiefilm/touch-engine/server/internal/redact"
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
@@ -94,6 +95,12 @@ type Server struct {
 	// domain (HUI-1671) lands: reservations then remain pending and the
 	// customer is never told 已保留.
 	Participation *participation.Service
+
+	// PublishHandoff (HUI-1670) owns the publish handoff state machine and
+	// evidence events. Constructed always; its routes register only under
+	// FEATURE_PUBLISH_HANDOFF. Without a receipt secret the verifier refuses
+	// everything (NOT_VERIFIED residual) — honest by construction.
+	PublishHandoff *publishhandoff.Service
 }
 
 // Frozen cache budgets (HUI-2981 comparison report §2.1 — do not tune without
@@ -149,6 +156,14 @@ func New(cfg config.Config, database *sql.DB, idc *identity.Client, upc *upload.
 			Epoch: st.Epoch,
 		}),
 		Participation: participation.New(database, nil, participation.Options{}),
+		PublishHandoff: publishhandoff.New(database, publishhandoff.Options{
+			MediaSecret:      cfg.InternalToken,
+			MediaBaseURL:     cfg.PublishHandoffMediaBaseURL,
+			ReceiptVerifier:  publishhandoff.NewHMACVerifier(cfg.PublishHandoffReceiptSecret),
+			AppRef:           cfg.PublishHandoffAppRef,
+			H5EntryBase:      cfg.PublishHandoffH5EntryBase,
+			MiniappEntryBase: cfg.PublishHandoffMiniappEntryBase,
+		}),
 	}
 }
 
@@ -563,6 +578,23 @@ func (s *Server) Handler() http.Handler {
 	if s.Cfg.FeatureChannelAdmission {
 		mux.Handle("GET /api/v1/channel-admissions", s.requireSession(s.handleChannelAdmissionList))
 		mux.Handle("GET /api/v1/public/links/{code}/channel-admission", http.HandlerFunc(s.handlePublicChannelAdmission))
+	}
+
+	// publish handoff (HUI-1670 顾客发布交接): 登记制开关 FEATURE_PUBLISH_HANDOFF
+	// (默认 off;off = 路由不注册 + handler gate 再答统一 404 —— 双保险同款)。
+	// on = 顾客面(过 3535 闸 + contentpack 受控媒体 + 九态证据状态机)、店员
+	// 人工事实面(requireSession + authz 门店作用域;永不转官方)与官方回执
+	// 回调(服务端验签+五绑定+重放去重;密钥未配置一律拒绝 = NOT_VERIFIED)。
+	// 路由集中在 publish-handoff / publish-receipts 前缀(BFF catch-all 透传)。
+	if s.Cfg.FeaturePublishHandoff {
+		mux.Handle("GET /api/v1/public/links/{code}/publish-handoff/routes", http.HandlerFunc(s.handlePublicPublishHandoffRoutes))
+		mux.Handle("POST /api/v1/public/links/{code}/publish-handoff", http.HandlerFunc(s.handlePublicPublishHandoffStart))
+		mux.Handle("GET /api/v1/public/links/{code}/publish-handoff/{id}", http.HandlerFunc(s.handlePublicPublishHandoffGet))
+		mux.Handle("POST /api/v1/public/links/{code}/publish-handoff/{id}/cancel", http.HandlerFunc(s.handlePublicPublishHandoffCancel))
+		mux.Handle("POST /api/v1/public/links/{code}/publish-handoff/{id}/done", http.HandlerFunc(s.handlePublicPublishHandoffDone))
+		mux.Handle("POST /api/v1/public/links/{code}/publish-handoff/{id}/editor-opened", http.HandlerFunc(s.handlePublicPublishHandoffEditorOpened))
+		mux.Handle("POST /api/v1/public/publish-receipts/{id}", http.HandlerFunc(s.handlePublicPublishReceipt))
+		mux.Handle("POST /api/v1/publish-handoffs/{id}/staff-events", s.requireSession(s.handlePublishHandoffStaffEvent))
 	}
 
 	return s.withRequestLog(mux)
