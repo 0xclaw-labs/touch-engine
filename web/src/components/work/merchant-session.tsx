@@ -12,6 +12,7 @@ import {
   writeTenantMemory,
   type MembershipScope,
 } from "@/lib/workspace-tenant";
+import type { SessionFeatures } from "@/lib/work/service-desk";
 
 export interface MerchantResult {
   ok: boolean;
@@ -19,11 +20,22 @@ export interface MerchantResult {
   data: Record<string, unknown>;
 }
 
+// HUI-2222：feature 开关由 whoami 下发（features.service_desk）。
+// 缺省一律按 off 处理，不猜测服务端未声明的能力。
+const NO_FEATURES: { serviceDesk: boolean } = { serviceDesk: false };
+
+function parseFeatures(data: Record<string, unknown>): { serviceDesk: boolean } {
+  const features = data.features;
+  if (!features || typeof features !== "object") return NO_FEATURES;
+  return { serviceDesk: (features as Record<string, unknown>).serviceDesk === true };
+}
+
 export interface MerchantSession {
   tenantId: string;
   role: string;
   email: string;
   tenantName: string;
+  features: SessionFeatures;
   phase: "loading" | "anonymous" | "choose" | "none" | "ready" | "error";
   error: string;
   options: MembershipScope[];
@@ -138,6 +150,7 @@ function useMerchantSession(): MerchantSession {
   const [role, setRole] = useState("");
   const [email, setEmail] = useState("");
   const [tenantName, setTenantName] = useState("");
+  const [features, setFeatures] = useState<SessionFeatures>(NO_FEATURES);
   const [phase, setPhase] = useState<MerchantSession["phase"]>("loading");
   const [error, setError] = useState("");
   const [options, setOptions] = useState<MembershipScope[]>([]);
@@ -172,6 +185,7 @@ function useMerchantSession(): MerchantSession {
       setRole("");
       setTenantId("");
       setTenantName("");
+      setFeatures(NO_FEATURES);
       setError("没有读到当前组织。没有沿用上一户的数据。");
       setPhase("error");
       return;
@@ -180,6 +194,7 @@ function useMerchantSession(): MerchantSession {
     setEmail(typeof data.email === "string" ? data.email : "");
     setTenantName(typeof data.tenant_name === "string" && data.tenant_name ? data.tenant_name : displayName);
     setTenantId(nextTenant);
+    setFeatures(parseFeatures(data));
     setError("");
     setPhase("ready");
   }, []);
@@ -196,6 +211,7 @@ function useMerchantSession(): MerchantSession {
     setTenantId("");
     setRole("");
     setTenantName("");
+    setFeatures(NO_FEATURES);
     setPhase(resolved.status === "choose" ? "choose" : "none");
   }, [confirmTenant]);
 
@@ -254,6 +270,7 @@ function useMerchantSession(): MerchantSession {
     await fetch("/api/auth/logout", { method: "POST" });
     setRole("");
     setEmail("");
+    setFeatures(NO_FEATURES);
     setPhase("anonymous");
   }, []);
 
@@ -265,6 +282,7 @@ function useMerchantSession(): MerchantSession {
     setTenantId("");
     setRole("");
     setTenantName("");
+    setFeatures(NO_FEATURES);
     setPhase("loading");
     void confirmTenant(seq, hit.tenant_id, hit.display_name, items).catch(() => {
       if (seq !== currentTenantOp()) return;
@@ -272,6 +290,7 @@ function useMerchantSession(): MerchantSession {
       setError("切换后没有读到身份。没有沿用上一户的数据。");
       setRole("");
       setTenantId("");
+      setFeatures(NO_FEATURES);
       setPhase("error");
     });
   }, [confirmTenant, options]);
@@ -281,6 +300,7 @@ function useMerchantSession(): MerchantSession {
     role,
     email,
     tenantName,
+    features,
     phase,
     error,
     options,
@@ -289,7 +309,7 @@ function useMerchantSession(): MerchantSession {
     switchTenant,
     api,
     retryConnection,
-  }), [api, email, error, login, logout, options, phase, retryConnection, role, switchTenant, tenantId, tenantName]);
+  }), [api, email, error, features, login, logout, options, phase, retryConnection, role, switchTenant, tenantId, tenantName]);
 }
 
 export { failureText };

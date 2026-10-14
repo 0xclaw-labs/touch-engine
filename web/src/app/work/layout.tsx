@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { AdminShell } from "@/components/admin/AdminShell";
 import { MerchantGate, useSession } from "@/components/work/merchant-session";
 import { WorkFrame } from "@/components/work/work-frame";
+import { serviceDeskEntryVisible } from "@/lib/work/service-desk";
 
 export default function WorkLayout({ children }: { children: ReactNode }) {
   return (
@@ -24,7 +25,13 @@ function WorkShell({ children }: { children: ReactNode }) {
       onLogout={() => void session.logout()}
       onTenantChange={session.switchTenant}
     >
-      <WorkFrame tenantName={session.tenantName}>{children}</WorkFrame>
+      {/* HUI-2222：确认与核销入口由开关+角色决定，判定收口在 lib/work/service-desk */}
+      <WorkFrame
+        tenantName={session.tenantName}
+        serviceDesk={serviceDeskEntryVisible(session.features, session.role)}
+      >
+        {children}
+      </WorkFrame>
     </AdminShell>
   );
 }
