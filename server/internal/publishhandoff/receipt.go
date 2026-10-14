@@ -27,16 +27,16 @@ const (
 
 // Receipt is the verified-shape of an official platform callback.
 type Receipt struct {
-	ReceiptID      string    // 平台回执唯一 ID(重放去重键)
-	Platform       string
-	AppRef         string    // 官方 app 身份(错 app 拒绝)
-	TenantID       string    // 租户绑定
-	ParticipationID string   // 参与绑定
-	AttemptID      string    // 尝试绑定
-	ContentVersion string    // 内容版本绑定(换稿后旧回执不认)
-	PostID         string
-	Outcome        string    // published | other
-	SignedAt       time.Time
+	ReceiptID       string // 平台回执唯一 ID(重放去重键)
+	Platform        string
+	AppRef          string // 官方 app 身份(错 app 拒绝)
+	TenantID        string // 租户绑定
+	ParticipationID string // 参与绑定
+	AttemptID       string // 尝试绑定
+	ContentVersion  string // 内容版本绑定(换稿后旧回执不认)
+	PostID          string
+	Outcome         string // published | other
+	SignedAt        time.Time
 }
 
 // ReceiptWire is what arrives on the wire: payload + signature.

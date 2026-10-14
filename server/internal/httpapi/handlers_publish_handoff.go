@@ -9,7 +9,7 @@
 //     channeladmission.Gate(服务端单点,前端隐藏按钮不算数);换稿/换平台
 //     =新 attempt+重新确认,不静默换内容;
 //   - 店员事实面(/api/v1/publish-handoffs/{id}/staff-events)走 requireSession
-//     + authz 门店作用域:只记录人工事实(见提交/核对作品),永不转官方;
+//   - authz 门店作用域:只记录人工事实(见提交/核对作品),永不转官方;
 //   - 官方回执回调(/api/v1/public/publish-receipts/{id})服务端验签+五绑定
 //     +重放去重;生产密钥未配置时验签一律拒绝(NOT_VERIFIED 残差);
 //   - 白名单响应:内部 token/密钥/幂等键原文不出现在任何响应;凭据明文只在
@@ -51,8 +51,8 @@ func (s *Server) publishRecordOrUnknown(platform, entryMode, scenario, tenantID 
 	}
 	return channeladmission.Record{
 		Platform: platform, EntryMode: entryMode, Scenario: scenario,
-		Status:   channeladmission.StatusUnknown,
-		Missing:  []string{"该平台/入口/场景的官方准入核验记录"},
+		Status:  channeladmission.StatusUnknown,
+		Missing: []string{"该平台/入口/场景的官方准入核验记录"},
 	}
 }
 
@@ -163,9 +163,9 @@ func (s *Server) handlePublicPublishHandoffRoutes(w http.ResponseWriter, r *http
 		}
 		p := publishhandoff.PlanRoute(publishhandoff.PlanInput{
 			TenantID: tenantID, Platform: platform, EntryMode: rec.EntryMode, Scenario: scenario,
-			Now:             time.Now().UTC(),
-			DeepLinkBase:    s.Cfg.PublishHandoffH5EntryBase,
-			MiniappBase:     s.Cfg.PublishHandoffMiniappEntryBase,
+			Now:          time.Now().UTC(),
+			DeepLinkBase: s.Cfg.PublishHandoffH5EntryBase,
+			MiniappBase:  s.Cfg.PublishHandoffMiniappEntryBase,
 		}, rec)
 		plans = append(plans, map[string]any{
 			"entry_mode": rec.EntryMode, "scenario": rec.Scenario, "plan": planView(p),
@@ -208,7 +208,7 @@ func (s *Server) handlePublicPublishHandoffRoutes(w http.ResponseWriter, r *http
 		out["snapshot"] = map[string]any{
 			"pack_id": v.PackID, "version_id": v.ID, "content_kind": string(v.ContentKind),
 			"title": text.Title, "body": text.Body, "topics": text.Topics,
-			"store_name": text.StoreName,
+			"store_name":      text.StoreName,
 			"content_version": publishhandoff.ContentFingerprint(text, media),
 		}
 	}
@@ -269,7 +269,7 @@ func (s *Server) handlePublicPublishHandoffStart(w http.ResponseWriter, r *http.
 	record := s.publishRecordOrUnknown(body.Platform, entryMode, body.Scenario, tenantID)
 	if plan := publishhandoff.PlanRoute(publishhandoff.PlanInput{
 		TenantID: tenantID, Platform: body.Platform, EntryMode: entryMode, Scenario: body.Scenario,
-		Now:         time.Now().UTC(),
+		Now:          time.Now().UTC(),
 		DeepLinkBase: s.Cfg.PublishHandoffH5EntryBase, MiniappBase: s.Cfg.PublishHandoffMiniappEntryBase,
 	}, record); plan.Kind == publishhandoff.PlanRefused {
 		s.writePublishHandoffError(w, &publishhandoff.HandoffRefusedError{

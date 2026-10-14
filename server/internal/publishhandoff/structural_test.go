@@ -16,10 +16,10 @@ func TestPackageHasNoOutboundOrGenerationSurface(t *testing.T) {
 		t.Fatalf("read package dir: %v", err)
 	}
 	forbiddenImports := []string{
-		"net/http",     // 零平台外呼
-		"net/smtp",     // 零通知外呼
-		"os/exec",      // 零子进程(无模拟器/群控)
-		"copyjob",      // 零付费生成
+		"net/http",      // 零平台外呼
+		"net/smtp",      // 零通知外呼
+		"os/exec",       // 零子进程(无模拟器/群控)
+		"copyjob",       // 零付费生成
 		"publishreward", // 零奖励写账(事实只落事件,消费归 1671)
 		"rewardrule",
 		"rewardops",
