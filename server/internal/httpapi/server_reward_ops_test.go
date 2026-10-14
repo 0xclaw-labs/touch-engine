@@ -12,8 +12,8 @@ import (
 	"testing"
 
 	"github.com/bianjiefilm/touch-engine/server/internal/campaign"
-	"github.com/bianjiefilm/touch-engine/server/internal/custpublish"
 	"github.com/bianjiefilm/touch-engine/server/internal/config"
+	"github.com/bianjiefilm/touch-engine/server/internal/custpublish"
 	"github.com/bianjiefilm/touch-engine/server/internal/db"
 	"github.com/bianjiefilm/touch-engine/server/internal/identity"
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
@@ -190,8 +190,8 @@ func TestRewardInventoryAdminSurface(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("staff list inventory: %d", code)
 	}
-	body := fmt.Sprintf(`{"kind":"store_coupon","name":"加赠券","benefit_slot":"second_publish",`+
-		`"rule_version":1,"allowed_evidence":["staff_observed_submission"],"total_qty":5,`+
+	body := fmt.Sprintf(`{"kind":"store_coupon","name":"加赠券","benefit_slot":"second_publish",` +
+		`"rule_version":1,"allowed_evidence":["staff_observed_submission"],"total_qty":5,` +
 		`"face_value_minor":100,"cost_minor":50,"currency":"FEN"}`)
 	code, out = f.doR(t, "POST", "/api/v1/campaigns/"+f.campaignA+"/reward-inventory", "sess-staff-a", body)
 	if code != 403 {
@@ -401,8 +401,8 @@ func TestRewardReverseMatrix(t *testing.T) {
 func TestRewardOfficialOnlyOverHTTP(t *testing.T) {
 	f := rewardHTTPFixture(t, false)
 	// An official-only gift batch.
-	body := fmt.Sprintf(`{"kind":"gift_discount","name":"官方礼","benefit_slot":"official_gift",`+
-		`"rule_version":1,"allowed_evidence":["official_publish_confirmed"],"total_qty":5,`+
+	body := fmt.Sprintf(`{"kind":"gift_discount","name":"官方礼","benefit_slot":"official_gift",` +
+		`"rule_version":1,"allowed_evidence":["official_publish_confirmed"],"total_qty":5,` +
 		`"face_value_minor":0,"cost_minor":200,"currency":"FEN"}`)
 	code, out := f.doR(t, "POST", "/api/v1/campaigns/"+f.campaignA+"/reward-inventory", "sess-owner-a", body)
 	mustCode(t, code, 200, out)
