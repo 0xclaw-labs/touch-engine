@@ -21,3 +21,24 @@ CREATE TABLE IF NOT EXISTS content_pack_adoptions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_cpa_campaign ON content_pack_adoptions(tenant_id, campaign_id, platform);
+
+-- 制作交接 brief:「帮我制作」入口收集的活动目的/门店资料/选定素材/期望形式。
+-- 纪律:本票未接真实制作引擎 —— brief 只落库去重(同一交接重试不新建制作
+-- 工程:幂等键非空时租户内唯一,同键重放=返回既有行),引擎接线与扣费归
+-- HUI-1745 与后续联调;brief 行不含文件字节,素材以 lib_assets 引用表达。
+CREATE TABLE IF NOT EXISTS content_handoffs (
+    id              TEXT PRIMARY KEY,
+    tenant_id       TEXT NOT NULL REFERENCES tenants(id),
+    campaign_id     TEXT NOT NULL REFERENCES campaigns(id),
+    purpose         TEXT NOT NULL,
+    store_brief     TEXT NOT NULL DEFAULT '',
+    desired_form    TEXT NOT NULL DEFAULT '',
+    asset_ids       TEXT NOT NULL DEFAULT '[]',
+    idempotency_key TEXT,
+    created_by      TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_content_handoffs_idem ON content_handoffs(tenant_id, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_content_handoffs_campaign ON content_handoffs(tenant_id, campaign_id, created_at);
