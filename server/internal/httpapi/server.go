@@ -425,6 +425,17 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("PUT /api/v1/campaigns/{id}/rules", s.requireSession(s.handleCampaignRulesPut))
 		mux.Handle("DELETE /api/v1/campaigns/{id}/rules", s.requireSession(s.handleCampaignRulesDelete))
 		mux.Handle("GET /api/v1/campaigns/{id}/rules/revisions", s.requireSession(s.handleCampaignRulesRevisions))
+
+		// publish config (HUI-1676 增量): 商家配置与真实启用 —— 同一开关、
+		// 同一授权(manage_campaign_rules)。启用前检查在服务端单点完成
+		// (campaignenable.Check),拒绝带机器原因码;暂停只动配置行,
+		// 参与/奖励零触碰。
+		mux.Handle("GET /api/v1/campaigns/{id}/publish-config", s.requireSession(s.handlePublishConfigGet))
+		mux.Handle("PUT /api/v1/campaigns/{id}/publish-config", s.requireSession(s.handlePublishConfigPut))
+		mux.Handle("POST /api/v1/campaigns/{id}/publish-config/enable", s.requireSession(s.handlePublishConfigEnable))
+		mux.Handle("POST /api/v1/campaigns/{id}/publish-config/pause", s.requireSession(s.handlePublishConfigPause))
+		mux.Handle("GET /api/v1/campaigns/{id}/publish-config/snapshot", s.requireSession(s.handlePublishConfigSnapshot))
+		mux.Handle("GET /api/v1/campaigns/{id}/publish-config/revisions", s.requireSession(s.handlePublishConfigRevisions))
 	}
 
 	// asset library (HUI-1666 FEAT-0167 商家素材库 v1): 登记制开关

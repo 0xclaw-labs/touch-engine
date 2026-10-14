@@ -212,6 +212,9 @@ func ValidateSpec(s Spec) error {
 	if s.PerOrderLimit && s.DedupBasis != BasisReceipt {
 		return fmt.Errorf("campaignenable: per_order_limit requires the verifiable_receipt judgment basis")
 	}
+	if len(s.Reward.StoreIDs) == 0 {
+		return fmt.Errorf("campaignenable: at least one applicable store is required")
+	}
 	if len(s.Channels) == 0 {
 		return fmt.Errorf("campaignenable: at least one publish route must be selected")
 	}
