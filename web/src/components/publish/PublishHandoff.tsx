@@ -119,8 +119,23 @@ export function PublishHandoff({ code }: { code: string }) {
   );
 
   // 参与记录:同一浏览器同一活动复用同一幂等键(重放回原记录)。
+  // HUI-1896 三屏集成:顾客可能已在本页经「选择内容并参与」建了参与
+  // (3546 只按幂等键去重,不按访客去重)——先 lookup 复用自身未完参与,
+  // 查不到再创建,避免同一访客出现两条参与、两份预留。
   const ensureParticipation = useCallback(async (): Promise<string | null> => {
     if (participation.current) return participation.current.id;
+    const lookup = await fetch("/api/participations/lookup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ link_code: code }),
+    });
+    if (lookup.ok) {
+      const existing = await lookup.json().catch(() => null);
+      if (existing?.id && existing?.status !== "canceled" && existing?.status !== "fulfilled") {
+        participation.current = { id: existing.id as string, idempotencyKey: "reused" };
+        return existing.id as string;
+      }
+    }
     if (!idemKey.current) idemKey.current = "ph-web-" + crypto.randomUUID();
     const res = await fetch("/api/participations", {
       method: "POST",

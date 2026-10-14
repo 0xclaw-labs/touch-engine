@@ -503,6 +503,11 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
       <section key="value" data-testid="store-value">
         <p className="tk-public-value">{view?.public_content || "请按门店现场说明参与这次活动。"}</p>
         <p className="tk-note">碰一下、扫码或看视频只是打开这个活动，不会自动留下联系方式。</p>
+        {(view?.starts_at || view?.ends_at) && (
+          <p className="tk-note">
+            活动时间:{view?.starts_at || "即日起"} ~ {view?.ends_at || "长期"}
+          </p>
+        )}
         {storeNoticeText(view?.store_notice) && (
           <p className="tk-warn">{storeNoticeText(view?.store_notice)}</p>
         )}
@@ -510,15 +515,8 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
     ) : null,
     actions: showActivity && lane === "activity" ? (
       <section key="actions" data-testid="activity-actions">
-        {/* 屏1:活动与优惠(先说明后操作;浏览不建参与) */}
+        {/* 屏1 结构化面板:权益/动作/核验/限额/条件(基线门店头与说明区承载其余) */}
         <ActivityIntro
-          merchantName={merchantLabel}
-          storeName={view?.store_name}
-          title={view?.title ?? ""}
-          summary={view?.public_content}
-          startsAt={view?.starts_at}
-          endsAt={view?.ends_at}
-          storeNotice={storeNoticeText(view?.store_notice)}
           evidenceKinds={evidenceKinds}
           availableQty={stockQty}
           benefitReservationState={participation?.benefit_reservation_state}

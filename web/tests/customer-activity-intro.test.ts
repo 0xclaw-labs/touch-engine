@@ -3,9 +3,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-// HUI-1896 T3 屏1「活动与优惠」:源码级断言(node 无 DOM)。
-// 红线:先说明后操作;主动作按实际写「选择内容并参与」;未达标不写已领取;
-// 无生态导航/不推销派诺工具/不要求安装搭子/不建商家账号;浏览不建参与。
+// HUI-1896 T3 屏1「活动与优惠」结构化面板:源码级断言(node 无 DOM)。
+// 红线:面板只承载结构化权益/动作/核验/限额/领取条件与主动作,不复制
+// 既有门店头与活动说明区(基线区块保持原样);主动作按实际写
+// 「选择内容并参与」;未达标不写已领取;无生态导航/推销/搭子/商家账号;
+// 浏览不建参与。
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const src = (p: string) => readFileSync(path.join(root, "..", "src", p), "utf8");
@@ -20,15 +22,15 @@ function codeOf(source: string): string {
 
 const component = codeOf(src("components/customer/ActivityIntro.tsx"));
 
-describe("屏1 结构:先说明后操作", () => {
+describe("屏1 面板:不复制基线区块", () => {
   it("有 data-testid=activity-intro 分区", () => {
     expect(component.includes('data-testid="activity-intro"')).toBe(true);
   });
 
-  it("展示商家/门店/活动说明/活动时间占位字段", () => {
-    expect(component.includes("merchantName")).toBe(true);
-    expect(component.includes("storeName")).toBe(true);
-    expect(component.includes("summary")).toBe(true);
+  it("不接收 merchantName/title/summary 等基线字段(门店头与活动说明只渲染一次)", () => {
+    for (const dup of ["merchantName", "storeName", "summary", "startsAt", "endsAt", "storeNotice"]) {
+      expect(component.includes(dup)).toBe(false);
+    }
   });
 
   it("核验方式三态走 evidenceStepCopy 唯一出口", () => {

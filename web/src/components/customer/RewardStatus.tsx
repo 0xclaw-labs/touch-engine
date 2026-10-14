@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { isSafeQrPayload, statusLabel } from "@/lib/participation";
 import {
+  exceptionCopy,
   resumeCredential,
   staffFulfilledCopy,
   stockLine,
@@ -78,7 +79,7 @@ export function RewardStatus({ code, participation, benefit, externalPublish }: 
         setVerifyNote("状态暂时读不到。请出示参与编号请店员核对。");
       }
     } catch {
-      setVerifyNote("网络没有给出明确结果。请稍后再试，或出示参与编号请店员核对。");
+      setVerifyNote(exceptionCopy("network_unknown"));
     } finally {
       setBusy(false);
     }

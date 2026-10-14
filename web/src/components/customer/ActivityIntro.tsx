@@ -1,16 +1,16 @@
 "use client";
 
-// HUI-1896 屏1「活动与优惠」:顾客三屏第一屏。
+// HUI-1896 屏1「活动与优惠」结构化面板:顾客三屏第一屏的增量部分。
 //
-// 职责:先把要求说清楚,再让顾客操作——商家/门店、可得权益、要完成的动作、
-// 核验方式(三态)、限额/保留期限、领取条件。主动作按实际写「选择内容并参与」,
-// 未达标不冒充已领取。
+// 职责:把「要完成的动作、店员怎么确认、限额、领取条件」先说清楚,再给
+// 主动作「选择内容并参与」。商家/门店、活动说明、时间、门店提示由基线
+// 区块(门店头 + 活动说明区)承载,这里不复制,避免同文重复渲染。
 //
 // 纪律:
 //   - 本组件不 fetch(数据由页面装配传入);建参与只经 onParticipationStart
 //     回调交给页面走 T2 门面——浏览路径绝不建参与;
-//   - 限额文案唯一出口 stockLine;预留文案唯一出口 benefitCopy(未确认
-//     不说「已保留」);异常文案唯一出口 exceptionCopy;
+//   - 限额文案唯一出口 stockLine;预留文案唯一出口 benefitCopy(3546:
+//     未确认不说「已保留」);异常文案唯一出口 exceptionCopy;
 //   - 公共页红线:无生态导航、不推销派诺工具、不要求安装随身搭子、
 //     不建商家账号。
 
@@ -18,13 +18,6 @@ import { benefitCopy } from "@/lib/participation";
 import { evidenceStepCopy, exceptionCopy, stockLine } from "@/lib/customer-journey";
 
 export interface ActivityIntroProps {
-  merchantName: string;
-  storeName?: string;
-  title: string;
-  summary?: string;
-  startsAt?: string;
-  endsAt?: string;
-  storeNotice?: string;
   /** 3535 放行的核验方式集合(店员见提交/店员核对作品/官方确认)。 */
   evidenceKinds: string[];
   /** 1671 公开 summary 的余量;unknown 传 undefined(不显示编造数字)。 */
@@ -39,13 +32,6 @@ export interface ActivityIntroProps {
 }
 
 export function ActivityIntro({
-  merchantName,
-  storeName,
-  title,
-  summary,
-  startsAt,
-  endsAt,
-  storeNotice,
   evidenceKinds,
   availableQty,
   benefitReservationState,
@@ -57,17 +43,7 @@ export function ActivityIntro({
   const benefit = benefitCopy(benefitReservationState);
   return (
     <section className="tk-section" data-testid="activity-intro">
-      <p className="tk-public-merchant">{merchantName}</p>
-      {storeName && <p className="tk-public-store">{storeName}</p>}
-      <h2 className="tk-section-title">{title}</h2>
-      <p className="tk-public-value">
-        {summary || "请按门店现场说明参与这次活动。"}
-      </p>
-      {(startsAt || endsAt) && (
-        <p className="tk-note">
-          活动时间:{startsAt || "即日起"} ~ {endsAt || "长期"}
-        </p>
-      )}
+      <h2 className="tk-section-title">这次活动的优惠怎么拿</h2>
 
       <h3 className="tk-note">要完成的动作</h3>
       <ol className="tk-list">
@@ -87,7 +63,6 @@ export function ActivityIntro({
       {stock && <p className="tk-note" data-testid="activity-stock">{stock}</p>}
       {benefit && <p className="tk-note" data-testid="activity-benefit">{benefit}</p>}
       <p className="tk-note">领取条件:店员确认完成后由门店发放。发放前不会先展示券码。</p>
-      {storeNotice && <p className="tk-warn">{storeNotice}</p>}
 
       {stockExhausted ? (
         <p className="tk-warn" data-testid="activity-stock-exhausted">{exceptionCopy("reward_exhausted")}</p>

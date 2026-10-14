@@ -48,7 +48,6 @@ export interface ContentPublishProps {
 export function ContentPublish({ code, selectedVersion, canSwitch, onSwitchVersion }: ContentPublishProps) {
   const [choices, setChoices] = useState<ContentChoice[] | null>(null);
   const [choicesUnavailable, setChoicesUnavailable] = useState(false);
-  const [chosenPack, setChosenPack] = useState("");
   const [snapshot, setSnapshot] = useState<ContentSnapshotView | null>(null);
   const [admission, setAdmission] = useState<AdmissionView | null>(null);
 
@@ -81,7 +80,6 @@ export function ContentPublish({ code, selectedVersion, canSwitch, onSwitchVersi
     if (!choices || choices.length === 0) return;
     const mine = selectedVersion ? choices.find((c) => c.version_id === selectedVersion) : undefined;
     const chosen = mine ?? choices[0];
-    setChosenPack(chosen.pack_id);
     let alive = true;
     fetch(
       `/api/public/links/${encodeURIComponent(code)}/content-snapshot?pack_id=${encodeURIComponent(chosen.pack_id)}&platform=${encodeURIComponent(chosen.platform)}`,
@@ -170,7 +168,6 @@ export function ContentPublish({ code, selectedVersion, canSwitch, onSwitchVersi
           <p className="tk-note">这个平台的发布路线已放行。往下用「发布交接」开始，视频和文案会在那一步交给你。</p>
         )}
       </div>
-      {chosenPack && <p className="tk-note">当前内容包 {chosenPack}。</p>}
     </section>
   );
 }
