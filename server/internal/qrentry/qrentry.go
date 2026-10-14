@@ -35,6 +35,33 @@ var Sizes = map[int]bool{128: true, 256: true, 512: true}
 // <base>/c/<code>. The base must be a clean http(s) origin-or-path prefix with
 // no query/fragment/userinfo; the code must pass the T0 shortcode format gate.
 func PublicEntryURL(base, code string) (string, error) {
+	b, err := cleanBase(base)
+	if err != nil {
+		return "", err
+	}
+	if !campaign.ValidShortcode(code) {
+		return "", ErrBadCode
+	}
+	return b + "/c/" + code, nil
+}
+
+// PublicTouchEntryURL (HUI-1665 增量) builds the stable touchpoint payload:
+// <base>/t/<alias>. Same base discipline and same shortcode format gate (the
+// alias code shares the shortcode entropy/shape), only the path differs. The
+// payload stays a pure opaque URL: no credential, tenant marker, or jump target.
+func PublicTouchEntryURL(base, code string) (string, error) {
+	b, err := cleanBase(base)
+	if err != nil {
+		return "", err
+	}
+	if !campaign.ValidShortcode(code) {
+		return "", ErrBadCode
+	}
+	return b + "/t/" + code, nil
+}
+
+// cleanBase validates and normalizes the public base URL.
+func cleanBase(base string) (string, error) {
 	b := strings.TrimSpace(base)
 	b = strings.TrimRight(b, "/")
 	if b == "" {
@@ -45,10 +72,7 @@ func PublicEntryURL(base, code string) (string, error) {
 		u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return "", ErrBadBase
 	}
-	if !campaign.ValidShortcode(code) {
-		return "", ErrBadCode
-	}
-	return b + "/c/" + code, nil
+	return b, nil
 }
 
 // ParseSize maps the raw query-string size to a whitelisted pixel size.
