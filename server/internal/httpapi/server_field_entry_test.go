@@ -358,3 +358,73 @@ func TestFieldDisableVisibleNextRequestWithCache(t *testing.T) {
 		t.Fatalf("cached disable = %s (stale cache served)", state)
 	}
 }
+
+// TestFieldPauseExpireAndPrintedURLStability:现场「暂停/到期/旧二维码兼容」的
+// 仓内语义 —— 已印刷/已写卡物料上的 URL 永不因管理面编辑而变化;状态全部由
+// 解析时点重导出(到期靠时间窗,不靠配置冻结);损坏卡读出的坏短码得到统一
+// 404 单字段形状(不区分,防探测)。
+func TestFieldPauseExpireAndPrintedURLStability(t *testing.T) {
+	f := fixtureWithQR(t, nil)
+	now := time.Now().UTC()
+	status, _, st := f.do(t, "POST", "/api/v1/stores", "sess-owner-a", f.tenA, `{"name":"旗舰店","address":"北京市"}`)
+	mustEqual(t, status, http.StatusCreated)
+	payload := fmt.Sprintf(`{"title":"周年庆","public_content":"到店有礼","starts_at":%q,"ends_at":%q,"store_id":%q}`,
+		now.Add(-1*time.Hour).Format(time.RFC3339), now.Add(48*time.Hour).Format(time.RFC3339), st["id"].(string))
+	status, _, cmp := f.do(t, "POST", "/api/v1/campaigns", "sess-owner-a", f.tenA, payload)
+	mustEqual(t, status, http.StatusCreated)
+	campaignID := cmp["id"].(string)
+	status, _, lnk := f.do(t, "POST", "/api/v1/campaigns/"+campaignID+"/links", "sess-owner-a", f.tenA, "")
+	mustEqual(t, status, http.StatusCreated)
+	code := lnk["code"].(string)
+	status, _, _ = f.do(t, "POST", "/api/v1/campaigns/"+campaignID+"/status", "sess-owner-a", f.tenA, `{"status":"active"}`)
+	mustEqual(t, status, http.StatusOK)
+
+	// 暂停 → paused 明确提示(非 available、也非 not_found)
+	status, _, _ = f.do(t, "POST", "/api/v1/campaigns/"+campaignID+"/status", "sess-owner-a", f.tenA, `{"status":"paused"}`)
+	mustEqual(t, status, http.StatusOK)
+	got, state, _ := fieldPublicGet(t, f, code)
+	mustEqual(t, got, http.StatusNotFound)
+	if state != "paused" {
+		t.Fatalf("paused = %s", state)
+	}
+	// 恢复 → 同一 URL 直接复活(旧物料零重印 —— 旧二维码/已写卡兼容)
+	status, _, _ = f.do(t, "POST", "/api/v1/campaigns/"+campaignID+"/status", "sess-owner-a", f.tenA, `{"status":"active"}`)
+	mustEqual(t, status, http.StatusOK)
+	got, state, view := fieldPublicGet(t, f, code)
+	mustEqual(t, got, http.StatusOK)
+	if state != "available" {
+		t.Fatalf("resume = %s", state)
+	}
+
+	// 管理面编辑(改标题) → 同一 URL 继续有效,内容更新(印刷物料不用换)
+	status, _, _ = f.do(t, "PATCH", "/api/v1/campaigns/"+campaignID, "sess-owner-a", f.tenA, `{"title":"周年庆(延期)"}`)
+	mustEqual(t, status, http.StatusOK)
+	got, _, view = fieldPublicGet(t, f, code)
+	mustEqual(t, got, http.StatusOK)
+	if view["title"] != "周年庆(延期)" {
+		t.Fatalf("edited title = %v", view["title"])
+	}
+
+	// 到期窗口:ends_at 已过 → expired(解析时点重导出)
+	payload = fmt.Sprintf(`{"title":"快闪","public_content":"到店有礼","starts_at":%q,"ends_at":%q}`,
+		now.Add(-2*time.Hour).Format(time.RFC3339), now.Add(-1*time.Hour).Format(time.RFC3339))
+	status, _, c2 := f.do(t, "POST", "/api/v1/campaigns", "sess-owner-a", f.tenA, payload)
+	mustEqual(t, status, http.StatusCreated)
+	status, _, l2 := f.do(t, "POST", "/api/v1/campaigns/"+c2["id"].(string)+"/links", "sess-owner-a", f.tenA, "")
+	mustEqual(t, status, http.StatusCreated)
+	expCode := l2["code"].(string)
+	status, _, _ = f.do(t, "POST", "/api/v1/campaigns/"+c2["id"].(string)+"/status", "sess-owner-a", f.tenA, `{"status":"active"}`)
+	mustEqual(t, status, http.StatusOK)
+	got, state, _ = fieldPublicGet(t, f, expCode)
+	mustEqual(t, got, http.StatusNotFound)
+	if state != "expired" {
+		t.Fatalf("expired = %s", state)
+	}
+
+	// 损坏卡:读出错码/截断码 → 统一 404 not_found 单字段形状(防探测)
+	got, state, view = fieldPublicGet(t, f, strings.ToUpper(code)+"x")
+	mustEqual(t, got, http.StatusNotFound)
+	if state != "not_found" || len(view) != 1 {
+		t.Fatalf("damaged code = %d %v", got, view)
+	}
+}
