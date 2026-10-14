@@ -56,13 +56,13 @@ func seedResolveScenario(t *testing.T, s *Store, status, startsAt, endsAt string
 func TestDecideLinkEquivalenceWithResolveLink(t *testing.T) {
 	now := time.Now().UTC()
 	window := map[string][2]string{
-		"active":     {now.Add(-time.Hour).Format(time.RFC3339), now.Add(time.Hour).Format(time.RFC3339)},
-		"expired":    {now.Add(-2 * time.Hour).Format(time.RFC3339), now.Add(-time.Hour).Format(time.RFC3339)},
+		"active":      {now.Add(-time.Hour).Format(time.RFC3339), now.Add(time.Hour).Format(time.RFC3339)},
+		"expired":     {now.Add(-2 * time.Hour).Format(time.RFC3339), now.Add(-time.Hour).Format(time.RFC3339)},
 		"not_started": {now.Add(time.Hour).Format(time.RFC3339), now.Add(2 * time.Hour).Format(time.RFC3339)},
 	}
 	storeStates := map[string]func(t *testing.T, s *Store, id, tenant string){
-		"unbound":   nil,
-		"active":    nil,
+		"unbound": nil,
+		"active":  nil,
 		"disabled": func(t *testing.T, s *Store, id, tenant string) {
 			_, err := s.SetStoreStatus(id, tenant, StoreStatusDisabled)
 			must(t, err)

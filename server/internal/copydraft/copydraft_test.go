@@ -7,15 +7,15 @@ import (
 
 func withheldSample() Input {
 	return Input{
-		StoreName:      "江边小馆",
-		CampaignTitle:  "周末到店",
-		PublicContent:  "到店有礼",
-		Price:          Fact{Text: "19.9元", Status: StatusExpired},
-		Address:        Fact{Text: "上海市南京西路1号", Status: StatusUncertain},
-		Hours:          Fact{Text: "10:00-22:00", Status: StatusUncertain},
-		Claims:         []Claim{{Text: "全市最低", Evidence: ""}},
-		POINames:       []string{"江边小馆(南京西路店)", " 江边小馆(人民广场店) "},
-		AssetIDs:       []string{"ast_1"},
+		StoreName:       "江边小馆",
+		CampaignTitle:   "周末到店",
+		PublicContent:   "到店有礼",
+		Price:           Fact{Text: "19.9元", Status: StatusExpired},
+		Address:         Fact{Text: "上海市南京西路1号", Status: StatusUncertain},
+		Hours:           Fact{Text: "10:00-22:00", Status: StatusUncertain},
+		Claims:          []Claim{{Text: "全市最低", Evidence: ""}},
+		POINames:        []string{"江边小馆(南京西路店)", " 江边小馆(人民广场店) "},
+		AssetIDs:        []string{"ast_1"},
 		ModelAuthorized: false,
 	}
 }

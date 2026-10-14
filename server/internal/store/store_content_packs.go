@@ -135,30 +135,30 @@ func (s *Store) ListContentPacks(tenantID, campaignID string) ([]ContentPack, er
 // ContentPackVersion is one immutable adoptable version. Content columns are
 // written once at creation and never updated.
 type ContentPackVersion struct {
-	ID               string                       `json:"id"`
-	TenantID         string                       `json:"tenant_id"`
-	PackID           string                       `json:"pack_id"`
-	VersionNo        int                          `json:"version_no"`
-	ContentKind      contentpack.ContentKind      `json:"content_kind"`
-	Status           contentpack.VersionStatus    `json:"status"`
-	Source           contentpack.Source           `json:"source"`
-	Video            contentpack.AssetSnapshot    `json:"video"`
-	Cover            contentpack.AssetSnapshot    `json:"cover"`
-	ImageText        []contentpack.AssetSnapshot  `json:"image_text"`
-	Title            string                       `json:"title"`
-	Body             string                       `json:"body"`
-	Topics           []string                     `json:"topics"`
-	StoreName        string                       `json:"store_name"`
-	PriceNote        string                       `json:"price_note"`
-	ValidNote        string                       `json:"valid_note"`
+	ID               string                        `json:"id"`
+	TenantID         string                        `json:"tenant_id"`
+	PackID           string                        `json:"pack_id"`
+	VersionNo        int                           `json:"version_no"`
+	ContentKind      contentpack.ContentKind       `json:"content_kind"`
+	Status           contentpack.VersionStatus     `json:"status"`
+	Source           contentpack.Source            `json:"source"`
+	Video            contentpack.AssetSnapshot     `json:"video"`
+	Cover            contentpack.AssetSnapshot     `json:"cover"`
+	ImageText        []contentpack.AssetSnapshot   `json:"image_text"`
+	Title            string                        `json:"title"`
+	Body             string                        `json:"body"`
+	Topics           []string                      `json:"topics"`
+	StoreName        string                        `json:"store_name"`
+	PriceNote        string                        `json:"price_note"`
+	ValidNote        string                        `json:"valid_note"`
 	PlatformVersions []contentpack.PlatformVersion `json:"platform_versions"`
-	GrantRefs        []string                     `json:"grant_refs"`
-	GrantUntil       string                       `json:"grant_until"`
-	Marking          contentpack.Marking          `json:"marking"`
-	BlockedReason    string                       `json:"blocked_reason,omitempty"`
-	IdempotencyKey   string                       `json:"idempotency_key,omitempty"`
-	CreatedBy        string                       `json:"created_by"`
-	CreatedAt        string                       `json:"created_at"`
+	GrantRefs        []string                      `json:"grant_refs"`
+	GrantUntil       string                        `json:"grant_until"`
+	Marking          contentpack.Marking           `json:"marking"`
+	BlockedReason    string                        `json:"blocked_reason,omitempty"`
+	IdempotencyKey   string                        `json:"idempotency_key,omitempty"`
+	CreatedBy        string                        `json:"created_by"`
+	CreatedAt        string                        `json:"created_at"`
 }
 
 const contentPackVersionCols = `id,tenant_id,pack_id,version_no,content_kind,status,source,` +
