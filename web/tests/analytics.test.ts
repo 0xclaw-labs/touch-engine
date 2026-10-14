@@ -8,7 +8,9 @@ import {
   evidenceRowList,
   formatMinor,
   localDayWindow,
+  metricDisplay,
   stageNotAppliedLabels,
+  type CatalogMetric,
   type EvidencePanel,
   type FunnelStage,
 } from "../src/lib/analytics";
@@ -100,5 +102,15 @@ describe("诚实文案常量", () => {
   });
   it("空窗口是真实 0,文案不冒充「暂无数据=失败」", () => {
     expect(emptyWindowCopy()).toContain("这个窗口");
+  });
+});
+
+describe("PR#7 目录指标(留资/CRM 单列,未接入非 0)", () => {
+  it("有值显示值;未接入/未知显示「未接入」,绝不冒充 0", () => {
+    const known: CatalogMetric = { key: "lead_submissions", title: "授权留资提交", available: true, value: 7 };
+    const ungated: CatalogMetric = { key: "ugc_plays", title: "UGC 播放", available: false, value: null, reason: "未接入平台播放权限" };
+    expect(metricDisplay(known)).toBe("7");
+    expect(metricDisplay(ungated)).toBe("未接入");
+    expect(metricDisplay({ key: "x", title: "x", available: true, value: null })).toBe("未接入");
   });
 });

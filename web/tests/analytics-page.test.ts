@@ -66,6 +66,13 @@ describe("看板五区块结构(移动优先)", () => {
     expect(view).toContain("reserved");
     expect(view).toContain("redeemed");
   });
+
+  it("PR#7 目录指标单列区块:授权留资/CRM 不并入碰触领券,未接入不是 0", () => {
+    expect(view).toContain('data-section="catalog"');
+    expect(view).toContain("metricDisplay");
+    expect(view).toContain("未接入");
+    expect(view).toContain("获客联系人");
+  });
 });
 
 describe("筛选条", () => {

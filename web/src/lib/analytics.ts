@@ -225,3 +225,19 @@ export function stageNotAppliedLabels(
 export function emptyWindowCopy(): string {
   return "这个窗口还没有发生可统计的事实。0 是真实的 0，不是未知；数据会随运营累积。";
 }
+
+// PR#7 汇总指标(GET /dashboard,9 指标固定目录)单行。value 是指针语义:
+// 未接入/未知序列化为缺席或 null,绝不冒充 0。授权留资提交/CRM 接收在
+// 目录里单列,碰触或领券不自动算成获客联系人(留资 unique_contacts 另给)。
+export interface CatalogMetric {
+  key: string;
+  title: string;
+  available: boolean;
+  value?: number | null;
+  unique_contacts?: number | null;
+  reason?: string;
+}
+
+export function metricDisplay(metric: CatalogMetric): string {
+  return metric.available && typeof metric.value === "number" ? String(metric.value) : "未接入";
+}

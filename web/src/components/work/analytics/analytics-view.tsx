@@ -26,8 +26,10 @@ import {
   evidenceRowList,
   formatMinor,
   localDayWindow,
+  metricDisplay,
   stageNotAppliedLabels,
   type AnalyticsFilters,
+  type CatalogMetric,
   type FunnelStage,
   type OperationsResponse,
 } from "@/lib/analytics";
@@ -43,6 +45,8 @@ export function AnalyticsView() {
   const [loadError, setLoadError] = useState("");
   const [attempt, setAttempt] = useState(0);
   const [data, setData] = useState<OperationsResponse | null>(null);
+  // PR#7 汇总指标目录(留资/CRM 单列;null=没有读到,保持未知)。
+  const [catalog, setCatalog] = useState<CatalogMetric[] | null>(null);
 
   const [draft, setDraft] = useState<AnalyticsFilters>(EMPTY_FILTERS);
   const [applied, setApplied] = useState<AnalyticsFilters>(EMPTY_FILTERS);
@@ -51,21 +55,26 @@ export function AnalyticsView() {
     let alive = true;
     setPhase("loading");
     const query = buildAnalyticsQuery(localDayWindow(new Date()), applied);
-    void session
-      .api("GET", `dashboard/operations?${query}`)
-      .then((res) => {
+    void Promise.all([
+      session.api("GET", `dashboard/operations?${query}`),
+      // PR#7 目录端点同开关同窗口;留资/CRM 继续单列,未接入不是 0。
+      session.api("GET", `dashboard?${query}`),
+    ])
+      .then(([opsRes, catRes]) => {
         if (!alive) return;
         // 未开通(路由未注册 + gate 统一 404)不是空数据:缺失保持未知。
-        if (res.status === 404) {
+        if (opsRes.status === 404) {
           setPhase("disabled");
           return;
         }
-        if (!res.ok) {
-          setLoadError(failureText(res.status, res.data));
+        if (!opsRes.ok) {
+          setLoadError(failureText(opsRes.status, opsRes.data));
           setPhase("error");
           return;
         }
-        setData(res.data as unknown as OperationsResponse);
+        setData(opsRes.data as unknown as OperationsResponse);
+        const items = (catRes.data as Record<string, unknown>).metrics;
+        setCatalog(Array.isArray(items) ? (items as CatalogMetric[]) : null);
         setPhase("ready");
       })
       .catch(() => {
@@ -351,6 +360,35 @@ export function AnalyticsView() {
           <li data-anomaly="reversed_in_window">窗口内撤销:{data.anomalies.reversed_in_window}</li>
           <li data-anomaly="expired_in_window">窗口内过期:{data.anomalies.expired_in_window}</li>
         </ul>
+      </section>
+
+      <section aria-label="授权留资与其他汇总指标" data-section="catalog">
+        <h2 className="tk-subtitle">授权留资与其他汇总指标(单列)</h2>
+        <p className="tk-note" data-field="catalog-note">
+          授权留资与 CRM 接收单独计数;碰触或领券不自动算成获客联系人。
+        </p>
+        {catalog === null ? (
+          <p className="tk-unknown" data-field="catalog-unknown">汇总指标没有读到,保持未知,不显示 0。</p>
+        ) : (
+          <ul className="tk-list" data-field="catalog-list">
+            {catalog.map((metric) => {
+              const known = metric.available && typeof metric.value === "number";
+              return (
+                <li key={metric.key} data-metric={metric.key}>
+                  {metric.title}:<strong data-field="metric-value">{metricDisplay(metric)}</strong>
+                  {known && typeof metric.unique_contacts === "number" ? (
+                    <span className="tk-note"> · 唯一联系人 {metric.unique_contacts}</span>
+                  ) : null}
+                  {!known ? (
+                    <span className="tk-note" data-field="metric-unknown">
+                      未知{metric.reason ? `。${metric.reason}` : "。没有接入的事实来源"}
+                    </span>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </section>
 
       <p className="tk-note" data-field="note-entry">{data.notes.entry_marker}</p>
