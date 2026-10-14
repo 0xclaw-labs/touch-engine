@@ -535,6 +535,8 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("DELETE /api/v1/participations/{id}/handoff/{credentialId}", http.HandlerFunc(s.handleParticipationHandoffRevoke))
 		mux.Handle("GET /api/v1/participations/{id}/staff-view", s.requireSession(s.handleParticipationStaffView))
 		mux.Handle("POST /api/v1/participations/staff/redeem", s.requireSession(s.handleParticipationStaffRedeem))
+	}
+
 	// channel admission (HUI-3535 渠道准入与承接清单): 登记制开关
 	// FEATURE_CHANNEL_ADMISSION(默认 off;off = 路由不注册且 handler gate
 	// 再答统一 404 —— 双保险同款;种子亦不装载,现行为逐字节不变)。on =

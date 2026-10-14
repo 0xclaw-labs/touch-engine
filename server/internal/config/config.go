@@ -135,21 +135,6 @@ type Config struct {
 	// closed (503 qr_not_configured) when it is unset.
 	PublicBaseURL string
 
-	FeatureUpload         bool
-	FeatureNotify         bool
-	FeatureTask           bool
-	FeatureLeadsCapture   bool
-	FeatureDashboard      bool
-	FeatureCampaignRules  bool
-	FeatureAssetLib       bool
-	FeatureVideoTemplates bool
-	FeatureAgency         bool
-	FeatureBrand          bool
-	FeaturePublicCache    bool
-	FeatureDashboardCache bool
-	FeatureContentPacks   bool
-	FeatureRewardOps      bool
-	FeatureParticipation  bool
 	FeatureUpload           bool
 	FeatureNotify           bool
 	FeatureTask             bool
@@ -164,6 +149,7 @@ type Config struct {
 	FeatureDashboardCache   bool
 	FeatureContentPacks     bool
 	FeatureRewardOps        bool
+	FeatureParticipation    bool
 	FeatureChannelAdmission bool
 
 	// Brand registry read client (HUI-2049). Touch never writes this registry
@@ -186,52 +172,6 @@ func FromEnv() Config {
 // and for alternate config sources).
 func Load(get func(string) string) Config {
 	return Config{
-		HTTPAddr:              firstNonEmpty(get("TOUCH_HTTP_ADDR"), "127.0.0.1:18240"),
-		DBPath:                firstNonEmpty(get("TOUCH_DB_PATH"), "data/touch.db"),
-		Env:                   firstNonEmpty(get("TOUCH_ENV"), "development"),
-		AppID:                 firstNonEmpty(get("TOUCH_APP_ID"), "touch-engine"),
-		InternalToken:         get("TOUCH_INTERNAL_TOKEN"),
-		SessionCookie:         firstNonEmpty(get("TOUCH_SESSION_COOKIE"), "touch_session"),
-		IdentityBaseURL:       get("PLATFORM_IDENTITY_BASE_URL"),
-		IdentityToken:         get("PLATFORM_IDENTITY_TOKEN"),
-		IdentityAppHost:       get("PLATFORM_IDENTITY_APP_HOST"),
-		UploadBaseURL:         get("PLATFORM_UPLOAD_BASE_URL"),
-		UploadToken:           get("PLATFORM_UPLOAD_TOKEN"),
-		NotifyBaseURL:         get("PLATFORM_NOTIFY_BASE_URL"),
-		NotifyToken:           get("PLATFORM_NOTIFY_TOKEN"),
-		TaskBaseURL:           get("PLATFORM_TASK_BASE_URL"),
-		TaskToken:             get("PLATFORM_TASK_TOKEN"),
-		BillingBaseURL:        strings.TrimRight(strings.TrimSpace(get("PLATFORM_BILLING_BASE_URL")), "/"),
-		BillingToken:          get("PLATFORM_BILLING_TOKEN"),
-		CopyModelProvider:     strings.TrimSpace(get("COPY_MODEL_PROVIDER")),
-		CopyModelID:           strings.TrimSpace(get("COPY_MODEL_ID")),
-		CopyModelVersion:      strings.TrimSpace(get("COPY_MODEL_VERSION")),
-		CopyPricingVersion:    strings.TrimSpace(get("COPY_PRICING_VERSION")),
-		LeadsTargetApp:        get("LEADS_TARGET_APP_ID"),
-		LeadsPhonePepper:      get("LEADS_PHONE_PEPPER"),
-		LeadsFollowUpBaseURL:  strings.TrimRight(strings.TrimSpace(get("LEADS_FOLLOW_UP_BASE_URL")), "/"),
-		LeadsFollowUpToken:    get("LEADS_FOLLOW_UP_TOKEN"),
-		PublicPermissionURL:   strings.TrimRight(strings.TrimSpace(get("TOUCH_PUBLIC_PERMISSION_URL")), "/"),
-		MatrixDraftURL:        strings.TrimRight(strings.TrimSpace(get("TOUCH_MATRIX_DRAFT_URL")), "/"),
-		PublicBaseURL:         strings.TrimSpace(get("PUBLIC_BASE_URL")),
-		FeatureUpload:         isTruthy(get(EnvFeatureUpload)),
-		FeatureNotify:         isTruthy(get(EnvFeatureNotify)),
-		FeatureTask:           isTruthy(get(EnvFeatureTask)),
-		FeatureLeadsCapture:   isTruthy(get(EnvFeatureLeadsCapture)),
-		FeatureDashboard:      isTruthy(get(EnvFeatureDashboard)),
-		FeatureCampaignRules:  isTruthy(get(EnvFeatureCampaignRules)),
-		FeatureAssetLib:       isTruthy(get(EnvFeatureAssetLib)),
-		FeatureVideoTemplates: isTruthy(get(EnvFeatureVideoTemplates)),
-		FeatureAgency:         isTruthy(get(EnvFeatureAgency)),
-		FeatureBrand:          isTruthy(get(EnvFeatureBrand)),
-		FeaturePublicCache:    isTruthy(get(EnvFeaturePublicCache)),
-		FeatureDashboardCache: isTruthy(get(EnvFeatureDashboardCache)),
-		FeatureContentPacks:   isTruthy(get(EnvFeatureContentPacks)),
-		FeatureRewardOps:      isTruthy(get(EnvFeatureRewardOps)),
-		FeatureParticipation:  isTruthy(get(EnvFeatureParticipation)),
-		BrandBaseURL:          strings.TrimSpace(get("PLATFORM_BRAND_BASE_URL")),
-		BrandToken:            get("PLATFORM_BRAND_TOKEN"),
-		SubscriptionStatus:    firstNonEmpty(get("TOUCH_SUBSCRIPTION_STATUS"), "unconfirmed"),
 		HTTPAddr:                firstNonEmpty(get("TOUCH_HTTP_ADDR"), "127.0.0.1:18240"),
 		DBPath:                  firstNonEmpty(get("TOUCH_DB_PATH"), "data/touch.db"),
 		Env:                     firstNonEmpty(get("TOUCH_ENV"), "development"),
@@ -274,6 +214,7 @@ func Load(get func(string) string) Config {
 		FeatureDashboardCache:   isTruthy(get(EnvFeatureDashboardCache)),
 		FeatureContentPacks:     isTruthy(get(EnvFeatureContentPacks)),
 		FeatureRewardOps:        isTruthy(get(EnvFeatureRewardOps)),
+		FeatureParticipation:    isTruthy(get(EnvFeatureParticipation)),
 		FeatureChannelAdmission: isTruthy(get(EnvFeatureChannelAdmission)),
 		BrandBaseURL:            strings.TrimSpace(get("PLATFORM_BRAND_BASE_URL")),
 		BrandToken:              get("PLATFORM_BRAND_TOKEN"),
