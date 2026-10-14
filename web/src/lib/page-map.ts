@@ -70,6 +70,8 @@ const recorded: readonly { route: string; id: PatternId; regions: readonly strin
   { route: "/work/analytics", id: "workspace", regions: ["primary_action", "status", "empty"] },
   { route: "/c/[code]", id: "public_consumer", regions: ["primary_action", "status", "empty"] },
   { route: "/c/[code]/contact", id: "public_consumer", regions: ["primary_action", "status", "empty"] },
+  // HUI-1665 稳定入口 /t/{code}:公开消费者面,off 时整页 404。
+  { route: "/t/[code]", id: "public_consumer", regions: ["primary_action", "status", "empty"] },
 ];
 
 export function patternIds(): string[] {

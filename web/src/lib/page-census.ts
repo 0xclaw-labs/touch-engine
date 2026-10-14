@@ -100,6 +100,8 @@ const markerBook: readonly { route: string; markers: readonly Marker[] }[] = [
   { route: "/work/analytics", markers: ["raw button"] },
   { route: "/c/[code]", markers: [] },
   { route: "/c/[code]/contact", markers: [] },
+  // HUI-1665:/t 稳定入口页是 server 闸门薄壳,交互在 touch-entry.tsx,页面源零标记。
+  { route: "/t/[code]", markers: [] },
 ];
 
 function sameMarkers(recorded: readonly Marker[], scanned: readonly Marker[]): boolean {
