@@ -261,3 +261,100 @@ func TestFieldRebindWorkflowOldCardKeepsOldTarget(t *testing.T) {
 		t.Fatalf("lookup = %v, want id %s on link %s", looked, partID, codeA)
 	}
 }
+
+// TestFieldSingleCardDisableIsolation:per-card 1:1 link(rotate)时,停用一张卡
+// 只影响它自己的入口 —— 现场规程「一卡一链」的依据(票面「单卡停用不影响其他卡」)。
+func TestFieldSingleCardDisableIsolation(t *testing.T) {
+	f := fixtureWithQR(t, nil)
+	_, campaignID, linkIDs, codes := seedNFCTenantCampaign(t, f, 2)
+
+	status, _, batch := f.do(t, "POST", "/api/v1/nfc/tags/batch", "sess-owner-a", f.tenA,
+		batchReq(campaignID, linkIDs, 2, "", "", "桌贴", "rotate"))
+	mustEqual(t, status, http.StatusCreated)
+	items := batch["items"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("batch = %v", items)
+	}
+	tag1 := items[0].(map[string]any)["id"].(string)
+
+	// 初始两卡都 available
+	for _, c := range codes {
+		got, state, _ := fieldPublicGet(t, f, c)
+		mustEqual(t, got, http.StatusOK)
+		if state != "available" {
+			t.Fatalf("card %s = %s", c, state)
+		}
+	}
+
+	// 停用卡 1 → 只有卡 1 的短码进入停用态,单字段形状(无内容泄漏)
+	status, _, _ = f.do(t, "POST", "/api/v1/nfc/tags/"+tag1+"/status", "sess-owner-a", f.tenA, `{"status":"disabled"}`)
+	mustEqual(t, status, http.StatusOK)
+	got, state, view := fieldPublicGet(t, f, codes[0])
+	mustEqual(t, got, http.StatusNotFound)
+	if state != "link_disabled" || len(view) != 1 {
+		t.Fatalf("card1 = %d %v", got, view)
+	}
+	got, state, _ = fieldPublicGet(t, f, codes[1])
+	mustEqual(t, got, http.StatusOK)
+	if state != "available" {
+		t.Fatalf("card2 affected: %s", state)
+	}
+
+	// 恢复 → 复用
+	status, _, _ = f.do(t, "POST", "/api/v1/nfc/tags/"+tag1+"/status", "sess-owner-a", f.tenA, `{"status":"active"}`)
+	mustEqual(t, status, http.StatusOK)
+	got, state, _ = fieldPublicGet(t, f, codes[0])
+	mustEqual(t, got, http.StatusOK)
+	if state != "available" {
+		t.Fatalf("card1 restore = %s", state)
+	}
+}
+
+// TestFieldSharedLinkAliasSemantics:两标签共享同一 link 时,停用其一即停用
+// 共享入口(同一入口的别名,1665 拍板)—— 检查表据此强制「一卡一链」。
+func TestFieldSharedLinkAliasSemantics(t *testing.T) {
+	f := fixtureWithQR(t, nil)
+	_, campaignID, linkIDs, codes := seedNFCTenantCampaign(t, f, 1)
+
+	status, _, batch := f.do(t, "POST", "/api/v1/nfc/tags/batch", "sess-owner-a", f.tenA,
+		batchReq(campaignID, linkIDs[:1], 2, "", "", "别名", "shared"))
+	mustEqual(t, status, http.StatusCreated)
+	items := batch["items"].([]any)
+	tag1 := items[0].(map[string]any)["id"].(string)
+
+	status, _, _ = f.do(t, "POST", "/api/v1/nfc/tags/"+tag1+"/status", "sess-owner-a", f.tenA, `{"status":"disabled"}`)
+	mustEqual(t, status, http.StatusOK)
+	got, state, _ := fieldPublicGet(t, f, codes[0])
+	mustEqual(t, got, http.StatusNotFound)
+	if state != "link_disabled" {
+		t.Fatalf("shared alias disable = %s", state)
+	}
+}
+
+// TestFieldDisableVisibleNextRequestWithCache:FEATURE_PUBLIC_CACHE 开启时,
+// 标签停用(epoch bump)对下一次公共请求立即可见 —— 检查表「缓存失效」项依据。
+func TestFieldDisableVisibleNextRequestWithCache(t *testing.T) {
+	f := fixtureField(t, map[string]string{"FEATURE_PUBLIC_CACHE": "on"})
+	_, campaignID, linkIDs, codes := seedNFCTenantCampaign(t, f, 1)
+
+	status, _, batch := f.do(t, "POST", "/api/v1/nfc/tags/batch", "sess-owner-a", f.tenA,
+		batchReq(campaignID, linkIDs[:1], 1, "", "", "", "shared"))
+	mustEqual(t, status, http.StatusCreated)
+	tagID := batch["items"].([]any)[0].(map[string]any)["id"].(string)
+
+	// 先打一次进缓存
+	got, state, _ := fieldPublicGet(t, f, codes[0])
+	mustEqual(t, got, http.StatusOK)
+	if state != "available" {
+		t.Fatalf("pre-cache = %s", state)
+	}
+
+	// 停用 → 下一次请求(命中路径)必须已是停用态,不许吃旧缓存
+	status, _, _ = f.do(t, "POST", "/api/v1/nfc/tags/"+tagID+"/status", "sess-owner-a", f.tenA, `{"status":"disabled"}`)
+	mustEqual(t, status, http.StatusOK)
+	got, state, _ = fieldPublicGet(t, f, codes[0])
+	mustEqual(t, got, http.StatusNotFound)
+	if state != "link_disabled" {
+		t.Fatalf("cached disable = %s (stale cache served)", state)
+	}
+}
