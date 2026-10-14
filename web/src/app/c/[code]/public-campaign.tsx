@@ -34,6 +34,7 @@ import {
   type PrivateDomainGuide,
 } from "@/lib/private-domain";
 import { CustomerPublish } from "./customer-publish";
+import { PublishHandoff } from "@/components/publish/PublishHandoff";
 import { publicVisitorCopy } from "@/lib/account-separation";
 import { LEAD_REVOKED_COPY, leadOutcomeState } from "@/lib/lead-outcome";
 import {
@@ -389,6 +390,7 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
     actions: showActivity && lane === "activity" ? (
       <section key="actions" data-testid="activity-actions">
         <CustomerPublish code={code} defaultCopy={view?.public_content ?? ""} />
+        <PublishHandoff code={code} />
         {visibleActions.length > 0 && (
           <div className="tk-row tk-gap">
             {visibleActions.map((item) => (

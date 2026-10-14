@@ -325,6 +325,31 @@ func TestPublishHandoffRoutesSurface(t *testing.T) {
 	if !strings.Contains(body["notice"].(string), "未知规则") {
 		t.Fatalf("unregistered platform notice = %v", body["notice"])
 	}
+
+	// with_snapshot=1:顾客确认面先拿到将要交出的快照与指纹(与交接同一
+	// 指纹函数,换稿=指纹变化);未登记平台(unknown→manual_only)也给,
+	// 让手动指引同样绑定快照。
+	status, body = f.public(t, "GET", "/api/v1/public/links/"+f.code+"/publish-handoff/routes?platform=xiaohongshu&with_snapshot=1", "", "")
+	if status != http.StatusOK {
+		t.Fatalf("routes xhs snapshot = %d: %v", status, body)
+	}
+	snap, _ := body["snapshot"].(map[string]any)
+	if snap == nil || snap["content_version"] == "" || snap["title"] != "周末烘焙节" || snap["pack_id"] != f.packID {
+		t.Fatalf("with_snapshot snapshot = %v", body["snapshot"])
+	}
+	status, body = f.public(t, "GET", "/api/v1/public/links/"+f.code+"/publish-handoff/routes?platform=bilibili&with_snapshot=1", "", "")
+	if status != http.StatusNotFound {
+		t.Fatalf("unregistered platform without adopted content = %d %v", status, body)
+	}
+
+	// 拒绝面零内容探测:not_admitted 平台不给快照(与 start 的 gate-first 一致)。
+	status, body = f.public(t, "GET", "/api/v1/public/links/"+f.code+"/publish-handoff/routes?platform=douyin&with_snapshot=1", "", "")
+	if status != http.StatusOK {
+		t.Fatalf("routes douyin snapshot = %d", status)
+	}
+	if body["snapshot"] != nil {
+		t.Fatal("refused platform must not leak the content snapshot")
+	}
 }
 
 // admitted fixture 全流程。

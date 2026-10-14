@@ -176,9 +176,25 @@ func (s *Server) handlePublicPublishHandoffRoutes(w http.ResponseWriter, r *http
 		out["notice"] = "该平台暂无准入记录，按未知规则处理：不默认允许，可使用合规导出+手动发布指引。"
 	}
 	// 可选内容指纹(顾客确认面):与交接时同一指纹函数,换稿=指纹变化。
-	if packID := strings.TrimSpace(r.URL.Query().Get("pack_id")); packID != "" {
+	// pack_id 精确匹配;with_snapshot=1 取当前已采用版本——顾客必须先看到
+	// 将要交出的快照与指纹才能确认。拒绝面零内容探测:全部路线 refused 时
+	// 不给快照(与 start 的 gate-first 一致);未登记平台(unknown→manual_only)给。
+	packFilter := strings.TrimSpace(r.URL.Query().Get("pack_id"))
+	wantSnapshot := packFilter != "" || r.URL.Query().Get("with_snapshot") == "1"
+	if wantSnapshot {
+		refusedAll := len(plans) > 0
+		for _, item := range plans {
+			if item["plan"].(map[string]any)["kind"] != publishhandoff.PlanRefused {
+				refusedAll = false
+				break
+			}
+		}
+		if refusedAll {
+			writeJSON(w, http.StatusOK, out)
+			return
+		}
 		v, err := s.St.GetAdoptedVersion(tenantID, res.Campaign.ID, platform)
-		if err != nil || v.PackID != packID {
+		if err != nil || (packFilter != "" && v.PackID != packFilter) {
 			fail(w, http.StatusNotFound, "not_found", "no adopted content for this pack/platform")
 			return
 		}
