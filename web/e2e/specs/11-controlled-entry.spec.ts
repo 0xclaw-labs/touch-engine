@@ -103,8 +103,7 @@ test("expired/lost session returns to login; signing in again recovers", async (
   await expect(page.getByRole("heading", { name: "今天", exact: true })).toBeVisible();
 });
 
-test("manual app switch in eco nav does not create campaigns or tasks", async ({ page }) => {
-  await login(page);
+test("manual app switch in eco nav does not create campaigns or tasks", async ({ page }) => {  await login(page);
   await page.goto("/work/stores");
   await expect(page.locator("p.tk-kicker")).toHaveText("磁石科技", { timeout: 15_000 });
   const before = await campaignCount(page);
@@ -134,4 +133,17 @@ test("manual app switch in eco nav does not create campaigns or tasks", async ({
     expect(await campaignCount(page)).toBe(before);
   }
   await page.unrouteAll({ behavior: "ignoreErrors" });
+});
+
+test("confirm-and-redeem entry stays findable at 390 and 1440 widths", async ({ page }) => {
+  const seed = await seedCodes();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await loginAtRoot(page, seed.multiEmail, seed.multiPassword);
+  await page.getByRole("button", { name: seed.tenantName }).click();
+  await expect(page.getByRole("heading", { name: "今天", exact: true })).toBeVisible();
+  const entry = page.locator('ul.tk-nav a[href="/work/service"]');
+  await expect(entry).toBeVisible();
+  await screenshot(page, "hui-2222-entry-390");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect(entry).toBeVisible();
 });
