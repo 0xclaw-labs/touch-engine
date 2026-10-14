@@ -17,10 +17,9 @@
 //   - 不发店员/商家会话请求(staff/*、reward-confirm 禁触)。
 
 import { useCallback, useEffect, useState } from "react";
+import { isSafeQrPayload, statusLabel } from "@/lib/participation";
 import {
-  isSafeQrPayload,
   resumeCredential,
-  statusLabel,
   staffFulfilledCopy,
   stockLine,
   type CustomerParticipation,

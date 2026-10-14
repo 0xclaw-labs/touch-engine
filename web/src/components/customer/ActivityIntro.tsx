@@ -14,7 +14,8 @@
 //   - 公共页红线:无生态导航、不推销派诺工具、不要求安装随身搭子、
 //     不建商家账号。
 
-import { benefitCopy, evidenceStepCopy, exceptionCopy, stockLine } from "@/lib/customer-journey";
+import { benefitCopy } from "@/lib/participation";
+import { evidenceStepCopy, exceptionCopy, stockLine } from "@/lib/customer-journey";
 
 export interface ActivityIntroProps {
   merchantName: string;

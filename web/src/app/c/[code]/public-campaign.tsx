@@ -3,6 +3,13 @@
 // 公共活动页(路由区 /c/[code]):游客看到的是这家店的活动，不是平台后台。
 // 顺序:门店 → 能得到什么 → 可做的动作 → 单独的留资同意 → 提交后的下一步。
 // 碰一下、扫码、看视频不会变成留资。留资必须勾选本次告知;营销许可可拒绝。
+//
+// HUI-1896 三屏(同一页内的状态分区,不是任务大厅):
+//   屏1 活动与优惠(ActivityIntro:先说明后操作,主动作「选择内容并参与」)
+//   屏2 内容与发布(ContentPublish + 1670 PublishHandoff 挂载)
+//   屏3 领取或请店员确认(RewardStatus)
+// 参与生命周期(3546):普通浏览不建参与;lookup 恢复;换选只改未交接草稿;
+// 取消可退;「我已完成」只请求核验(在屏3/交接组件内,都不能自己让奖励通过)。
 
 import { Suspense, useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import { useParams, useSearchParams } from "next/navigation";
@@ -35,6 +42,19 @@ import {
 } from "@/lib/private-domain";
 import { CustomerPublish } from "./customer-publish";
 import { PublishHandoff } from "@/components/publish/PublishHandoff";
+import { ActivityIntro } from "@/components/customer/ActivityIntro";
+import { ContentPublish } from "@/components/customer/ContentPublish";
+import { RewardStatus } from "@/components/customer/RewardStatus";
+import {
+  cancelParticipation,
+  canSwitchDraft,
+  journeyStage,
+  lookupParticipation,
+  startParticipation,
+  switchDraft,
+  type AttemptRef,
+  type CustomerParticipation,
+} from "@/lib/customer-journey";
 import { publicVisitorCopy } from "@/lib/account-separation";
 import { LEAD_REVOKED_COPY, leadOutcomeState } from "@/lib/lead-outcome";
 import {
@@ -79,6 +99,10 @@ interface LeadSubmitResult {
   submitted_to?: { name?: string };
 }
 
+interface PublicRewardSummary {
+  slots?: { benefit_slot: string; rule_version: number; available_qty: number }[];
+}
+
 export function PublicCampaign({ lane = "activity" }: { lane?: "activity" | "contact" }) {
   return (
     <Suspense fallback={<main className="tk-public" data-state="loading" data-lane={lane}><p className="tk-note">正在读取</p></main>}>
@@ -118,6 +142,14 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
     connected: false,
     redemption: "unknown",
   });
+
+  // ---- HUI-1896 三屏状态:自身参与(受控 visitor 会话)+ 1671 公共奖励面 ----
+  const [participation, setParticipation] = useState<CustomerParticipation | null>(null);
+  const [attempts, setAttempts] = useState<AttemptRef[]>([]);
+  const [rewardSummary, setRewardSummary] = useState<PublicRewardSummary | null>(null);
+  const [participationNote, setParticipationNote] = useState("");
+  const [participationBusy, setParticipationBusy] = useState(false);
+  const lookupSent = useRef(false);
 
   const [revoking, setRevoking] = useState(false);
   const [revokeDone, setRevokeDone] = useState(false);
@@ -169,6 +201,32 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
       .catch(() => undefined);
   }, [code, source.channel, uiState]);
 
+  // 重复碰触/刷新恢复:一次性 lookup;404=这个浏览器还没有参与(全新开始,
+  // 不是错误,不打扰浏览)。网络失败保持静默浏览面,可稍后重试。
+  useEffect(() => {
+    if (!code || uiState !== "available" || lane !== "activity" || lookupSent.current) return;
+    lookupSent.current = true;
+    lookupParticipation(code).then((result) => {
+      if (result && !("error" in result)) setParticipation(result);
+    });
+  }, [code, lane, uiState]);
+
+  // 1671 公共奖励面:off/不可达 → null(屏1 不显示编造库存,屏3 只留条件说明)。
+  useEffect(() => {
+    if (!code || uiState !== "available" || lane !== "activity") return;
+    let alive = true;
+    fetch(`/api/public/links/${encodeURIComponent(code)}/reward-summary`)
+      .then(async (res) => {
+        if (!alive) return;
+        const data = await res.json().catch(() => null);
+        if (alive && res.ok && data) setRewardSummary(data as PublicRewardSummary);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [code, lane, uiState]);
+
   useEffect(() => {
     if (!code || uiState !== "available") return;
     let alive = true;
@@ -201,9 +259,70 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
 
   const retry = useCallback(() => {
     viewSent.current = false;
+    lookupSent.current = false;
     setUiState("loading");
     setReloadTick((t) => t + 1);
   }, []);
+
+  // ---- 三屏动作:开始/换选/取消(唯一显式路径;浏览路径绝不建参与) ----------
+
+  const refreshDetail = useCallback(async (id: string) => {
+    try {
+      const res = await fetch(`/api/participations/${encodeURIComponent(id)}`);
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.id) {
+        setParticipation(data as CustomerParticipation);
+        setAttempts(Array.isArray(data.attempts) ? (data.attempts as AttemptRef[]) : []);
+      }
+    } catch {
+      // 状态读取失败不打断参与;屏3 的「我已完成」会再次请求核验。
+    }
+  }, []);
+
+  const handleParticipationStart = useCallback(async () => {
+    if (!code || participationBusy) return;
+    setParticipationBusy(true);
+    setParticipationNote("");
+    const result = await startParticipation(code, participation?.content_pack_version ?? "");
+    if (result && !("error" in result)) {
+      setParticipation(result);
+      await refreshDetail(result.id ?? "");
+    } else if (result && "error" in result && result.error === "start_failed") {
+      setParticipationNote(result.message);
+    } else if (result) {
+      setParticipationNote("网络没有给出明确结果。先当作还没开始；稍后重试即可。");
+    }
+    setParticipationBusy(false);
+  }, [code, participation, participationBusy, refreshDetail]);
+
+  const handleSwitchVersion = useCallback(async (versionId: string) => {
+    if (!participation?.id || participationBusy) return;
+    setParticipationBusy(true);
+    setParticipationNote("");
+    const result = await switchDraft(participation.id, versionId);
+    if (result && !("error" in result)) {
+      setParticipation(result);
+    } else if (result && "error" in result && result.error === "frozen") {
+      setParticipationNote("这个参与的版本已经交接，不能换选。已交接的内容保持不变。");
+    } else {
+      setParticipationNote("换选没有完成。稍后再试，或保持当前选择继续。");
+    }
+    setParticipationBusy(false);
+  }, [participation, participationBusy]);
+
+  const handleCancelParticipation = useCallback(async () => {
+    if (!participation?.id || participationBusy) return;
+    setParticipationBusy(true);
+    setParticipationNote("");
+    const result = await cancelParticipation(participation.id);
+    if (result && !("error" in result)) {
+      setParticipation(result);
+      setAttempts([]);
+    } else {
+      setParticipationNote("取消没有完成。已发生的记录不会被抹掉；可以请店员协助。");
+    }
+    setParticipationBusy(false);
+  }, [participation, participationBusy]);
 
   const disclosure = {
     merchant: leadForm?.recipient?.name || view?.merchant_name || "",
@@ -365,6 +484,13 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
     : "";
   const nextOutcomeState = leadOutcomeState(revokeDone ? LEAD_REVOKED_COPY : outcome);
 
+  // ---- 三屏派生:阶段与门控 ----
+  const stage = journeyStage(participation, {});
+  const participationOpen = stage !== "browse";
+  const switchable = canSwitchDraft(participation, attempts);
+  const stockQty = rewardSummary?.slots?.[0]?.available_qty;
+  const evidenceKinds = ["staff_observed_submission", "staff_verified_post", "official_publish_confirmed"];
+
   const sectionNodes: Record<PublicSection, ReactElement | null> = {
     store: (
       <header key="store" data-testid="store-identity">
@@ -377,11 +503,6 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
       <section key="value" data-testid="store-value">
         <p className="tk-public-value">{view?.public_content || "请按门店现场说明参与这次活动。"}</p>
         <p className="tk-note">碰一下、扫码或看视频只是打开这个活动，不会自动留下联系方式。</p>
-        {(view?.starts_at || view?.ends_at) && (
-          <p className="tk-note">
-            活动时间:{view?.starts_at || "即日起"} ~ {view?.ends_at || "长期"}
-          </p>
-        )}
         {storeNoticeText(view?.store_notice) && (
           <p className="tk-warn">{storeNoticeText(view?.store_notice)}</p>
         )}
@@ -389,8 +510,47 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
     ) : null,
     actions: showActivity && lane === "activity" ? (
       <section key="actions" data-testid="activity-actions">
+        {/* 屏1:活动与优惠(先说明后操作;浏览不建参与) */}
+        <ActivityIntro
+          merchantName={merchantLabel}
+          storeName={view?.store_name}
+          title={view?.title ?? ""}
+          summary={view?.public_content}
+          startsAt={view?.starts_at}
+          endsAt={view?.ends_at}
+          storeNotice={storeNoticeText(view?.store_notice)}
+          evidenceKinds={evidenceKinds}
+          availableQty={stockQty}
+          benefitReservationState={participation?.benefit_reservation_state}
+          canStart={!participationOpen}
+          stockExhausted={stockQty === 0}
+          onParticipationStart={handleParticipationStart}
+        />
+        {participationNote && <p className="tk-note" data-testid="participation-note">{participationNote}</p>}
+        {participationOpen && (
+          <div data-testid="customer-journey" className="tk-gap">
+            {/* 屏2:内容与发布 */}
+            <ContentPublish
+              code={code}
+              selectedVersion={participation?.content_pack_version}
+              canSwitch={switchable}
+              onSwitchVersion={handleSwitchVersion}
+            />
+            {/* 1670 交接组件(自足;挂载基线保留) */}
+            <PublishHandoff code={code} />
+            {/* 屏3:领取或请店员确认 */}
+            <RewardStatus code={code} participation={participation} />
+            {stage !== "awaiting_review" && stage !== "publishing" && (
+              <div className="tk-row">
+                <button type="button" className="tk-quiet" disabled={participationBusy} data-testid="participation-cancel" onClick={handleCancelParticipation}>
+                  取消参与
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+        {/* PR#15 基线:预览/合规导出(保留挂载) */}
         <CustomerPublish code={code} defaultCopy={view?.public_content ?? ""} />
-        <PublishHandoff code={code} />
         {visibleActions.length > 0 && (
           <div className="tk-row tk-gap">
             {visibleActions.map((item) => (
