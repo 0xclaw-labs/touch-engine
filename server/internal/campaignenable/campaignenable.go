@@ -27,17 +27,17 @@ import (
 
 // Verification modes: the three evidence classes, verbatim to rewardops.
 const (
-	ModeStaffObserved = "staff_observed_submission" // 现场见到提交
-	ModeStaffVerified = "staff_verified_post"       // 现场见到作品
+	ModeStaffObserved = "staff_observed_submission"  // 现场见到提交
+	ModeStaffVerified = "staff_verified_post"        // 现场见到作品
 	ModeOfficial      = "official_publish_confirmed" // 官方确认
 )
 
 // Benefit kinds (门店券/合法导入券码/现场赠品/现场折扣). No cash, no lottery, no POS.
 const (
-	KindStoreCoupon   = "store_coupon"
-	KindImportedCode  = "imported_code"
-	KindOnsiteGift    = "onsite_gift"
-	KindOnsiteDiscount   = "onsite_discount"
+	KindStoreCoupon    = "store_coupon"
+	KindImportedCode   = "imported_code"
+	KindOnsiteGift     = "onsite_gift"
+	KindOnsiteDiscount = "onsite_discount"
 )
 
 // Budget accounting modes: exactly one of quantity / cost budget.
@@ -49,7 +49,7 @@ const (
 // Dedup judgment bases. Cookie/IP is deliberately not an option: 匿名访问只能
 // 做到有限去重,「同一人一次」必须声明判定基础.
 const (
-	BasisReceipt    = "verifiable_receipt"          // 可验证消费凭据(按订单限领挂这里)
+	BasisReceipt         = "verifiable_receipt"          // 可验证消费凭据(按订单限领挂这里)
 	BasisPlatformSubject = "platform_authorized_subject" // 平台授权主体
 	BasisOnsiteManual    = "onsite_manual"               // 现场人工判定
 )
@@ -59,25 +59,25 @@ const (
 	ScopeStoreStaff = "store_staff"
 	ScopeOrgOwner   = "org_owner"
 
-	StockStopNew   = "stop_new"      // 缺货即停新参与
-	StockMarkOut   = "mark_sold_out" // 显著标记售罄并保留页面
+	StockStopNew = "stop_new"      // 缺货即停新参与
+	StockMarkOut = "mark_sold_out" // 显著标记售罄并保留页面
 )
 
 // Machine reason codes returned by Check (fixed refusal order below).
 const (
-	ReasonCopyMissing           = "customer_copy_missing"
-	ReasonContentNotReady       = "content_not_ready"
-	ReasonContentBlocked        = "content_blocked"
-	ReasonContentGrantExpired   = "content_grant_expired"
-	ReasonChannelClosed         = "channel_closed"
-	ReasonChannelNotAdmitted    = "channel_not_admitted"
-	ReasonNoRunnableChannel     = "no_runnable_channel"
-	ReasonBenefitRefMissing     = "benefit_ref_missing"
+	ReasonCopyMissing            = "customer_copy_missing"
+	ReasonContentNotReady        = "content_not_ready"
+	ReasonContentBlocked         = "content_blocked"
+	ReasonContentGrantExpired    = "content_grant_expired"
+	ReasonChannelClosed          = "channel_closed"
+	ReasonChannelNotAdmitted     = "channel_not_admitted"
+	ReasonNoRunnableChannel      = "no_runnable_channel"
+	ReasonBenefitRefMissing      = "benefit_ref_missing"
 	ReasonBenefitVersionMismatch = "benefit_version_mismatch"
-	ReasonBenefitStockMissing   = "benefit_stock_missing"
-	ReasonWindowConflict        = "window_conflict"
-	ReasonCampaignEnded         = "campaign_ended"
-	ReasonStoreMismatch         = "store_mismatch"
+	ReasonBenefitStockMissing    = "benefit_stock_missing"
+	ReasonWindowConflict         = "window_conflict"
+	ReasonCampaignEnded          = "campaign_ended"
+	ReasonStoreMismatch          = "store_mismatch"
 )
 
 // ChannelRef is one selected publish route. The triple must come from the
@@ -95,20 +95,20 @@ func (c ChannelRef) empty() bool {
 
 // Reward carries the 口径 only: references and budgets, never stock.
 type Reward struct {
-	Kind           BenefitKind `json:"kind"`
-	Slot           string      `json:"slot"`
-	BudgetMode     string      `json:"budget_mode"`
-	TotalQuantity  *int        `json:"total_quantity,omitempty"`
-	CostBudgetMinor *int       `json:"cost_budget_minor,omitempty"`
-	Currency       string      `json:"currency"`
-	StoreIDs       []string    `json:"store_ids"`
-	ClaimFrom      string      `json:"claim_from"`
-	ClaimUntil     string      `json:"claim_until"`
-	RedeemFrom     string      `json:"redeem_from"`
-	RedeemUntil    string      `json:"redeem_until"`
-	OnsiteRedempt  bool        `json:"onsite_redemption"`
-	StaffScope     string      `json:"staff_scope"`
-	OutOfStockRule string      `json:"out_of_stock_rule"`
+	Kind            BenefitKind `json:"kind"`
+	Slot            string      `json:"slot"`
+	BudgetMode      string      `json:"budget_mode"`
+	TotalQuantity   *int        `json:"total_quantity,omitempty"`
+	CostBudgetMinor *int        `json:"cost_budget_minor,omitempty"`
+	Currency        string      `json:"currency"`
+	StoreIDs        []string    `json:"store_ids"`
+	ClaimFrom       string      `json:"claim_from"`
+	ClaimUntil      string      `json:"claim_until"`
+	RedeemFrom      string      `json:"redeem_from"`
+	RedeemUntil     string      `json:"redeem_until"`
+	OnsiteRedempt   bool        `json:"onsite_redemption"`
+	StaffScope      string      `json:"staff_scope"`
+	OutOfStockRule  string      `json:"out_of_stock_rule"`
 }
 
 // BenefitKind is a distinct named type so unknown kinds cannot slip in as ints.
@@ -116,13 +116,13 @@ type BenefitKind = string
 
 // Spec is the full merchant configuration for the publish-reward mode.
 type Spec struct {
-	VerificationMode string `json:"verification_mode"`
-	CustomerCopy     string `json:"customer_copy"`
-	Reward           Reward `json:"reward"`
-	DedupBasis       string `json:"dedup_basis"`
-	PerOrderLimit    bool   `json:"per_order_limit"`
+	VerificationMode string       `json:"verification_mode"`
+	CustomerCopy     string       `json:"customer_copy"`
+	Reward           Reward       `json:"reward"`
+	DedupBasis       string       `json:"dedup_basis"`
+	PerOrderLimit    bool         `json:"per_order_limit"`
 	Channels         []ChannelRef `json:"channels"`
-	ContentVerID     string `json:"content_version_id"`
+	ContentVerID     string       `json:"content_version_id"`
 }
 
 // ChannelVerdict is the caller-assembled Gate outcome for one selected route.
@@ -183,9 +183,7 @@ func ValidateSpec(s Spec) error {
 	default:
 		return fmt.Errorf("campaignenable: benefit kind %q is not a supported reward kind", s.Reward.Kind)
 	}
-	if strings.TrimSpace(s.Reward.Slot) == "" {
-		return fmt.Errorf("campaignenable: benefit slot reference is required")
-	}
+	// 权益引用(benefit_slot)的「有没有」归启用检查;这里不拦空草稿。
 	switch s.Reward.BudgetMode {
 	case BudgetTotalQuantity:
 		if s.Reward.TotalQuantity == nil {
@@ -212,19 +210,12 @@ func ValidateSpec(s Spec) error {
 	if s.PerOrderLimit && s.DedupBasis != BasisReceipt {
 		return fmt.Errorf("campaignenable: per_order_limit requires the verifiable_receipt judgment basis")
 	}
-	if len(s.Reward.StoreIDs) == 0 {
-		return fmt.Errorf("campaignenable: at least one applicable store is required")
-	}
-	if len(s.Channels) == 0 {
-		return fmt.Errorf("campaignenable: at least one publish route must be selected")
-	}
+	// 草稿允许不完整:渠道/内容/权益引用/门店的「有没有」归启用检查(Check),
+	// 这里只管「给了的值形状对不对」。
 	for _, c := range s.Channels {
 		if c.empty() {
 			return fmt.Errorf("campaignenable: every channel needs platform + entry_mode + scenario (a bare platform string is not an admission)")
 		}
-	}
-	if strings.TrimSpace(s.ContentVerID) == "" {
-		return fmt.Errorf("campaignenable: content_version_id must reference a content pack version")
 	}
 	switch s.Reward.StaffScope {
 	case ScopeStoreStaff, ScopeOrgOwner:
@@ -266,7 +257,7 @@ func Check(s Spec, f Facts) Decision {
 	if !f.ContentDistributable {
 		return refuse(ReasonContentGrantExpired, "content_version_id")
 	}
-	if len(f.ChannelVerdicts) == 0 {
+	if len(s.Channels) == 0 || len(f.ChannelVerdicts) == 0 {
 		return refuse(ReasonNoRunnableChannel, "channels")
 	}
 	anyAllowed := false
@@ -304,7 +295,7 @@ func Check(s Spec, f Facts) Decision {
 	if !f.WindowOK {
 		return refuse(ReasonWindowConflict, "claim_window")
 	}
-	if !f.StoreScopeOK {
+	if len(s.Reward.StoreIDs) == 0 || !f.StoreScopeOK {
 		return refuse(ReasonStoreMismatch, "store_ids")
 	}
 	return Decision{Allowed: true}
@@ -361,10 +352,10 @@ func dedupStatement(s Spec) string {
 
 func benefitSummary(s Spec) string {
 	kind := map[string]string{
-		KindStoreCoupon:  "门店优惠券",
-		KindImportedCode: "券码",
-		KindOnsiteGift:   "现场赠品",
-		KindOnsiteDiscount:  "现场折扣",
+		KindStoreCoupon:    "门店优惠券",
+		KindImportedCode:   "券码",
+		KindOnsiteGift:     "现场赠品",
+		KindOnsiteDiscount: "现场折扣",
 	}[s.Reward.Kind]
 	scope := "限指定门店可用"
 	if len(s.Reward.StoreIDs) == 1 {

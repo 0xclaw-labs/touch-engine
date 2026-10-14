@@ -438,6 +438,40 @@ func TestPublishConfigEnableRefusalMatrix(t *testing.T) {
 		f.owner(t, "PUT", "/api/v1/campaigns/"+f.camp1ID+"/publish-config", mustJSON(t, spec))
 		assertRefusal(t, f, "content_blocked", "content_version_id")
 	})
+	t.Run("content grant expired", func(t *testing.T) {
+		f, w := newCfgFixture(t, true)
+		// 授权已过期的已采用版本:启用拒绝 content_grant_expired(过期素材负例)。
+		video := f.createAsset(t, "up-v4", strings.Repeat("7", 64), assetlib.MediaTypeVideo)
+		cover := f.createAsset(t, "up-c4", strings.Repeat("8", 64), assetlib.MediaTypeImage)
+		pack, err := f.s.St.CreateContentPack(f.tenA, f.camp1ID, "", "过期授权包", "usr_owner_a")
+		if err != nil {
+			t.Fatalf("pack: %v", err)
+		}
+		ver, err := f.s.St.CreateContentPackVersion(f.tenA, pack.ID, contentpack.VersionSpec{
+			ContentKind: contentpack.ContentKindVideo,
+			Video:       contentpack.AssetSnapshot{AssetID: video.ID, AssetRef: video.AssetRef, SHA256: video.SHA256},
+			Cover:       contentpack.AssetSnapshot{AssetID: cover.ID, AssetRef: cover.AssetRef, SHA256: cover.SHA256},
+			Title:       "标题", Body: "正文", Topics: []string{"t"},
+			StoreName: "旗舰店", PriceNote: "价", ValidNote: "有效期",
+			PlatformVersions: []contentpack.PlatformVersion{{Platform: "douyin", Note: "n", SourceVersion: "s"}},
+			GrantRefs:        []string{"g"},
+			Marking:          contentpack.Marking{AdRequired: true},
+			Source:           contentpack.SourceMerchantUpload,
+		}, contentpack.StatusCandidate, "usr_owner_a")
+		if err != nil {
+			t.Fatalf("version: %v", err)
+		}
+		if _, err := f.s.St.AdoptContentPackVersion(f.tenA, pack.ID, ver.ID, "douyin", "usr_owner_a", time.Now().UTC()); err != nil {
+			t.Fatalf("adopt: %v", err)
+		}
+		// 采用时刻授权有效;此后授权到期(时间流逝)。版本行不可变,这里用
+		// 直连 SQL 模拟「授权过期」这一世界事实(夹具专用通道)。
+		w.exec(t, `UPDATE content_pack_versions SET grant_until='2020-01-01T00:00:00Z' WHERE id=?`, ver.ID)
+		spec := validEnableSpec(ver.ID)
+		spec.Reward.StoreIDs = []string{f.store1ID}
+		f.owner(t, "PUT", "/api/v1/campaigns/"+f.camp1ID+"/publish-config", mustJSON(t, spec))
+		assertRefusal(t, f, "content_grant_expired", "content_version_id")
+	})
 	t.Run("channel not admitted without seed truth", func(t *testing.T) {
 		f, _ := newCfgFixture(t, true)
 		// 只建内容,不落准入种子 → 全部路线 unknown/fail-closed。
@@ -451,7 +485,7 @@ func TestPublishConfigEnableRefusalMatrix(t *testing.T) {
 			ContentKind: contentpack.ContentKindVideo,
 			Video:       contentpack.AssetSnapshot{AssetID: video.ID, AssetRef: video.AssetRef, SHA256: video.SHA256},
 			Cover:       contentpack.AssetSnapshot{AssetID: cover.ID, AssetRef: cover.AssetRef, SHA256: cover.SHA256},
-			Title: "标题", Body: "正文", Topics: []string{"t"},
+			Title:       "标题", Body: "正文", Topics: []string{"t"},
 			StoreName: "旗舰店", PriceNote: "价", ValidNote: "有效期",
 			PlatformVersions: []contentpack.PlatformVersion{{Platform: "douyin", Note: "n", SourceVersion: "s"}},
 			GrantRefs:        []string{"g"}, Marking: contentpack.Marking{AdRequired: true},
@@ -513,7 +547,7 @@ func TestPublishConfigEnableRefusalMatrix(t *testing.T) {
 			ContentKind: contentpack.ContentKindVideo,
 			Video:       contentpack.AssetSnapshot{AssetID: video.ID, AssetRef: video.AssetRef, SHA256: video.SHA256},
 			Cover:       contentpack.AssetSnapshot{AssetID: cover.ID, AssetRef: cover.AssetRef, SHA256: cover.SHA256},
-			Title: "标题", Body: "正文", Topics: []string{"t"},
+			Title:       "标题", Body: "正文", Topics: []string{"t"},
 			StoreName: "旗舰店", PriceNote: "价", ValidNote: "有效期",
 			PlatformVersions: []contentpack.PlatformVersion{{Platform: "douyin", Note: "n", SourceVersion: "s"}},
 			GrantRefs:        []string{"g"}, Marking: contentpack.Marking{AdRequired: true},

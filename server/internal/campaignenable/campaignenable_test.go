@@ -46,16 +46,16 @@ func validSpec() Spec {
 
 func validFacts() Facts {
 	return Facts{
-		Now:               testNow,
-		ContentAdopted:    true,
+		Now:                  testNow,
+		ContentAdopted:       true,
 		ContentDistributable: true,
-		ChannelVerdicts:   []ChannelVerdict{{Ref: ChannelRef{Platform: "douyin", EntryMode: "h5", Scenario: "store_post"}, Allowed: true}},
-		BenefitRefPresent: true,
-		BenefitVersionOK:  true,
-		BenefitStockOK:    true,
-		WindowOK:          true,
-		StoreScopeOK:      true,
-		RuleVersion:       3,
+		ChannelVerdicts:      []ChannelVerdict{{Ref: ChannelRef{Platform: "douyin", EntryMode: "h5", Scenario: "store_post"}, Allowed: true}},
+		BenefitRefPresent:    true,
+		BenefitVersionOK:     true,
+		BenefitStockOK:       true,
+		WindowOK:             true,
+		StoreScopeOK:         true,
+		RuleVersion:          3,
 	}
 }
 
@@ -81,8 +81,6 @@ func TestValidateSpecShapeMatrix(t *testing.T) {
 		{"per-order limit without receipt basis", func(s *Spec) { s.PerOrderLimit = true }},
 		{"channel with empty platform", func(s *Spec) { s.Channels[0].Platform = " " }},
 		{"channel with empty scenario", func(s *Spec) { s.Channels[0].Scenario = "" }},
-		{"no channels at all", func(s *Spec) { s.Channels = nil }},
-		{"content version missing", func(s *Spec) { s.ContentVerID = "" }},
 		{"staff scope unknown", func(s *Spec) { s.Reward.StaffScope = "anyone" }},
 		{"out-of-stock rule unknown", func(s *Spec) { s.Reward.OutOfStockRule = "ignore" }},
 	}
@@ -100,11 +98,17 @@ func TestValidateSpecShapeMatrix(t *testing.T) {
 			t.Fatalf("ValidateSpec rejected valid spec: %v", err)
 		}
 	})
-	t.Run("empty slot refused", func(t *testing.T) {
-		spec := validSpec()
-		spec.Reward.Slot = ""
-		if err := ValidateSpec(spec); err == nil {
-			t.Fatal("empty benefit slot must be refused")
+	t.Run("incomplete draft is savable (shape only)", func(t *testing.T) {
+		// 票面:草稿必须可保存。渠道/内容/门店/权益引用缺失不影响保存,
+		// 只在启用检查被拒。
+		spec := Spec{
+			VerificationMode: ModeStaffObserved,
+			CustomerCopy:     "",
+			Reward:           Reward{Kind: KindStoreCoupon, BudgetMode: BudgetTotalQuantity, TotalQuantity: intPtr(1), StaffScope: ScopeStoreStaff, OutOfStockRule: StockStopNew},
+			DedupBasis:       BasisPlatformSubject,
+		}
+		if err := ValidateSpec(spec); err != nil {
+			t.Fatalf("incomplete draft must pass shape validation: %v", err)
 		}
 	})
 }
@@ -173,6 +177,14 @@ func TestCheckAllNegativeReasons(t *testing.T) {
 		{
 			name: "no channel verdicts at all", mutF: func(f *Facts) { f.ChannelVerdicts = nil },
 			reason: ReasonNoRunnableChannel, field: "channels",
+		},
+		{
+			name: "no channels selected on draft", mutS: func(s *Spec) { s.Channels = nil },
+			reason: ReasonNoRunnableChannel, field: "channels",
+		},
+		{
+			name: "no stores selected on draft", mutS: func(s *Spec) { s.Reward.StoreIDs = nil },
+			reason: ReasonStoreMismatch, field: "store_ids",
 		},
 		{
 			name: "benefit ref missing", mutF: func(f *Facts) { f.BenefitRefPresent = false },
