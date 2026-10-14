@@ -439,6 +439,27 @@ func (s *Store) GetRewardBenefit(id, tenantID, campaignID string) (RewardBenefit
 	return b, err
 }
 
+// GetRewardBenefitByCode (HUI-3562 店员台) locates one benefit by its coupon
+// code inside the tenant — the scan-to-redeem entry. Unknown/blank codes and
+// code-less benefits (现场赠品/折扣) answer ErrNotFound; store scoping is the
+// caller's (httpapi) job, as with GetRewardBenefit. Codes are unique per
+// (tenant, inventory); if a tenant ever holds a duplicated imported code the
+// newest row wins and the redemption still targets exactly that one benefit.
+func (s *Store) GetRewardBenefitByCode(tenantID, code string) (RewardBenefit, error) {
+	c := strings.TrimSpace(code)
+	if c == "" {
+		return RewardBenefit{}, ErrNotFound
+	}
+	row := s.DB.QueryRow(
+		`SELECT `+rewardBenefitCols+` FROM reward_benefits WHERE tenant_id=? AND code=? ORDER BY created_at DESC, id DESC LIMIT 1`,
+		tenantID, c)
+	b, err := scanRewardBenefit(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RewardBenefit{}, ErrNotFound
+	}
+	return b, err
+}
+
 type rewardOperationRow struct {
 	ID      string
 	Op      string

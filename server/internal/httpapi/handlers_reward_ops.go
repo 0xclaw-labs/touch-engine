@@ -47,6 +47,8 @@ func (s *Server) registerRewardOpsRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/v1/campaigns/{id}/reward-inventory", s.requireSession(s.handleRewardInventoryCreate))
 	mux.Handle("POST /api/v1/campaigns/{id}/reward-inventory/{invId}/status", s.requireSession(s.handleRewardInventoryStatus))
 	mux.Handle("GET /api/v1/campaigns/{id}/reward-benefits", s.requireSession(s.handleRewardBenefitsList))
+	// HUI-3562 店员台:扫券码定位核销卡(只读;核销仍走 redeem)。
+	mux.Handle("GET /api/v1/reward-benefits/by-code", s.requireSession(s.handleRewardBenefitByCode))
 	mux.Handle("GET /api/v1/campaigns/{id}/reward-review-requests", s.requireSession(s.handleRewardReviewRequests))
 	mux.Handle("POST /api/v1/campaigns/{id}/reward-confirm", s.requireSession(s.handleRewardConfirm))
 	mux.Handle("POST /api/v1/campaigns/{id}/reward-benefits/{benefitId}/redeem", s.requireSession(s.handleRewardRedeem))
@@ -229,6 +231,32 @@ func (s *Server) handleRewardBenefitsList(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// handleRewardBenefitByCode (HUI-3562 店员台): 扫券码定位核销卡。租户内按码
+// 定位,权益行自己的门店做 read_record 作用域鉴权——错店店员对跨店券得到
+// 404 掩蔽(跨店记录不可见)。只读定位;核销仍走 redeem 端点(1671 单事务)。
+func (s *Server) handleRewardBenefitByCode(w http.ResponseWriter, r *http.Request) {
+	c := callerFrom(r)
+	if c == nil || c.Member == nil {
+		fail(w, http.StatusUnauthorized, "unauthenticated", "sign in required")
+		return
+	}
+	code := r.URL.Query().Get("code")
+	if strings.TrimSpace(code) == "" {
+		fail(w, http.StatusBadRequest, "bad_request", "code is required")
+		return
+	}
+	ben, err := s.St.GetRewardBenefitByCode(c.Member.TenantID, code)
+	if err != nil {
+		rewardError(w, err)
+		return
+	}
+	if !s.requireScopedAction(c, authz.ActionReadRecord,
+		authz.RecordScope{TenantID: c.Member.TenantID, StoreID: ben.StoreID}, true, w) {
+		return
+	}
+	writeJSON(w, http.StatusOK, ben)
 }
 
 func (s *Server) handleRewardReviewRequests(w http.ResponseWriter, r *http.Request) {

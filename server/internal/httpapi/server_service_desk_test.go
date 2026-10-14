@@ -317,6 +317,53 @@ func TestStaffPeekInvisibleWhenParticipationOff(t *testing.T) {
 	mustEqual(t, status, http.StatusNotFound)
 }
 
+// ---- T3: 券码定位 by-code -----------------------------------------------------------
+
+// seedIssuedBenefit: 用真实 confirm 落一条 issued 权益,返回 (benefitID, code)。
+func (f *serviceDeskFixture) seedIssuedBenefit(t *testing.T, pid, slot, evidence, eventID string) (string, string) {
+	t.Helper()
+	status, _, out := f.do(t, "POST", "/api/v1/campaigns/"+f.campaignA+"/reward-confirm", "sess-owner-a", f.tenA,
+		confirmBody(pid, slot, evidence, f.storeA, eventID))
+	mustEqual(t, status, http.StatusOK)
+	ben, _ := out["benefit"].(map[string]any)
+	if ben == nil {
+		t.Fatalf("confirm produced no benefit: %v", out)
+	}
+	id, _ := ben["id"].(string)
+	code, _ := ben["code"].(string)
+	return id, code
+}
+
+func TestRewardBenefitsByCodeScan(t *testing.T) {
+	f := newServiceDeskFixture(t)
+	pid, _ := f.startParticipation(t, "idem-code-1")
+	benID, code := f.seedIssuedBenefit(t, pid, "first_publish", "staff_observed_submission", "evt-code-1")
+	if code == "" {
+		t.Fatal("store_coupon benefit must carry a code")
+	}
+
+	// 本店经理扫券码:200 核销卡载荷。
+	status, _, card := f.do(t, "GET", "/api/v1/reward-benefits/by-code?code="+code, "sess-mgr-a", f.tenA, "")
+	mustEqual(t, status, http.StatusOK)
+	if card["id"] != benID || card["status"] != "issued" {
+		t.Fatalf("by-code card = %v, want id %s issued", card, benID)
+	}
+
+	// 邻店经理:404 掩蔽(跨店记录不可见)。
+	status, _, _ = f.do(t, "GET", "/api/v1/reward-benefits/by-code?code="+code, "sess-mgr-b", f.tenA, "")
+	mustEqual(t, status, http.StatusNotFound)
+
+	// 未知识码:404;空码:400。
+	status, _, _ = f.do(t, "GET", "/api/v1/reward-benefits/by-code?code=NOPE", "sess-mgr-a", f.tenA, "")
+	mustEqual(t, status, http.StatusNotFound)
+	status, _, _ = f.do(t, "GET", "/api/v1/reward-benefits/by-code?code=", "sess-mgr-a", f.tenA, "")
+	mustEqual(t, status, http.StatusBadRequest)
+
+	// 错租户:404(租户内查无此码)。
+	status, _, _ = f.do(t, "GET", "/api/v1/reward-benefits/by-code?code="+code, "sess-owner-b", f.tenB, "")
+	mustEqual(t, status, http.StatusNotFound)
+}
+
 // ---- T2: 手输限流 -------------------------------------------------------------------
 
 func TestStaffTokenEntryRateLimited(t *testing.T) {
