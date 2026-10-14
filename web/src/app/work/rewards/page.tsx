@@ -357,6 +357,11 @@ export default function RewardsPage() {
             {rewardNotice(reward)} 访客侧状态仍然只读；这一页不替访客发布。
           </p>
           <p className="tk-note">{rulesNote}</p>
+          {campaignId ? (
+            <p className="tk-note" data-field="publish-config-link">
+              活动的发布与启用（内容、渠道、优惠条件、顾客预览）在 <a href={`/work/campaigns/${campaignId}#publish-config`}>活动详情「发布与启用」</a>里配置。
+            </p>
+          ) : null}
           <p className="tk-note">{separation}</p>
           <p className="tk-gap"><a href={campaignId ? `/work/campaigns/${campaignId}` : "/work/campaigns"}>回到活动</a></p>
         </>

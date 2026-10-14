@@ -21,6 +21,8 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"authorized_returns",
 		"campaign_assets",
 		"campaign_links",
+		"campaign_publish_config_revisions",
+		"campaign_publish_configs",
 		"campaign_rule_revisions",
 		"campaign_rules",
 		"campaign_saved_copy",

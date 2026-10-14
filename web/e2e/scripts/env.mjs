@@ -221,6 +221,8 @@ async function up() {
     LEADS_TARGET_APP_ID: "e2e-crm-app",
     LEADS_PHONE_PEPPER: "e2e-phone-pepper",
     FEATURE_DASHBOARD: "on",
+    // HUI-1676：规则编辑器与发布兑奖配置（默认 off；本地测试部署开,启用裁决归 HUI-3531）
+    FEATURE_CAMPAIGN_RULES: "on",
     // HUI-2222：本地测试部署开确认与核销入口（生产默认 off，启用裁决归 HUI-3531）
     FEATURE_SERVICE_DESK: "on",
   };
