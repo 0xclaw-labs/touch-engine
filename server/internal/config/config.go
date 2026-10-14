@@ -52,6 +52,11 @@ const (
 	// off。off = 快照/选择路由不注册(404 不可见)+ handler gate 双保险 ——
 	// 管理面端点不加开关(仓内惯例),只有顾客可触达面走本开关。
 	EnvFeatureContentPacks = "FEATURE_CONTENT_PACKS"
+	// EnvFeatureRewardOps (HUI-1671 B3): 登记制开关,默认 off。
+	// off = 公共访客可达的奖励端口(短码 Summary)不注册(404 不可见)。
+	// on = 只读白名单计数端口,无券码/面额/成本。/work 管理面与受信内部
+	// 预留调用不加开关(仓内惯例:后台功能不加 FEATURE)。
+	EnvFeatureRewardOps = "FEATURE_REWARD_OPS"
 )
 
 // Config is the resolved server configuration.
@@ -130,6 +135,7 @@ type Config struct {
 	FeaturePublicCache    bool
 	FeatureDashboardCache bool
 	FeatureContentPacks   bool
+	FeatureRewardOps      bool
 
 	// Brand registry read client (HUI-2049). Touch never writes this registry
 	// and never treats a brand host as a tenant or a payer.
@@ -192,6 +198,7 @@ func Load(get func(string) string) Config {
 		FeaturePublicCache:    isTruthy(get(EnvFeaturePublicCache)),
 		FeatureDashboardCache: isTruthy(get(EnvFeatureDashboardCache)),
 		FeatureContentPacks:   isTruthy(get(EnvFeatureContentPacks)),
+		FeatureRewardOps:      isTruthy(get(EnvFeatureRewardOps)),
 		BrandBaseURL:          strings.TrimSpace(get("PLATFORM_BRAND_BASE_URL")),
 		BrandToken:            get("PLATFORM_BRAND_TOKEN"),
 		SubscriptionStatus:    firstNonEmpty(get("TOUCH_SUBSCRIPTION_STATUS"), "unconfirmed"),

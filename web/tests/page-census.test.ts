@@ -219,7 +219,7 @@ describe("半成品标记", () => {
       ["/work/campaigns/[id]", ["raw button"]],
       ["/work/materials", ["raw button", "raw input"]],
       // HUI-2628 r3：错误态补「重试」钮后各记 1 个 raw button（与 page-census.ts 账本同步）。
-      ["/work/rewards", ["raw button"]],
+      ["/work/rewards", ["raw button", "raw input"]],
       ["/work/analytics", ["raw button"]],
       ["/c/[code]", []],
       ["/c/[code]/contact", []],

@@ -489,6 +489,9 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("GET /api/v1/public/links/{code}/content-choices", http.HandlerFunc(s.handlePublicContentChoices))
 		mux.Handle("GET /api/v1/public/links/{code}/content-snapshot", http.HandlerFunc(s.handlePublicContentSnapshot))
 	}
+	// HUI-1671 B3 真实奖励交付: /work 管理面(无开关)、受信预留(internal token)、
+	// 公共 Summary(FEATURE_REWARD_OPS 默认 off)注册段集中在一个方法里。
+	s.registerRewardOpsRoutes(mux)
 
 	return s.withRequestLog(mux)
 }
