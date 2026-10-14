@@ -161,6 +161,7 @@ type StartResult struct {
 type Handoff struct {
 	ID              string
 	TenantID        string
+	StoreID         string
 	ParticipationID string
 	AttemptID       string
 	Platform        string
@@ -420,7 +421,7 @@ func (s *Service) byKey(tenantID, idem string) (Handoff, bool, error) {
 	return h, true, nil
 }
 
-const handoffCols = `id, tenant_id, participation_id, attempt_id, platform, entry_mode,
+const handoffCols = `id, tenant_id, store_id, participation_id, attempt_id, platform, entry_mode,
 	scenario, status, evidence_source, content_version, content_pack_version_id,
 	query_count, timed_out, cancel_reason, created_at, updated_at`
 
@@ -428,7 +429,7 @@ func (s *Service) scan(row rowScanner) (Handoff, error) {
 	var h Handoff
 	var status, ev string
 	var timedOut int
-	err := row.Scan(&h.ID, &h.TenantID, &h.ParticipationID, &h.AttemptID, &h.Platform,
+	err := row.Scan(&h.ID, &h.TenantID, &h.StoreID, &h.ParticipationID, &h.AttemptID, &h.Platform,
 		&h.EntryMode, &h.Scenario, &status, &ev, &h.ContentVersion, &h.ContentPackVersionID,
 		&h.QueryCount, &timedOut, &h.CancelReason, &h.CreatedAt, &h.UpdatedAt)
 	if err != nil {
@@ -436,6 +437,60 @@ func (s *Service) scan(row rowScanner) (Handoff, error) {
 	}
 	h.Status, h.EvidenceSource, h.TimedOut = State(status), EvidenceSource(ev), timedOut == 1
 	return h, nil
+}
+
+// GetScoped reads one handoff inside a tenant (staff/callback callers; the
+// HTTP layer authorizes scope before this). Unknown ids answer ErrNotFound.
+func (s *Service) GetScoped(_ context.Context, id, tenantID string) (Handoff, error) {
+	h, err := s.scan(s.db.QueryRow(`SELECT `+handoffCols+` FROM publish_handoffs WHERE id=? AND tenant_id=?`, id, tenantID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Handoff{}, ErrNotFound
+	}
+	return h, err
+}
+
+// LoadForCallback resolves a handoff by its opaque id alone (platform
+// callbacks arrive without a tenant context). The id is 128-bit random, and
+// every later check (验签+五绑定,其中 tenant 绑定对比行内真值)依然强制——
+// 回执声称的租户与行不符即拒。Unknown ids answer ErrNotFound.
+func (s *Service) LoadForCallback(_ context.Context, id string) (Handoff, error) {
+	h, err := s.scan(s.db.QueryRow(`SELECT `+handoffCols+` FROM publish_handoffs WHERE id=?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Handoff{}, ErrNotFound
+	}
+	return h, err
+}
+
+// ApplyReceiptByID is the callback entry: resolve by id, then run the same
+// verify→bind→dedupe→transition pipeline with the ROW's tenant as truth.
+func (s *Service) ApplyReceiptByID(ctx context.Context, handoffID string, wire ReceiptWire) (Handoff, error) {
+	h, err := s.LoadForCallback(ctx, handoffID)
+	if err != nil {
+		return Handoff{}, err
+	}
+	return s.ApplyReceipt(ctx, h.TenantID, handoffID, wire)
+}
+
+// SnapshotOf returns the frozen text + media items of a handoff (plan/media
+// re-rendering; never re-reads the pack so 换稿不会静默漏进旧交接).
+func (s *Service) SnapshotOf(_ context.Context, id, tenantID string) (TextInput, []MediaItem, error) {
+	var textJSON, mediaJSON string
+	err := s.db.QueryRow(`SELECT text_json, media_json FROM publish_handoffs WHERE id=? AND tenant_id=?`, id, tenantID).Scan(&textJSON, &mediaJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return TextInput{}, nil, ErrNotFound
+	}
+	if err != nil {
+		return TextInput{}, nil, fmt.Errorf("publishhandoff: snapshot: %w", err)
+	}
+	var text TextInput
+	var media []MediaItem
+	if err := json.Unmarshal([]byte(textJSON), &text); err != nil {
+		return TextInput{}, nil, fmt.Errorf("publishhandoff: text snapshot: %w", err)
+	}
+	if err := json.Unmarshal([]byte(mediaJSON), &media); err != nil {
+		return TextInput{}, nil, fmt.Errorf("publishhandoff: media snapshot: %w", err)
+	}
+	return text, media, nil
 }
 
 type rowScanner interface{ Scan(dest ...any) error }
