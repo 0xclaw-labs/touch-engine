@@ -361,6 +361,18 @@ func TestTouchpointViewAndListAndParticipationCount(t *testing.T) {
 	if v.EntryCode != links[0].Code || v.EntryState != string(OutcomeAvailable) {
 		t.Fatalf("entry = %s/%s, want %s/%s", v.EntryCode, v.EntryState, links[0].Code, OutcomeAvailable)
 	}
+	// 停用别名:检查所见=访客所见(touchpoint_disabled),不显示状态未知
+	if _, err := s.SetTouchpointStatus(a1.ID, ten.ID, TagStatusDisabled, "tester"); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	vOff, err := s.GetTouchpointView(a1.ID, ten.ID)
+	mustNoErr(t, err)
+	if vOff.EntryState != string(TpDisabled) || vOff.EntryCode != "" {
+		t.Fatalf("disabled entry = %q/%q, want %q/empty", vOff.EntryState, vOff.EntryCode, TpDisabled)
+	}
+	if _, err := s.SetTouchpointStatus(a1.ID, ten.ID, TagStatusActive, "tester"); err != nil {
+		t.Fatalf("re-enable: %v", err)
+	}
 	if v.Position != "桌贴" {
 		t.Fatalf("position = %q", v.Position)
 	}

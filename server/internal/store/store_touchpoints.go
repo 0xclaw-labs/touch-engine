@@ -147,9 +147,16 @@ func scanTouchpointView(sc interface{ Scan(...any) error }) (TouchpointView, err
 
 // attachEntry computes the effective entry for a view (检查 = 公共解析同源).
 func (s *Store) attachEntry(v *TouchpointView) {
+	// 检查所见=访客所见:redirect 带规范码与五态;别名停用/解析失败也如实带出
+	// touchpoint_disabled / not_found,管理面检查不显示「状态未知」。
 	res := s.ResolveTouchpoint(v.Code, time.Now())
-	if res.Outcome == TpRedirect {
+	switch res.Outcome {
+	case TpRedirect:
 		v.EntryCode, v.EntryState = res.Code, string(res.State)
+	case TpDisabled:
+		v.EntryState = string(TpDisabled)
+	default:
+		v.EntryState = string(TpNotFound)
 	}
 }
 
