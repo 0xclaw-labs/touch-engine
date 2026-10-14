@@ -228,13 +228,15 @@ func (s *Service) LookupByVisitor(ctx context.Context, tenantID, linkCode, visit
 }
 
 // GetForVisitor reads a participation bound to the caller's own visitor key.
-// Any mismatch — id, tenant, visitor — answers ErrNotFound so sequential or
-// guessed ids have no probe surface.
-func (s *Service) GetForVisitor(_ context.Context, id, tenantID, visitorID string) (Participation, error) {
+// The tenant boundary comes from the row itself (a participation is tenant-
+// bound at birth; the visitor binding is the access secret). Any mismatch —
+// id or visitor — answers ErrNotFound so sequential or guessed ids have no
+// probe surface.
+func (s *Service) GetForVisitor(_ context.Context, id, visitorID string) (Participation, error) {
 	if visitorID == "" {
 		return Participation{}, ErrNotFound
 	}
-	row := s.db.QueryRow(`SELECT `+participationCols+` FROM participations WHERE id=? AND tenant_id=? AND visitor_id=?`, id, tenantID, visitorID)
+	row := s.db.QueryRow(`SELECT `+participationCols+` FROM participations WHERE id=? AND visitor_id=?`, id, visitorID)
 	p, err := scanParticipation(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Participation{}, ErrNotFound
@@ -310,8 +312,8 @@ func scanParticipation(row rowScanner) (Participation, error) {
 
 // UpdateContent moves the current content-pack selection (预览期可换选).
 // Frozen attempts are history rows; they never change.
-func (s *Service) UpdateContent(_ context.Context, id, tenantID, visitorID, contentPackVersion string) (Participation, error) {
-	p, err := s.GetForVisitor(context.Background(), id, tenantID, visitorID)
+func (s *Service) UpdateContent(_ context.Context, id, visitorID, contentPackVersion string) (Participation, error) {
+	p, err := s.GetForVisitor(context.Background(), id, visitorID)
 	if err != nil {
 		return Participation{}, err
 	}
@@ -319,16 +321,16 @@ func (s *Service) UpdateContent(_ context.Context, id, tenantID, visitorID, cont
 		return Participation{}, ErrFrozen
 	}
 	if _, err := s.db.Exec(`UPDATE participations SET content_pack_version=?, updated_at=? WHERE id=? AND tenant_id=? AND visitor_id=?`,
-		contentPackVersion, rfc3339(s.now()), id, tenantID, visitorID); err != nil {
+		contentPackVersion, rfc3339(s.now()), id, p.TenantID, visitorID); err != nil {
 		return Participation{}, fmt.Errorf("participation: update content: %w", err)
 	}
-	return s.getScoped(id, tenantID)
+	return s.getScoped(id, p.TenantID)
 }
 
 // Cancel ends an unfinished participation by its owner (or the store via the
 // staff surface in later wiring). Terminal states never resurrect.
-func (s *Service) Cancel(_ context.Context, id, tenantID, visitorID string) (Participation, error) {
-	p, err := s.GetForVisitor(context.Background(), id, tenantID, visitorID)
+func (s *Service) Cancel(_ context.Context, id, visitorID string) (Participation, error) {
+	p, err := s.GetForVisitor(context.Background(), id, visitorID)
 	if err != nil {
 		return Participation{}, err
 	}
@@ -336,11 +338,11 @@ func (s *Service) Cancel(_ context.Context, id, tenantID, visitorID string) (Par
 		return Participation{}, ErrInvalidTransition
 	}
 	if _, err := s.db.Exec(`UPDATE participations SET status=?, updated_at=? WHERE id=? AND tenant_id=? AND visitor_id=?`,
-		string(StatusCanceled), rfc3339(s.now()), id, tenantID, visitorID); err != nil {
+		string(StatusCanceled), rfc3339(s.now()), id, p.TenantID, visitorID); err != nil {
 		return Participation{}, fmt.Errorf("participation: cancel: %w", err)
 	}
-	_ = s.cancelAttempts(id, tenantID)
-	return s.getScoped(id, tenantID)
+	_ = s.cancelAttempts(id, p.TenantID)
+	return s.getScoped(id, p.TenantID)
 }
 
 func (s *Service) cancelAttempts(participationID, tenantID string) error {
@@ -353,7 +355,6 @@ func (s *Service) cancelAttempts(participationID, tenantID string) error {
 // target (custpublish platforms); Method says how the attempt leaves the page.
 type AttemptInput struct {
 	ParticipationID string
-	TenantID        string
 	VisitorID       string
 	Platform        string
 	Method          HandoffMethod
@@ -362,7 +363,7 @@ type AttemptInput struct {
 // CreateAttempt records a prepared attempt. Versions freeze at BeginHandoff,
 // not here — that is the exact difference between previewing and handing off.
 func (s *Service) CreateAttempt(_ context.Context, in AttemptInput) (Attempt, error) {
-	p, err := s.GetForVisitor(context.Background(), in.ParticipationID, in.TenantID, in.VisitorID)
+	p, err := s.GetForVisitor(context.Background(), in.ParticipationID, in.VisitorID)
 	if err != nil {
 		return Attempt{}, err
 	}
@@ -377,7 +378,7 @@ func (s *Service) CreateAttempt(_ context.Context, in AttemptInput) (Attempt, er
 	}
 	now := rfc3339(s.now())
 	a := Attempt{
-		ID: newID("pta_"), TenantID: in.TenantID, ParticipationID: p.ID,
+		ID: newID("pta_"), TenantID: p.TenantID, ParticipationID: p.ID,
 		Platform: in.Platform, HandoffMethod: in.Method,
 		ContentPackVersion: p.ContentPackVersion, RuleVersion: p.RuleVersion,
 		Status: AttemptPrepared, CreatedAt: now, UpdatedAt: now,
@@ -394,13 +395,28 @@ func (s *Service) CreateAttempt(_ context.Context, in AttemptInput) (Attempt, er
 }
 
 // ListAttempts lists the caller's own attempts, oldest first.
-func (s *Service) ListAttempts(_ context.Context, id, tenantID, visitorID string) ([]Attempt, error) {
-	if _, err := s.GetForVisitor(context.Background(), id, tenantID, visitorID); err != nil {
+func (s *Service) ListAttempts(_ context.Context, id, visitorID string) ([]Attempt, error) {
+	p, err := s.GetForVisitor(context.Background(), id, visitorID)
+	if err != nil {
 		return nil, err
 	}
+	return s.listAttempts(p.ID, p.TenantID)
+}
+
+// ListAttemptsForStaff lists attempts of a participation inside the caller's
+// tenant (the httpapi staff surface authorizes scope before this).
+func (s *Service) ListAttemptsForStaff(_ context.Context, id, tenantID string) ([]Attempt, error) {
+	p, err := s.getScoped(id, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return s.listAttempts(p.ID, p.TenantID)
+}
+
+func (s *Service) listAttempts(participationID, tenantID string) ([]Attempt, error) {
 	rows, err := s.db.Query(`SELECT id, tenant_id, participation_id, platform, handoff_method,
 		content_pack_version, rule_version, status, created_at, updated_at
-		FROM participation_attempts WHERE participation_id=? AND tenant_id=? ORDER BY created_at, id`, id, tenantID)
+		FROM participation_attempts WHERE participation_id=? AND tenant_id=? ORDER BY created_at, id`, participationID, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("participation: list attempts: %w", err)
 	}
@@ -435,7 +451,6 @@ func validMethod(m HandoffMethod) bool {
 // staff_verify may omit it (目测核验没有发布尝试).
 type HandoffInput struct {
 	ParticipationID string
-	TenantID        string
 	VisitorID       string
 	AttemptID       string
 	Purpose         Purpose
@@ -456,7 +471,7 @@ type HandoffToken struct {
 // handed_off, moves the participation in_progress, and mints the credential.
 // benefit_slot is never duplicated: retries reuse the participation's slot.
 func (s *Service) BeginHandoff(ctx context.Context, in HandoffInput) (HandoffToken, error) {
-	p, err := s.GetForVisitor(context.Background(), in.ParticipationID, in.TenantID, in.VisitorID)
+	p, err := s.GetForVisitor(context.Background(), in.ParticipationID, in.VisitorID)
 	if err != nil {
 		return HandoffToken{}, err
 	}
@@ -491,7 +506,7 @@ func (s *Service) BeginHandoff(ctx context.Context, in HandoffInput) (HandoffTok
 			SET content_pack_version=?, rule_version=?, status=?, updated_at=?
 			WHERE id=? AND tenant_id=? AND participation_id=? AND status=?`,
 			p.ContentPackVersion, p.RuleVersion, string(AttemptHandedOff), rfc3339(s.now()),
-			freeze, in.TenantID, p.ID, string(AttemptPrepared))
+			freeze, p.TenantID, p.ID, string(AttemptPrepared))
 		if err != nil {
 			return HandoffToken{}, fmt.Errorf("participation: freeze attempt: %w", err)
 		}
@@ -716,13 +731,14 @@ func scanCredential(row rowScanner) (Credential, error) {
 
 // Revoke invalidates an unused credential owned by the participation's
 // current visitor. Used credentials cannot be un-used.
-func (s *Service) Revoke(_ context.Context, id, tenantID, visitorID, credentialID string) error {
-	if _, err := s.GetForVisitor(context.Background(), id, tenantID, visitorID); err != nil {
+func (s *Service) Revoke(_ context.Context, id, visitorID, credentialID string) error {
+	p, err := s.GetForVisitor(context.Background(), id, visitorID)
+	if err != nil {
 		return err
 	}
 	res, err := s.db.Exec(`UPDATE handoff_credentials SET revoked_at=?
 		WHERE id=? AND tenant_id=? AND participation_id=? AND used_at='' AND revoked_at=''`,
-		rfc3339(s.now()), credentialID, tenantID, id)
+		rfc3339(s.now()), credentialID, p.TenantID, id)
 	if err != nil {
 		return fmt.Errorf("participation: revoke: %w", err)
 	}

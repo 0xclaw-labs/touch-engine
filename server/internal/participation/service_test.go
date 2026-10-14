@@ -122,8 +122,8 @@ func TestPeekCredentialDoesNotConsume(t *testing.T) {
 	ctx := context.Background()
 	started, _ := svc.Start(ctx, startInput(tenant, store, campaign, "visit_a", "idem_1", "cp"))
 	id := started.Participation.ID
-	h, _ := svc.CreateAttempt(ctx, AttemptInput{ParticipationID: id, TenantID: tenant, VisitorID: "visit_a", Platform: "douyin", Method: MethodH5})
-	hk, err := svc.BeginHandoff(ctx, HandoffInput{ParticipationID: id, TenantID: tenant, VisitorID: "visit_a", AttemptID: h.ID})
+	h, _ := svc.CreateAttempt(ctx, AttemptInput{ParticipationID: id, VisitorID: "visit_a", Platform: "douyin", Method: MethodH5})
+	hk, err := svc.BeginHandoff(ctx, HandoffInput{ParticipationID: id, VisitorID: "visit_a", AttemptID: h.ID})
 	if err != nil {
 		t.Fatalf("handoff: %v", err)
 	}
@@ -162,17 +162,16 @@ func TestLookupAndAccessControl(t *testing.T) {
 		t.Fatal("another browser must not auto-recover the participation")
 	}
 	// 裸 ID:无绑定读取拒绝(顺序/猜测 ID 无探测面)。
-	if _, err := svc.GetForVisitor(ctx, id, tenant, "visit_b"); !errors.Is(err, ErrNotFound) {
+	if _, err := svc.GetForVisitor(ctx, id, "visit_b"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("foreign visitor read must be ErrNotFound, got %v", err)
 	}
-	if _, err := svc.GetForVisitor(ctx, "pt_missing", tenant, "visit_a"); !errors.Is(err, ErrNotFound) {
+	if _, err := svc.GetForVisitor(ctx, "pt_missing", "visit_a"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown id must be ErrNotFound, got %v", err)
 	}
-	if _, err := svc.GetForVisitor(ctx, id, "tnt_other", "visit_a"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("cross-tenant read must be ErrNotFound, got %v", err)
-	}
+	// 租户边界来自参与行本身:访客面没有可伪造的租户入参,
+	// 唯一的访问键是 visitor 绑定(上面 foreign visitor 已断言)。
 	// 自身会话读取正常。
-	if p, err := svc.GetForVisitor(ctx, id, tenant, "visit_a"); err != nil || p.ID != id {
+	if p, err := svc.GetForVisitor(ctx, id, "visit_a"); err != nil || p.ID != id {
 		t.Fatalf("own read: %v", err)
 	}
 }
@@ -209,20 +208,20 @@ func TestContentChangeAndAttempts(t *testing.T) {
 	id := started.Participation.ID
 
 	// 预览期自由换选。
-	if _, err := svc.UpdateContent(ctx, id, tenant, "visit_a", "cp_v2"); err != nil {
+	if _, err := svc.UpdateContent(ctx, id, "visit_a", "cp_v2"); err != nil {
 		t.Fatalf("content change before handoff: %v", err)
 	}
-	p, _ := svc.GetForVisitor(ctx, id, tenant, "visit_a")
+	p, _ := svc.GetForVisitor(ctx, id, "visit_a")
 	if p.ContentPackVersion != "cp_v2" {
 		t.Fatalf("selection = %s, want cp_v2", p.ContentPackVersion)
 	}
 
 	// attempt 1:h5 交接,冻结 cp_v2。
-	h1, err := svc.CreateAttempt(ctx, AttemptInput{ParticipationID: id, TenantID: tenant, VisitorID: "visit_a", Platform: "douyin", Method: MethodH5})
+	h1, err := svc.CreateAttempt(ctx, AttemptInput{ParticipationID: id, VisitorID: "visit_a", Platform: "douyin", Method: MethodH5})
 	if err != nil || h1.Status != AttemptPrepared {
 		t.Fatalf("CreateAttempt: %+v err=%v", h1, err)
 	}
-	tok1, err := svc.BeginHandoff(ctx, HandoffInput{ParticipationID: id, TenantID: tenant, VisitorID: "visit_a", AttemptID: h1.ID, PublicBaseURL: "https://h5.example.com"})
+	tok1, err := svc.BeginHandoff(ctx, HandoffInput{ParticipationID: id, VisitorID: "visit_a", AttemptID: h1.ID, PublicBaseURL: "https://h5.example.com"})
 	if err != nil {
 		t.Fatalf("BeginHandoff: %v", err)
 	}
@@ -235,28 +234,28 @@ func TestContentChangeAndAttempts(t *testing.T) {
 	if !CanTransition(StatusPending, StatusInProgress) {
 		t.Fatal("sanity")
 	}
-	p, _ = svc.GetForVisitor(ctx, id, tenant, "visit_a")
+	p, _ = svc.GetForVisitor(ctx, id, "visit_a")
 	if p.Status != StatusInProgress {
 		t.Fatalf("status after first handoff = %s, want in_progress", p.Status)
 	}
 
 	// 冻结后换选:参与当前选择变化,attempt 冻结行不变。
-	if _, err := svc.UpdateContent(ctx, id, tenant, "visit_a", "cp_v3"); err != nil {
+	if _, err := svc.UpdateContent(ctx, id, "visit_a", "cp_v3"); err != nil {
 		t.Fatalf("content change after handoff must move the current selection: %v", err)
 	}
 	// 换稿/换平台 = 新 attempt。
-	a2, err := svc.CreateAttempt(ctx, AttemptInput{ParticipationID: id, TenantID: tenant, VisitorID: "visit_a", Platform: "xiaohongshu", Method: MethodPlatformMini})
+	a2, err := svc.CreateAttempt(ctx, AttemptInput{ParticipationID: id, VisitorID: "visit_a", Platform: "xiaohongshu", Method: MethodPlatformMini})
 	if err != nil {
 		t.Fatalf("second attempt: %v", err)
 	}
-	tok2, err := svc.BeginHandoff(ctx, HandoffInput{ParticipationID: id, TenantID: tenant, VisitorID: "visit_a", AttemptID: a2.ID})
+	tok2, err := svc.BeginHandoff(ctx, HandoffInput{ParticipationID: id, VisitorID: "visit_a", AttemptID: a2.ID})
 	if err != nil {
 		t.Fatalf("second handoff: %v", err)
 	}
 	if tok2.Token == tok1.Token {
 		t.Fatal("each handoff mints a fresh credential")
 	}
-	attempts, err := svc.ListAttempts(ctx, id, tenant, "visit_a")
+	attempts, err := svc.ListAttempts(ctx, id, "visit_a")
 	if err != nil || len(attempts) != 2 {
 		t.Fatalf("want 2 attempts, got %d err=%v", len(attempts), err)
 	}
@@ -277,7 +276,7 @@ func TestContentChangeAndAttempts(t *testing.T) {
 		t.Fatalf("slot must stay %s, got %s", id, tok2.Participation.BenefitSlot)
 	}
 	// 他人 attempt 无权;prepared 不能直接当凭据(必须 BeginHandoff)。
-	if _, err := svc.CreateAttempt(ctx, AttemptInput{ParticipationID: id, TenantID: tenant, VisitorID: "visit_b", Platform: "douyin", Method: MethodH5}); !errors.Is(err, ErrNotFound) {
+	if _, err := svc.CreateAttempt(ctx, AttemptInput{ParticipationID: id, VisitorID: "visit_b", Platform: "douyin", Method: MethodH5}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("foreign attempt creation must fail, got %v", err)
 	}
 }
@@ -338,7 +337,7 @@ func TestMarkFulfilledIdempotentNoDowngrade(t *testing.T) {
 	}
 	// 走到 awaiting_review。
 	if _, err := svc.BeginHandoff(ctx, HandoffInput{
-		ParticipationID: id, TenantID: tenant, VisitorID: "visit_a", Purpose: PurposeStaffVerify, TargetScope: tenant,
+		ParticipationID: id, VisitorID: "visit_a", Purpose: PurposeStaffVerify, TargetScope: tenant,
 	}); err != nil {
 		t.Fatalf("staff handoff: %v", err)
 	}
@@ -366,7 +365,7 @@ func TestMarkFulfilledIdempotentNoDowngrade(t *testing.T) {
 func mustStaffToken(t *testing.T, svc *Service, tenant, id, visitor string) string {
 	t.Helper()
 	tok, err := svc.BeginHandoff(context.Background(), HandoffInput{
-		ParticipationID: id, TenantID: tenant, VisitorID: visitor,
+		ParticipationID: id, VisitorID: visitor,
 		Purpose: PurposeStaffVerify, TargetScope: tenant,
 	})
 	if err != nil {
@@ -383,8 +382,8 @@ func TestHandoffRedeemMatrix(t *testing.T) {
 	id := started.Participation.ID
 
 	// customer_resume 交接。
-	h, _ := svc.CreateAttempt(ctx, AttemptInput{ParticipationID: id, TenantID: tenant, VisitorID: "visit_a", Platform: "douyin", Method: MethodH5})
-	hk, err := svc.BeginHandoff(ctx, HandoffInput{ParticipationID: id, TenantID: tenant, VisitorID: "visit_a", AttemptID: h.ID})
+	h, _ := svc.CreateAttempt(ctx, AttemptInput{ParticipationID: id, VisitorID: "visit_a", Platform: "douyin", Method: MethodH5})
+	hk, err := svc.BeginHandoff(ctx, HandoffInput{ParticipationID: id, VisitorID: "visit_a", AttemptID: h.ID})
 	if err != nil {
 		t.Fatalf("handoff: %v", err)
 	}
@@ -394,10 +393,10 @@ func TestHandoffRedeemMatrix(t *testing.T) {
 	if err != nil || res.Participation.ID != id {
 		t.Fatalf("redeem: %+v err=%v", res, err)
 	}
-	if p, _ := svc.GetForVisitor(ctx, id, tenant, "visit_b"); p.ID != id {
+	if p, _ := svc.GetForVisitor(ctx, id, "visit_b"); p.ID != id {
 		t.Fatal("new device should own the participation after redeem")
 	}
-	if _, err := svc.GetForVisitor(ctx, id, tenant, "visit_a"); !errors.Is(err, ErrNotFound) {
+	if _, err := svc.GetForVisitor(ctx, id, "visit_a"); !errors.Is(err, ErrNotFound) {
 		t.Fatal("old device binding is transferred (single credential)")
 	}
 
@@ -407,9 +406,9 @@ func TestHandoffRedeemMatrix(t *testing.T) {
 	}
 
 	// 撤销路径。
-	h2, _ := svc.CreateAttempt(ctx, AttemptInput{ParticipationID: id, TenantID: tenant, VisitorID: "visit_b", Platform: "douyin", Method: MethodH5})
-	hk2, _ := svc.BeginHandoff(ctx, HandoffInput{ParticipationID: id, TenantID: tenant, VisitorID: "visit_b", AttemptID: h2.ID})
-	if err := svc.Revoke(ctx, id, tenant, "visit_b", hk2.Credential.ID); err != nil {
+	h2, _ := svc.CreateAttempt(ctx, AttemptInput{ParticipationID: id, VisitorID: "visit_b", Platform: "douyin", Method: MethodH5})
+	hk2, _ := svc.BeginHandoff(ctx, HandoffInput{ParticipationID: id, VisitorID: "visit_b", AttemptID: h2.ID})
+	if err := svc.Revoke(ctx, id, "visit_b", hk2.Credential.ID); err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
 	if _, err := svc.Redeem(ctx, RedeemInput{Token: hk2.Token, Purpose: PurposeCustomerResume, TargetScope: "h5", NewVisitorID: "visit_c"}); !errors.Is(err, ErrCredentialRevoked) {
@@ -418,16 +417,16 @@ func TestHandoffRedeemMatrix(t *testing.T) {
 
 	// 过期路径(把时钟拨到凭据过期后)。
 	svc.opts.Now = func() time.Time { return time.Date(2026, 10, 14, 12, 11, 0, 0, time.UTC) } // >10min TTL
-	h3, _ := svc.CreateAttempt(ctx, AttemptInput{ParticipationID: id, TenantID: tenant, VisitorID: "visit_b", Platform: "douyin", Method: MethodH5})
-	hk3, _ := svc.BeginHandoff(ctx, HandoffInput{ParticipationID: id, TenantID: tenant, VisitorID: "visit_b", AttemptID: h3.ID})
+	h3, _ := svc.CreateAttempt(ctx, AttemptInput{ParticipationID: id, VisitorID: "visit_b", Platform: "douyin", Method: MethodH5})
+	hk3, _ := svc.BeginHandoff(ctx, HandoffInput{ParticipationID: id, VisitorID: "visit_b", AttemptID: h3.ID})
 	svc.opts.Now = func() time.Time { return time.Date(2026, 10, 14, 12, 21, 0, 0, time.UTC) }
 	if _, err := svc.Redeem(ctx, RedeemInput{Token: hk3.Token, Purpose: PurposeCustomerResume, TargetScope: "h5", NewVisitorID: "visit_c"}); !errors.Is(err, ErrCredentialExpired) {
 		t.Fatalf("expired redeem must fail, got %v", err)
 	}
 
 	// 目标不符(customer_resume 凭据拿去 staff 通道)。
-	h4, _ := svc.CreateAttempt(ctx, AttemptInput{ParticipationID: id, TenantID: tenant, VisitorID: "visit_b", Platform: "douyin", Method: MethodH5})
-	hk4, _ := svc.BeginHandoff(ctx, HandoffInput{ParticipationID: id, TenantID: tenant, VisitorID: "visit_b", AttemptID: h4.ID})
+	h4, _ := svc.CreateAttempt(ctx, AttemptInput{ParticipationID: id, VisitorID: "visit_b", Platform: "douyin", Method: MethodH5})
+	hk4, _ := svc.BeginHandoff(ctx, HandoffInput{ParticipationID: id, VisitorID: "visit_b", AttemptID: h4.ID})
 	if _, err := svc.Redeem(ctx, RedeemInput{Token: hk4.Token, Purpose: PurposeStaffVerify, TargetScope: tenant}); !errors.Is(err, ErrTargetMismatch) {
 		t.Fatalf("purpose mismatch must fail, got %v", err)
 	}
@@ -460,15 +459,15 @@ func TestCancellation(t *testing.T) {
 	started, _ := svc.Start(ctx, startInput(tenant, store, campaign, "visit_a", "idem_1", "cp"))
 	id := started.Participation.ID
 
-	if _, err := svc.Cancel(ctx, id, tenant, "visit_b"); !errors.Is(err, ErrNotFound) {
+	if _, err := svc.Cancel(ctx, id, "visit_b"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("foreign cancel must fail, got %v", err)
 	}
-	p, err := svc.Cancel(ctx, id, tenant, "visit_a")
+	p, err := svc.Cancel(ctx, id, "visit_a")
 	if err != nil || p.Status != StatusCanceled {
 		t.Fatalf("cancel: %+v err=%v", p, err)
 	}
 	// 终态后不能再交接。
-	if _, err := svc.CreateAttempt(ctx, AttemptInput{ParticipationID: id, TenantID: tenant, VisitorID: "visit_a", Platform: "douyin", Method: MethodH5}); err == nil {
+	if _, err := svc.CreateAttempt(ctx, AttemptInput{ParticipationID: id, VisitorID: "visit_a", Platform: "douyin", Method: MethodH5}); err == nil {
 		t.Fatal("canceled participation must not open attempts")
 	}
 }
@@ -482,11 +481,11 @@ func TestExpiredWindowBlocksHandoff(t *testing.T) {
 	}
 	// 时钟拨过有效期。
 	svc.opts.Now = func() time.Time { return time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC) }
-	if _, err := svc.CreateAttempt(ctx, AttemptInput{ParticipationID: started.Participation.ID, TenantID: tenant, VisitorID: "visit_a", Platform: "douyin", Method: MethodH5}); !errors.Is(err, ErrFrozen) {
+	if _, err := svc.CreateAttempt(ctx, AttemptInput{ParticipationID: started.Participation.ID, VisitorID: "visit_a", Platform: "douyin", Method: MethodH5}); !errors.Is(err, ErrFrozen) {
 		t.Fatalf("expired window must block handoff, got %v", err)
 	}
 	// 读取仍允许(顾客能看见发生了什么)。
-	if _, err := svc.GetForVisitor(ctx, started.Participation.ID, tenant, "visit_a"); err != nil {
+	if _, err := svc.GetForVisitor(ctx, started.Participation.ID, "visit_a"); err != nil {
 		t.Fatalf("read after expiry must stay allowed, got %v", err)
 	}
 	// 过窗后的新开始直接拒绝(fail-closed)。
@@ -501,10 +500,10 @@ func TestCleanupAnonymizesAndDeletes(t *testing.T) {
 	ctx := context.Background()
 	started, _ := svc.Start(ctx, startInput(tenant, store, campaign, "visit_a", "idem_1", "cp"))
 	id := started.Participation.ID
-	h, _ := svc.CreateAttempt(ctx, AttemptInput{ParticipationID: id, TenantID: tenant, VisitorID: "visit_a", Platform: "douyin", Method: MethodH5})
-	hk, _ := svc.BeginHandoff(ctx, HandoffInput{ParticipationID: id, TenantID: tenant, VisitorID: "visit_a", AttemptID: h.ID})
+	h, _ := svc.CreateAttempt(ctx, AttemptInput{ParticipationID: id, VisitorID: "visit_a", Platform: "douyin", Method: MethodH5})
+	hk, _ := svc.BeginHandoff(ctx, HandoffInput{ParticipationID: id, VisitorID: "visit_a", AttemptID: h.ID})
 	_, _ = svc.Redeem(ctx, RedeemInput{Token: hk.Token, Purpose: PurposeCustomerResume, TargetScope: "h5", NewVisitorID: "visit_b"})
-	if _, err := svc.Cancel(ctx, id, tenant, "visit_b"); err != nil {
+	if _, err := svc.Cancel(ctx, id, "visit_b"); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
 

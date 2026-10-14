@@ -34,6 +34,7 @@ import (
 	"github.com/bianjiefilm/touch-engine/server/internal/identity"
 	"github.com/bianjiefilm/touch-engine/server/internal/leads"
 	"github.com/bianjiefilm/touch-engine/server/internal/matrixconsume"
+	"github.com/bianjiefilm/touch-engine/server/internal/participation"
 	"github.com/bianjiefilm/touch-engine/server/internal/readcache"
 	"github.com/bianjiefilm/touch-engine/server/internal/redact"
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
@@ -79,6 +80,13 @@ type Server struct {
 	// with short-TTL instances.
 	PubCache  *readcache.Cache[store.ResolvedRows]
 	DashCache *readcache.Cache[dashboardEntry]
+
+	// Participation (HUI-3546) owns the participation/attempt/handoff
+	// tables. Constructed always; its routes register only under
+	// FEATURE_PARTICIPATION. The BenefitReserver stays nil until the reward
+	// domain (HUI-1671) lands: reservations then remain pending and the
+	// customer is never told 已保留.
+	Participation *participation.Service
 }
 
 // Frozen cache budgets (HUI-2981 comparison report §2.1 — do not tune without
@@ -126,6 +134,7 @@ func New(cfg config.Config, database *sql.DB, idc *identity.Client, upc *upload.
 			Capacity: dashCacheCapacity, TTL: dashCacheTTL, Jitter: dashCacheJitter,
 			Epoch: st.Epoch,
 		}),
+		Participation: participation.New(database, nil, participation.Options{}),
 	}
 }
 
@@ -492,6 +501,27 @@ func (s *Server) Handler() http.Handler {
 	// HUI-1671 B3 真实奖励交付: /work 管理面(无开关)、受信预留(internal token)、
 	// 公共 Summary(FEATURE_REWARD_OPS 默认 off)注册段集中在一个方法里。
 	s.registerRewardOpsRoutes(mux)
+
+	// HUI-3546 participation & cross-device resume. 登记制开关
+	// FEATURE_PARTICIPATION(默认 off;off = 全部路由不注册且 handler gate
+	// 再答统一 404 —— 双保险,同 FEATURE_DASHBOARD 写法)。顾客面无会话概念:
+	// 首方 visitor cookie 只做同浏览器续接,跨端走短时/单用途/可撤销交接
+	// 凭据(码 ≠ 发奖授权);店员面走 requireSession + 既有 authz 门店作用域。
+	// 权益预留只经 BenefitReserver 受信端口,未确认绝不返回"已保留"。
+	if s.Cfg.FeatureParticipation {
+		mux.Handle("POST /api/v1/participations", http.HandlerFunc(s.handleParticipationStart))
+		mux.Handle("POST /api/v1/participations/lookup", http.HandlerFunc(s.handleParticipationLookup))
+		mux.Handle("POST /api/v1/participations/handoff/redeem", http.HandlerFunc(s.handleParticipationRedeem))
+		mux.Handle("GET /api/v1/participations/{id}", http.HandlerFunc(s.handleParticipationGet))
+		mux.Handle("PATCH /api/v1/participations/{id}/content", http.HandlerFunc(s.handleParticipationContent))
+		mux.Handle("POST /api/v1/participations/{id}/cancel", http.HandlerFunc(s.handleParticipationCancel))
+		mux.Handle("GET /api/v1/participations/{id}/attempts", http.HandlerFunc(s.handleParticipationAttempts))
+		mux.Handle("POST /api/v1/participations/{id}/attempts", http.HandlerFunc(s.handleParticipationAttemptCreate))
+		mux.Handle("POST /api/v1/participations/{id}/handoff", http.HandlerFunc(s.handleParticipationHandoff))
+		mux.Handle("DELETE /api/v1/participations/{id}/handoff/{credentialId}", http.HandlerFunc(s.handleParticipationHandoffRevoke))
+		mux.Handle("GET /api/v1/participations/{id}/staff-view", s.requireSession(s.handleParticipationStaffView))
+		mux.Handle("POST /api/v1/participations/staff/redeem", s.requireSession(s.handleParticipationStaffRedeem))
+	}
 
 	return s.withRequestLog(mux)
 }
