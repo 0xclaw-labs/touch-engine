@@ -26,6 +26,7 @@ import {
   isKnownHandoffStatus,
   manualStepsFor,
   mediaUrlSafe,
+  qrPayloadSafe,
   refusalNotice,
   statusCopy,
   timeoutCopy,
@@ -66,6 +67,7 @@ export function PublishHandoff({ code }: { code: string }) {
   const [plan, setPlan] = useState<PlanView | null>(null);
   const [media, setMedia] = useState<MediaRefView[]>([]);
   const [recoveryShown, setRecoveryShown] = useState(false);
+  const [recoveryQr, setRecoveryQr] = useState("");
   const participation = useRef<ParticipationToken | null>(null);
   const idemKey = useRef<string>("");
 
@@ -174,6 +176,7 @@ export function PublishHandoff({ code }: { code: string }) {
       setPlan(data.plan ?? null);
       setMedia(Array.isArray(data.media) ? data.media : []);
       if (data.recovery?.token) setRecoveryShown(true);
+      setRecoveryQr(qrPayloadSafe(data.recovery?.qr_payload) ? (data.recovery?.qr_payload ?? "") : "");
     } catch {
       setNotice("网络异常。交接没有开始，也没有发布。");
     } finally {
@@ -316,7 +319,15 @@ export function PublishHandoff({ code }: { code: string }) {
       )}
       {handoff && recoveryShown && (
         <p className="tk-warn" data-testid="handoff-recovery">
-          恢复方式已生成，只显示这一次:请在本机保存打开平台的入口信息。换设备可通过参与恢复,不会重复计参与。
+          恢复方式已生成，只显示这一次:请保存下方入口，换设备可凭它恢复参与，不会重复计参与。
+          {recoveryQr && (
+            <>
+              {" "}
+              <a href={recoveryQr} target="_blank" rel="noopener,noreferrer" data-testid="handoff-recovery-link">
+                换设备恢复入口
+              </a>
+            </>
+          )}
         </p>
       )}
       {openable && entry && (

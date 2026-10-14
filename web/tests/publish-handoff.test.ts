@@ -10,6 +10,7 @@ import {
   isKnownHandoffStatus,
   manualStepsFor,
   mediaUrlSafe,
+  qrPayloadSafe,
   refusalNotice,
   statusCopy,
   timeoutCopy,
@@ -172,5 +173,13 @@ describe("入口与媒体地址安全形状", () => {
   it("能力缺项按服务端给出的诚实说明透出", () => {
     expect(unsupportedLines({ unsupported: ["话题：该入口不支持自动带话题"] })).toHaveLength(1);
     expect(unsupportedLines(undefined)).toEqual([]);
+  });
+
+  it("恢复二维码载荷只认 3546 规范形(https、无查询串、/p/ptx_)", () => {
+    expect(qrPayloadSafe("https://h5.example.com/p/ptx_ABC.DEF")).toBe(true);
+    expect(qrPayloadSafe("https://h5.example.com/p/ptx_ABC.DEF?x=1")).toBe(false);
+    expect(qrPayloadSafe("http://h5.example.com/p/ptx_ABC.DEF")).toBe(false);
+    expect(qrPayloadSafe("javascript:alert(1)")).toBe(false);
+    expect(qrPayloadSafe(undefined)).toBe(false);
   });
 });

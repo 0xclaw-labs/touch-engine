@@ -153,7 +153,9 @@ type Config struct {
 	// everything (NOT_VERIFIED residual), entry bases refuse automated
 	// plans. None of them is ever sent to a browser. Media signing reuses
 	// InternalToken (contentpack handoff 同一密钥纪律); only the URL base is
-	// configurable here (default: the in-app redeem path, proxied by the BFF).
+	// configurable here. Default is the BFF-facing form (/api/* → /api/v1/*):
+	// the media refs are browser-reachable relative paths; the bytes themselves
+	// still never pass through this service (serving route deferred).
 	PublishHandoffMediaBaseURL      string // PUBLISH_HANDOFF_MEDIA_BASE_URL (受控下载地址基)
 	PublishHandoffReceiptSecret     string // PUBLISH_HANDOFF_RECEIPT_SECRET (官方回执验签)
 	PublishHandoffAppRef            string // PUBLISH_HANDOFF_APP_REF (本部署官方应用身份)
@@ -227,7 +229,7 @@ func Load(get func(string) string) Config {
 		PublicPermissionURL:     strings.TrimRight(strings.TrimSpace(get("TOUCH_PUBLIC_PERMISSION_URL")), "/"),
 		MatrixDraftURL:          strings.TrimRight(strings.TrimSpace(get("TOUCH_MATRIX_DRAFT_URL")), "/"),
 		PublicBaseURL:           strings.TrimSpace(get("PUBLIC_BASE_URL")),
-		PublishHandoffMediaBaseURL:     firstNonEmpty(strings.TrimRight(strings.TrimSpace(get("PUBLISH_HANDOFF_MEDIA_BASE_URL")), "/"), "/api/v1/media-handoffs"),
+		PublishHandoffMediaBaseURL:     firstNonEmpty(strings.TrimRight(strings.TrimSpace(get("PUBLISH_HANDOFF_MEDIA_BASE_URL")), "/"), "/api/media-handoffs"),
 		PublishHandoffReceiptSecret:    strings.TrimSpace(get("PUBLISH_HANDOFF_RECEIPT_SECRET")),
 		PublishHandoffAppRef:           strings.TrimSpace(get("PUBLISH_HANDOFF_APP_REF")),
 		PublishHandoffH5EntryBase:      strings.TrimRight(strings.TrimSpace(get("PUBLISH_HANDOFF_H5_ENTRY_BASE")), "/"),

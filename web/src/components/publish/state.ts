@@ -266,6 +266,18 @@ export function entryOpenable(entry: PlanEntryView | undefined | null): boolean 
 }
 
 /**
+ * 参与恢复二维码载荷(3546 语义):必须是服务端签发的规范 URL——https、
+ * 无查询串、带 /p/ptx_ 路径。顾客自己的恢复凭据,可渲染给本人;
+ * 形状不对宁可不给,绝不回退成裸 token。
+ */
+export function qrPayloadSafe(payload: string | undefined): boolean {
+  if (!payload) return false;
+  if (!payload.startsWith("https://")) return false;
+  if (payload.includes("?") || payload.includes("#")) return false;
+  return payload.includes("/p/ptx_");
+}
+
+/**
  * 受控媒体地址只允许:站内 /api/ 相对路径(同源 BFF)或 https 绝对地址。
  * 拒绝协议相对(//)、data:、javascript: 等;媒体字节不经本服务,这里
  * 只是引用。
