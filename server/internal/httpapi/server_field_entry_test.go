@@ -201,11 +201,11 @@ func seedFieldCampaignWithStore(t *testing.T, f *fixture, title string, nLinks i
 	return campaignID, linkIDs, codes
 }
 
-// TestFieldRebindWorkflowOldCardKeepsOldTarget:后台换绑的完整现场工作流。
-// 模型语义(1665 拍板「绑定以 link 为准」):换绑 = URL 变。因此
-//   - 物理卡 URL 不变时,访客仍进旧目标 —— 这就是「卡内URL不变的同卡换标」
-//     必须重写卡的原因(GAP-1,见 docs/evidence/hui-1663/rebind-verification.md);
-//   - 原参与(旧活动)保留原规则权益,不受换绑影响。
+// TestFieldRebindWorkflowOldCardKeepsOldTarget:旧(标签/短码)路径的后台换绑工作流。
+// 语义(1665 拍板「绑定以 link 为准」):换绑 = URL 变 —— 物理卡 URL 不变时,
+// 访客仍进旧目标;原参与(旧活动)保留原规则权益,不受换绑影响。
+// 因此旧路径换绑后必须重写卡/重印码;「同卡换活动、卡内URL不变」由 1665 增量的
+// 稳定入口 /t/{code}(TouchpointAlias)承担,见 TestFieldRebindStableURLKeepsOriginalParticipation。
 func TestFieldRebindWorkflowOldCardKeepsOldTarget(t *testing.T) {
 	f := fixtureField(t, map[string]string{"FEATURE_PARTICIPATION": "on"})
 	campaignA, linkIDsA, _ := seedFieldCampaignWithStore(t, f, "周年庆", 1)
@@ -235,10 +235,11 @@ func TestFieldRebindWorkflowOldCardKeepsOldTarget(t *testing.T) {
 	status, _, _ = f.do(t, "PATCH", "/api/v1/nfc/tags/"+tagID, "sess-owner-a", f.tenA, `{"link_id":"`+linkB+`"}`)
 	mustEqual(t, status, http.StatusOK)
 
-	// 换绑后:管理面导出的新 URL 指向 B(换绑=换 URL)
+	// 换绑后:管理面导出的新 URL 指向 B(旧路径换绑=换 URL,需重写卡;
+	// 同 URL 换标走 /t 稳定入口,见 TestFieldRebindStableURLKeepsOriginalParticipation)
 	urlB := codeFromEntryURL(t, fieldCSVURLs(t, f)[0])
 	if urlB == codeA {
-		t.Fatal("rebind must change exported url (GAP-1: same-url retarget unsupported)")
+		t.Fatal("legacy tag rebind must change the exported url")
 	}
 	got, state, view := fieldPublicGet(t, f, urlB)
 	mustEqual(t, got, http.StatusOK)
@@ -426,5 +427,149 @@ func TestFieldPauseExpireAndPrintedURLStability(t *testing.T) {
 	mustEqual(t, got, http.StatusNotFound)
 	if state != "not_found" || len(view) != 1 {
 		t.Fatalf("damaged code = %d %v", got, view)
+	}
+}
+
+// fieldTPCSVURLs:触点 CSV 导出的 url 列(/t 稳定入口)—— 现场从
+// /work/touchpoints 触点管理台取号的同一步骤。
+func fieldTPCSVURLs(t *testing.T, f *fixture) []string {
+	t.Helper()
+	status, _, raw := f.doRaw(t, "GET", "/api/v1/touchpoints/export.csv", "sess-owner-a", f.tenA, "")
+	mustEqual(t, status, http.StatusOK)
+	recs := parseCSV(t, raw)
+	urls := make([]string, 0, len(recs)-1)
+	for _, rec := range recs[1:] {
+		urls = append(urls, rec[2])
+	}
+	return urls
+}
+
+// TestFieldStableEntryChainTouchpointToCampaign:票面受控验证的主链 ——
+// 触点管理取得稳定 HTTPS 入口(/t/{code}) → 公共解析放行活动码 →
+// 既有 /c/{code} 解析 → 正确活动(标题+商家归属),并沿部署五态把
+// 「写入→回读→真机验证」三阶段显式走完(与贴卡检查表阶段一一对应)。
+func TestFieldStableEntryChainTouchpointToCampaign(t *testing.T) {
+	f := newTPFixture(t, map[string]string{"FEATURE_TOUCHPOINT_ENTRY": "on"})
+	_, _, code1, _, _, _, tp1, _ := tpSeedScene(t, f)
+
+	// 取号:触点 CSV 的 url 列 = https://h5.test/t/{别名码},short_code 列 = 别名码
+	urls := fieldTPCSVURLs(t, f.fixture)
+	if len(urls) == 0 {
+		t.Fatal("touchpoint csv has no rows")
+	}
+	entryURL := "https://h5.test/t/" + tpAliasCode(t, f, tp1)
+	found := false
+	for _, u := range urls {
+		if u == entryURL {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("csv urls %v missing stable entry %q", urls, entryURL)
+	}
+
+	// 部署五态随现场阶段显式单步推进(写卡→回读→真机验证),不冒充跳级
+	for _, want := range []string{"awaiting_write", "written_awaiting_readback", "readback_done", "device_verified"} {
+		status, _, _ := f.do(t, "POST", "/api/v1/touchpoints/"+tp1+"/stage", "sess-owner-a", f.tenA,
+			`{"stage":"`+want+`","note":"现场阶段推进"}`)
+		mustEqual(t, status, http.StatusOK)
+	}
+
+	// 顾客手机打开 /t/{code} → 公共解析:200 {state:available, code:活动短码}
+	got, _, view := f.do(t, "GET", "/api/v1/public/touchpoints/"+tpAliasCode(t, f, tp1), "", "", "")
+	mustEqual(t, got, http.StatusOK)
+	if view["state"] != "available" || view["code"] != code1 {
+		t.Fatalf("stable entry = %v, want available+%s", view, code1)
+	}
+
+	// 白名单临时跳转的落点:既有 /c/{code} → 正确活动 + 商家归属
+	target, ok := view["code"].(string)
+	if !ok {
+		t.Fatalf("code = %v", view["code"])
+	}
+	got, state, view := fieldPublicGet(t, f.fixture, target)
+	mustEqual(t, got, http.StatusOK)
+	if state != "available" || view["title"] != "周年庆" {
+		t.Fatalf("landing page = %d %v", got, view)
+	}
+	if view["merchant_name"] != "商家A" {
+		t.Fatalf("merchant = %v", view["merchant_name"])
+	}
+}
+
+// TestFieldRebindStableURLKeepsOriginalParticipation:票面「同卡后台换活动后
+// 新访客进入新目标、原参与保留原规则权益;卡内URL不变」的可机验全链 ——
+// 稳定入口别名(TouchpointAlias)的换绑语义:
+//   - 换绑前后 /t URL 逐字节不变(卡不用重写);
+//   - 新访客(以及同一张卡)解析到新活动的短码;
+//   - 原参与仍在旧 link 上,lookup 原样恢复(权益不动);
+//   - 旧短码仍 available(旧二维码/旧卡兼容,双入口并存)。
+func TestFieldRebindStableURLKeepsOriginalParticipation(t *testing.T) {
+	f := newTPFixture(t, map[string]string{
+		"FEATURE_TOUCHPOINT_ENTRY": "on",
+		"FEATURE_PARTICIPATION":    "on",
+	})
+	camp1, camp2, code1, _, _, _, tp1, _ := tpSeedScene(t, f)
+
+	// 卡上印着的稳定 URL(取自管理面详情,与 CSV/QR 同源)
+	before := tpDetail(t, f, tp1)
+	stableURL, _ := before["url"].(string)
+	if stableURL == "" {
+		t.Fatalf("detail url missing: %v", before)
+	}
+
+	// 顾客经稳定入口解析到旧目标并开始参与(/t → code1 → /c 链)
+	got, _, view := f.do(t, "GET", "/api/v1/public/touchpoints/"+tpAliasCode(t, f, tp1), "", "", "")
+	mustEqual(t, got, http.StatusOK)
+	oldCode, _ := view["code"].(string)
+	if oldCode != code1 {
+		t.Fatalf("pre-rebind resolve = %v, want %s", view, code1)
+	}
+	status, hdr, started := f.doCookie(t, "POST", "/api/v1/participations", "", startBody(oldCode, "idem-stable-1", "cp_v1"))
+	mustEqual(t, status, http.StatusCreated)
+	partID := started["id"].(string)
+	cookie := cookiePair(hdr)
+
+	// 后台换活动:预览 → 确认(expected 乐观并发)
+	status, _, pv := f.do(t, "POST", "/api/v1/touchpoints/"+tp1+"/rebind-preview", "sess-owner-a", f.tenA,
+		`{"campaign_id":"`+camp2+`"}`)
+	mustEqual(t, status, http.StatusOK)
+	if pv["started_participations"].(float64) != 1 {
+		t.Fatalf("preview impact = %v, want 1", pv["started_participations"])
+	}
+	status, _, after := f.do(t, "POST", "/api/v1/touchpoints/"+tp1+"/rebind", "sess-owner-a", f.tenA,
+		`{"campaign_id":"`+camp2+`","expected_campaign_id":"`+camp1+`"}`)
+	mustEqual(t, status, http.StatusOK)
+
+	// 卡内 URL 不变:换绑后详情 url 与换绑前逐字节一致
+	if after["url"] != stableURL {
+		t.Fatalf("rebind changed the printed url: %q -> %q", stableURL, after["url"])
+	}
+
+	// 同一张卡,新访客:解析到新活动的短码 → /c 落新活动
+	got, _, view = f.do(t, "GET", "/api/v1/public/touchpoints/"+tpAliasCode(t, f, tp1), "", "", "")
+	mustEqual(t, got, http.StatusOK)
+	newCode, _ := view["code"].(string)
+	if newCode == "" || newCode == code1 {
+		t.Fatalf("post-rebind resolve = %v, want a code different from %s", view, code1)
+	}
+	got, state, view := fieldPublicGet(t, f.fixture, newCode)
+	mustEqual(t, got, http.StatusOK)
+	if state != "available" || view["title"] != "春季展" {
+		t.Fatalf("new landing = %d %v", got, view)
+	}
+
+	// 原参与保留原权益:原访客 lookup 仍恢复旧 link 上的原参与
+	status, _, looked := f.doCookie(t, "POST", "/api/v1/participations/lookup", cookie, `{"link_code":"`+oldCode+`"}`)
+	mustEqual(t, status, http.StatusOK)
+	if looked["id"] != partID || looked["link_code"] != oldCode {
+		t.Fatalf("lookup = %v, want id %s on link %s", looked, partID, oldCode)
+	}
+
+	// 旧短码仍 available:已发出去的旧二维码/旧卡不因换绑失效
+	got, state, view = fieldPublicGet(t, f.fixture, oldCode)
+	mustEqual(t, got, http.StatusOK)
+	if state != "available" || view["title"] != "周年庆" {
+		t.Fatalf("old link after rebind = %d %v", got, view)
 	}
 }
