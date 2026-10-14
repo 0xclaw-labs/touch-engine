@@ -39,9 +39,10 @@ const (
 // issued, already redeemed, slot reversed). ErrRewardStock marks an empty
 // batch. Both are domain refusals, not transport errors.
 var (
-	ErrRewardConflict = errors.New("store: reward state conflict")
-	ErrRewardStock    = errors.New("store: reward stock exhausted")
-	ErrRewardInvalid  = errors.New("store: reward input invalid")
+	ErrRewardConflict    = errors.New("store: reward state conflict")
+	ErrRewardStock       = errors.New("store: reward stock exhausted")
+	ErrRewardUnavailable = errors.New("store: reward batch unavailable")
+	ErrRewardInvalid     = errors.New("store: reward input invalid")
 )
 
 // rewardOccupiedStatuses are the benefit statuses that hold stock. Reversed
@@ -563,13 +564,13 @@ func pickInventoryInTx(tx *sql.Tx, tenantID, campaignID, slot string, ruleVersio
 
 func inventoryUsable(inv RewardInventory, nowTS string) error {
 	if inv.Status != RewardInventoryActive {
-		return ErrRewardStock
+		return ErrRewardUnavailable
 	}
 	if inv.ValidFrom != "" && nowTS < inv.ValidFrom {
-		return ErrRewardStock
+		return ErrRewardUnavailable
 	}
 	if inv.ValidUntil != "" && nowTS > inv.ValidUntil {
-		return ErrRewardStock
+		return ErrRewardUnavailable
 	}
 	return nil
 }
@@ -893,6 +894,11 @@ func (s *Store) ConfirmRewardBenefit(in RewardConfirmInput) (RewardBenefit, Rewa
 	}
 	if err := inventoryUsable(inv, in.Now); err != nil {
 		return ben, RewardOutcome{}, err
+	}
+	// A store-scoped batch only materializes benefits at its own store: a
+	// confirmation recorded at another store is a wrong-store refusal.
+	if inv.StoreID != "" && strings.TrimSpace(in.StoreID) != inv.StoreID {
+		return ben, RewardOutcome{}, fmt.Errorf("%w: store_mismatch", ErrRewardInvalid)
 	}
 	// Adjudicate against this batch's rule snapshot (in-flight participations
 	// keep their original version: the caller names the version it promised).
