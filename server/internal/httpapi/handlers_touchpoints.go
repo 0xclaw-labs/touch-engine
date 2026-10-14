@@ -295,7 +295,7 @@ func (s *Server) handleTouchpointStatus(w http.ResponseWriter, r *http.Request) 
 		fail(w, http.StatusBadRequest, "bad_request", "status (active|disabled) is required")
 		return
 	}
-	a, err := s.St.SetTouchpointStatus(r.PathValue("id"), c.Member.TenantID, in.Status)
+	a, err := s.St.SetTouchpointStatus(r.PathValue("id"), c.Member.TenantID, in.Status, c.Member.PrincipalRef)
 	switch {
 	case err == nil:
 	case errors.Is(err, store.ErrNotFound):

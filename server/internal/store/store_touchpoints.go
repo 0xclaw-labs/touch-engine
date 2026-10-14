@@ -271,7 +271,7 @@ func (s *Store) ProvisionTouchpoint(tenantID, tagID, label, position, createdBy 
 
 // SetTouchpointStatus flips ONLY the alias. The bound campaign_link (shared by
 // legacy cards) is never touched — 停用单卡不误停共享的其他卡.
-func (s *Store) SetTouchpointStatus(id, tenantID string, status string) (TouchpointAlias, error) {
+func (s *Store) SetTouchpointStatus(id, tenantID string, status, by string) (TouchpointAlias, error) {
 	if status != TagStatusActive && status != TagStatusDisabled {
 		return TouchpointAlias{}, fmt.Errorf("store: bad touchpoint status %q", status)
 	}
@@ -284,7 +284,7 @@ func (s *Store) SetTouchpointStatus(id, tenantID string, status string) (Touchpo
 			status, now(), id, tenantID); err != nil {
 			return err
 		}
-		return insertEvent(tx, tenantID, id, "status_change", "status="+status, "")
+		return insertEvent(tx, tenantID, id, "status_change", "status="+status, by)
 	})
 	if err != nil {
 		return TouchpointAlias{}, err

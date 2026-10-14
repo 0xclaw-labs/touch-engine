@@ -198,7 +198,7 @@ export function TouchpointsPanel() {
       setNotice("先选要换到的目标活动。");
       return;
     }
-    const res = await session.api("POST", `touchpoints/${tp.id}/rebind/preview`, { campaign_id: rebindCampaignId });
+    const res = await session.api("POST", `touchpoints/${tp.id}/rebind-preview`, { campaign_id: rebindCampaignId });
     if (!res.ok) {
       setNotice(failureText(res.status, res.data));
       return;

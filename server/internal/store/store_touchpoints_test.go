@@ -92,7 +92,7 @@ func TestTouchpointDisableIsIndependentOfLink(t *testing.T) {
 	mustNoErr(t, err)
 
 	// 停 A:只关 A 自己;B 的 /t 解析不受影响;底层 link enabled 不变
-	if _, err := s.SetTouchpointStatus(a1.ID, ten.ID, TagStatusDisabled); err != nil {
+	if _, err := s.SetTouchpointStatus(a1.ID, ten.ID, TagStatusDisabled, "tester"); err != nil {
 		t.Fatalf("disable a1: %v", err)
 	}
 	if got := s.ResolveTouchpoint(a1.Code, time.Now()); got.Outcome != TpDisabled {
@@ -107,7 +107,7 @@ func TestTouchpointDisableIsIndependentOfLink(t *testing.T) {
 		t.Fatal("shared link must stay enabled after alias disable")
 	}
 	// 恢复
-	if _, err := s.SetTouchpointStatus(a1.ID, ten.ID, TagStatusActive); err != nil {
+	if _, err := s.SetTouchpointStatus(a1.ID, ten.ID, TagStatusActive, "tester"); err != nil {
 		t.Fatalf("enable a1: %v", err)
 	}
 	if got := s.ResolveTouchpoint(a1.Code, time.Now()); got.Outcome != TpRedirect {
@@ -288,7 +288,7 @@ func TestTouchpointResolutionStates(t *testing.T) {
 		t.Fatalf("all links disabled = %+v, want link_disabled", got)
 	}
 	// 停用别名 → touchpoint_disabled
-	if _, err := s.SetTouchpointStatus(a5.ID, ten.ID, TagStatusDisabled); err != nil {
+	if _, err := s.SetTouchpointStatus(a5.ID, ten.ID, TagStatusDisabled, "tester"); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
 	if got := s.ResolveTouchpoint(a5.Code, now); got.Outcome != TpDisabled {
@@ -381,7 +381,7 @@ func TestTouchpointViewAndListAndParticipationCount(t *testing.T) {
 	if len(byStore) != 2 {
 		t.Fatalf("byStore = %d", len(byStore))
 	}
-	if _, err := s.SetTouchpointStatus(a2.ID, ten.ID, TagStatusDisabled); err != nil {
+	if _, err := s.SetTouchpointStatus(a2.ID, ten.ID, TagStatusDisabled, "tester"); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
 	disabled, err := s.ListTouchpoints(ten.ID, TouchpointFilter{Status: TagStatusDisabled})

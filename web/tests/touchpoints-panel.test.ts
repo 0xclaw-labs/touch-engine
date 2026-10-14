@@ -41,7 +41,7 @@ describe("触点管理台:独占新页,不跳 /admin", () => {
 
 describe("换绑:先预览影响,确认才提交,并发冲突不覆盖", () => {
   it("预览端点 + 已开始参与数 + 影响文案", () => {
-    expect(panel).toContain("rebind/preview");
+    expect(panel).toContain("rebind-preview");
     expect(panel).toContain("started_participations");
     expect(panel).toContain("rebindImpactFace");
   });
