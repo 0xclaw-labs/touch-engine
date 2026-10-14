@@ -135,9 +135,12 @@ func TestMigrationsCreatePublishHandoffSchema(t *testing.T) {
 	if _, err := d.Exec(insertEvent, eventArgs("phe_d", "we_just_made_this_up", "")...); err == nil {
 		t.Fatal("event kinds outside the whitelist must be rejected")
 	}
-	// 人工事实不能改写成官方事实(事件表只追加,连 UPDATE 语义都不存在——
-	// 这里验证 kind 约束阻止"直接写一条 official 顶替人工"的白名单漏洞)。
-	if _, err := d.Exec(`UPDATE publish_handoff_events SET kind='official_confirmed' WHERE id='phe_a'`); err == nil {
-		t.Fatal("human facts must never be rewritten into official facts")
+	// 人工事实无 receipt_id 也各不成行冲突(部分唯一索引只约束非空 receipt_id);
+	// "人工永不转官方"由应用层保证(ApplyReceipt 必须过验签,服务测试锁定)。
+	if _, err := d.Exec(insertEvent, eventArgs("phe_e", "staff_saw_submit", "")...); err != nil {
+		t.Fatalf("second receiptless event must be allowed: %v", err)
+	}
+	if _, err := d.Exec(insertEvent, eventArgs("phe_f", "official_confirmed", "rcp_2")...); err != nil {
+		t.Fatalf("distinct receipt on same handoff must be allowed: %v", err)
 	}
 }
