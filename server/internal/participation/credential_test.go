@@ -45,8 +45,8 @@ func TestValidateTokenShape(t *testing.T) {
 	}
 	// 篡改一位:校验位必须拒绝(读端先拒,不打库)。
 	bad := tok[:len(tok)-1]
-	if bad[len(bad)-1] == 'A' {
-		bad = bad[:len(bad)-1] + "B"
+	if tok[len(tok)-1] == 'A' {
+		bad += "B"
 	} else {
 		bad += "A"
 	}

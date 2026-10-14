@@ -207,7 +207,9 @@ type Attempt struct {
 // itself only ever exists in the response of the call that created it.
 type Credential struct {
 	ID              string
+	TenantID        string
 	ParticipationID string
+	AttemptID       string
 	Purpose         Purpose
 	TargetScope     string
 	ExpiresAt       string
