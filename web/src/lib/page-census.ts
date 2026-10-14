@@ -97,7 +97,8 @@ const markerBook: readonly { route: string; markers: readonly Marker[] }[] = [
   { route: "/work/rewards", markers: ["raw button", "raw input"] },
   // HUI-3562：店员台页面是薄壳，交互全部在组件里，页面源零标记。
   { route: "/work/service", markers: [] },
-  { route: "/work/analytics", markers: ["raw button"] },
+  // HUI-1677：经营看板页面是薄壳，交互全部在组件里，页面源零标记。
+  { route: "/work/analytics", markers: [] },
   { route: "/c/[code]", markers: [] },
   { route: "/c/[code]/contact", markers: [] },
   // HUI-1665:/t 稳定入口页是 server 闸门薄壳,交互在 touch-entry.tsx,页面源零标记。
