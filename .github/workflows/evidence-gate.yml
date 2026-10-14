@@ -8,9 +8,16 @@ on:
       - '.github/workflows/evidence-gate.yml'
   workflow_dispatch: {}
 
+concurrency:
+  group: evidence-gate-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   evidence-gate:
-    runs-on: ubuntu-latest  # org 无 org 级 self-hosted,leads/touch 未注册专机,先用 hosted
+    runs-on: [self-hosted, macOS, ARM64]  # 2026-10-14 迁公司 CI Mac 专机 mac-<repo>-01
+    # 公开仓防线：fork 来的 PR 不落自托管机（现 0 fork；真出现时走人工批准/hosted）
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
