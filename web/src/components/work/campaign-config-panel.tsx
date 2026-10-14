@@ -81,6 +81,9 @@ export function CampaignConfigPanel({
   const [admissions, setAdmissions] = useState<ChannelAdmissionRecord[]>([]);
   const [stores, setStores] = useState<StoreRec[]>([]);
   const [ruleset, setRuleset] = useState<{ reward_threshold?: number; daily_publish_limit?: number; duplicate_publish_window_hours?: number; per_contact_daily_submission_cap?: number }>({});
+  // 防薅羊毛规则集只有商家真改过才重存:规则端点每次 PUT 都会记一条版本
+  // 修订,不制造无改动版本噪音。
+  const [rulesDirty, setRulesDirty] = useState(false);
   const [busy, setBusy] = useState("");
   const [fieldError, setFieldError] = useState<{ field: string; text: string } | null>(null);
   const [formError, setFormError] = useState("");
@@ -174,16 +177,20 @@ export function CampaignConfigPanel({
     setNotice("");
     try {
       // 反薅羊毛规则集(每日上限等)走 PR#8 既有端点;发布兑奖配置走新端点。
-      const rulesBody: Record<string, number | null> = {
-        reward_threshold: ruleset.reward_threshold ?? null,
-        daily_publish_limit: ruleset.daily_publish_limit ?? null,
-        duplicate_publish_window_hours: ruleset.duplicate_publish_window_hours ?? null,
-        per_contact_daily_submission_cap: ruleset.per_contact_daily_submission_cap ?? null,
-      };
-      const rulesRes = await session.api("PUT", `campaigns/${campaignId}/rules`, rulesBody);
-      if (!rulesRes.ok && rulesRes.status !== 404) {
-        setFormError(failureText(rulesRes.status, rulesRes.data) + "(防薅羊毛规则没有存上)");
-        return false;
+      // 只有真改过才 PUT(每次 PUT 都会记版本修订)。
+      if (rulesDirty) {
+        const rulesBody: Record<string, number | null> = {
+          reward_threshold: ruleset.reward_threshold ?? null,
+          daily_publish_limit: ruleset.daily_publish_limit ?? null,
+          duplicate_publish_window_hours: ruleset.duplicate_publish_window_hours ?? null,
+          per_contact_daily_submission_cap: ruleset.per_contact_daily_submission_cap ?? null,
+        };
+        const rulesRes = await session.api("PUT", `campaigns/${campaignId}/rules`, rulesBody);
+        if (!rulesRes.ok && rulesRes.status !== 404) {
+          setFormError(failureText(rulesRes.status, rulesRes.data) + "(防薅羊毛规则没有存上)");
+          return false;
+        }
+        setRulesDirty(false);
       }
       const cfgRes = await session.api("PUT", `campaigns/${campaignId}/publish-config`, toServerSpec(spec));
       if (!cfgRes.ok) {
@@ -533,6 +540,7 @@ export function CampaignConfigPanel({
                 onChange={(e) => {
                   const n = e.target.value.replace(/[^0-9]/g, "");
                   setRuleset((r) => ({ ...r, daily_publish_limit: n === "" ? undefined : Number(n) }));
+                  setRulesDirty(true);
                 }}
               />
             </label>
@@ -547,6 +555,7 @@ export function CampaignConfigPanel({
                 onChange={(e) => {
                   const n = e.target.value.replace(/[^0-9]/g, "");
                   setRuleset((r) => ({ ...r, per_contact_daily_submission_cap: n === "" ? undefined : Number(n) }));
+                  setRulesDirty(true);
                 }}
               />
             </label>

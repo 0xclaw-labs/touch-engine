@@ -74,8 +74,8 @@ func sampleSpec() campaignenable.Spec {
 			StaffScope:     campaignenable.ScopeStoreStaff,
 			OutOfStockRule: campaignenable.StockStopNew,
 		},
-		DedupBasis: campaignenable.BasisPlatformSubject,
-		Channels:   []campaignenable.ChannelRef{{Platform: "douyin", EntryMode: "h5", Scenario: "store_post"}},
+		DedupBasis:   campaignenable.BasisPlatformSubject,
+		Channels:     []campaignenable.ChannelRef{{Platform: "douyin", EntryMode: "h5", Scenario: "store_post"}},
 		ContentVerID: "cpv_sample_1",
 	}
 }
