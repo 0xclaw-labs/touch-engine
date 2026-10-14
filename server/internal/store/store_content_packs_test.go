@@ -53,10 +53,10 @@ func packFixture(t *testing.T, s *Store) (tenantID, campaignID string, video, co
 func packSpec(video, cover LibAsset) contentpack.VersionSpec {
 	return contentpack.VersionSpec{
 		ContentKind: contentpack.ContentKindVideo,
-		Video: contentpack.AssetSnapshot{AssetID: video.ID, AssetRef: video.AssetRef, SHA256: video.SHA256},
-		Cover: contentpack.AssetSnapshot{AssetID: cover.ID, AssetRef: cover.AssetRef, SHA256: cover.SHA256},
-		Title: "周末开业五折", Body: "本店周末全场五折。",
-		Topics:   []string{"开业"},
+		Video:       contentpack.AssetSnapshot{AssetID: video.ID, AssetRef: video.AssetRef, SHA256: video.SHA256},
+		Cover:       contentpack.AssetSnapshot{AssetID: cover.ID, AssetRef: cover.AssetRef, SHA256: cover.SHA256},
+		Title:       "周末开业五折", Body: "本店周末全场五折。",
+		Topics:    []string{"开业"},
 		StoreName: "旗舰店", PriceNote: "全场五折", ValidNote: "2026-10-14 至 2026-10-20",
 		PlatformVersions: []contentpack.PlatformVersion{
 			{Platform: "douyin", Note: "竖版", SourceVersion: "src-1"},

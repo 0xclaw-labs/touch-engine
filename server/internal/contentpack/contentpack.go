@@ -35,8 +35,8 @@ import (
 type ContentKind string
 
 const (
-	ContentKindVideo      ContentKind = "video"      // 成片 + 封面
-	ContentKindImageText  ContentKind = "imagetext"  // 图文(≥1 图 + 正文)
+	ContentKindVideo     ContentKind = "video"     // 成片 + 封面
+	ContentKindImageText ContentKind = "imagetext" // 图文(≥1 图 + 正文)
 )
 
 // Valid reports whether k is one of the v1 content kinds.
@@ -53,19 +53,19 @@ func (k ContentKind) Valid() bool {
 type VersionStatus string
 
 const (
-	StatusDraft    VersionStatus = "draft"    // 商家编辑中
+	StatusDraft     VersionStatus = "draft"     // 商家编辑中
 	StatusCandidate VersionStatus = "candidate" // 候选(含回流候选),待商家预览/采用
-	StatusAdopted  VersionStatus = "adopted"  // 已采用(曾是某平台当前版)
-	StatusRetired  VersionStatus = "retired"  // 被新版本取代(内容保留可追溯)
-	StatusBlocked  VersionStatus = "blocked"  // 撤权/重大内容问题:阻止新分发
+	StatusAdopted   VersionStatus = "adopted"   // 已采用(曾是某平台当前版)
+	StatusRetired   VersionStatus = "retired"   // 被新版本取代(内容保留可追溯)
+	StatusBlocked   VersionStatus = "blocked"   // 撤权/重大内容问题:阻止新分发
 )
 
 // Source is where a version came from (复用 assetlib 的来源词汇,回流是新增项).
 type Source string
 
 const (
-	SourceMerchantUpload    Source = "merchant_upload"     // 商家上传的已有内容
-	SourceAssetLib          Source = "asset_lib"           // 从素材库选择组织
+	SourceMerchantUpload     Source = "merchant_upload"      // 商家上传的已有内容
+	SourceAssetLib           Source = "asset_lib"            // 从素材库选择组织
 	SourceProductPhotoReturn Source = "product_photo_return" // 产品图生态成果回流(HUI-1745 接线点)
 )
 
@@ -82,40 +82,40 @@ func (s Source) Valid() bool {
 
 // Machine reason codes (written into 422/409/410 responses' error fields).
 const (
-	ReasonBadContentKind          = "bad_content_kind"
-	ReasonBadTitle                = "bad_title"
-	ReasonMissingTitle            = "missing_title"
-	ReasonBadBody                 = "bad_body"
-	ReasonMissingBody             = "missing_body"
-	ReasonBadStoreName            = "bad_store_name"
-	ReasonMissingStoreName        = "missing_store_name"
-	ReasonBadPriceNote            = "bad_price_note"
-	ReasonMissingPriceNote        = "missing_price_note"
-	ReasonBadValidNote            = "bad_valid_note"
-	ReasonMissingValidNote        = "missing_valid_note"
-	ReasonBadTopics               = "bad_topics"
-	ReasonBadGrantRef             = "bad_grant_ref"
-	ReasonMissingVideoRef         = "missing_video_ref"
-	ReasonMissingCoverRef         = "missing_cover_ref"
-	ReasonMissingImageText        = "missing_image_text"
-	ReasonMissingPlatform         = "missing_platform"
-	ReasonBadPlatformVersion      = "bad_platform_version"
-	ReasonBadSnapshot             = "bad_snapshot"
-	ReasonBadGrantUntil           = "bad_grant_until"
-	ReasonBadSource               = "bad_source"
-	ReasonMissingSource           = "missing_source"
-	ReasonBadIdempotencyKey       = "bad_idempotency_key"
-	ReasonMissingIdempotencyKey   = "missing_idempotency_key"
-	ReasonMissingBlockReason      = "missing_block_reason"
-	ReasonGrantExpired            = "grant_expired"
-	ReasonNotDistributable        = "not_distributable"
-	ReasonMediaMissing            = "media_missing"
-	ReasonBadHandoffTTL           = "bad_handoff_ttl"
-	ReasonBadContentType          = "bad_content_type"
-	ReasonBadDisposition          = "bad_disposition"
-	ReasonMissingHandoffFilename  = "missing_handoff_filename"
-	ReasonHandoffExpired          = "handoff_expired"
-	ReasonHandoffInvalid          = "handoff_invalid"
+	ReasonBadContentKind         = "bad_content_kind"
+	ReasonBadTitle               = "bad_title"
+	ReasonMissingTitle           = "missing_title"
+	ReasonBadBody                = "bad_body"
+	ReasonMissingBody            = "missing_body"
+	ReasonBadStoreName           = "bad_store_name"
+	ReasonMissingStoreName       = "missing_store_name"
+	ReasonBadPriceNote           = "bad_price_note"
+	ReasonMissingPriceNote       = "missing_price_note"
+	ReasonBadValidNote           = "bad_valid_note"
+	ReasonMissingValidNote       = "missing_valid_note"
+	ReasonBadTopics              = "bad_topics"
+	ReasonBadGrantRef            = "bad_grant_ref"
+	ReasonMissingVideoRef        = "missing_video_ref"
+	ReasonMissingCoverRef        = "missing_cover_ref"
+	ReasonMissingImageText       = "missing_image_text"
+	ReasonMissingPlatform        = "missing_platform"
+	ReasonBadPlatformVersion     = "bad_platform_version"
+	ReasonBadSnapshot            = "bad_snapshot"
+	ReasonBadGrantUntil          = "bad_grant_until"
+	ReasonBadSource              = "bad_source"
+	ReasonMissingSource          = "missing_source"
+	ReasonBadIdempotencyKey      = "bad_idempotency_key"
+	ReasonMissingIdempotencyKey  = "missing_idempotency_key"
+	ReasonMissingBlockReason     = "missing_block_reason"
+	ReasonGrantExpired           = "grant_expired"
+	ReasonNotDistributable       = "not_distributable"
+	ReasonMediaMissing           = "media_missing"
+	ReasonBadHandoffTTL          = "bad_handoff_ttl"
+	ReasonBadContentType         = "bad_content_type"
+	ReasonBadDisposition         = "bad_disposition"
+	ReasonMissingHandoffFilename = "missing_handoff_filename"
+	ReasonHandoffExpired         = "handoff_expired"
+	ReasonHandoffInvalid         = "handoff_invalid"
 )
 
 // ValidationError carries a machine-readable reason for HTTP mapping.
@@ -161,9 +161,9 @@ const (
 // the version anchors the CONTENT, so later library updates never drift an
 // adopted version (源素材更新不静默换片).
 type AssetSnapshot struct {
-	AssetID string `json:"asset_id"`
+	AssetID  string `json:"asset_id"`
 	AssetRef string `json:"asset_ref"`
-	SHA256  string `json:"sha256"`
+	SHA256   string `json:"sha256"`
 }
 
 func (a AssetSnapshot) empty() bool { return a.AssetID == "" && a.AssetRef == "" && a.SHA256 == "" }
@@ -207,8 +207,8 @@ type Marking struct {
 // VersionSpec is the creation payload for one pack version.
 type VersionSpec struct {
 	ContentKind      ContentKind
-	Video            AssetSnapshot // video 必填
-	Cover            AssetSnapshot // video 必填
+	Video            AssetSnapshot   // video 必填
+	Cover            AssetSnapshot   // video 必填
 	ImageText        []AssetSnapshot // imagetext 必填(≥1)
 	Title            string
 	Body             string
