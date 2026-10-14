@@ -461,9 +461,9 @@ type HandoffInput struct {
 // HandoffToken is the ONLY moment the plaintext token exists. Store nothing
 // but the hash; never log it.
 type HandoffToken struct {
-	Credential  Credential
-	Token       string
-	QRPayload   string
+	Credential    Credential
+	Token         string
+	QRPayload     string
 	Participation Participation
 }
 
@@ -596,9 +596,11 @@ type RedeemResult struct {
 	HasAttempt    bool
 }
 
-// Redeem validates shape → hash → purpose/target → expiry → used → revoked,
-// then claims used_at transactionally. Unknown/garbage tokens answer
-// ErrNotFound uniformly (anti-enumeration).
+// Redeem validates shape → hash → purpose/target → expiry → used → revoked →
+// participation state, and only then claims used_at transactionally: every
+// rejection above leaves the credential spendable (a refused redeem must not
+// burn the single use). Unknown/garbage tokens answer ErrNotFound uniformly
+// (anti-enumeration).
 func (s *Service) Redeem(_ context.Context, in RedeemInput) (RedeemResult, error) {
 	if !ValidTokenShape(in.Token) {
 		return RedeemResult{}, ErrNotFound
@@ -626,7 +628,20 @@ func (s *Service) Redeem(_ context.Context, in RedeemInput) (RedeemResult, error
 		return RedeemResult{}, ErrCredentialRevoked
 	}
 
-	// 事务性单次消费:条件更新,0 行 = 并发已被用。
+	p, err := s.getScoped(c.ParticipationID, c.TenantID)
+	if err != nil {
+		return RedeemResult{}, err
+	}
+	// 终态参与不接受续接/核验兑换:取消是显式终态(不复活),已兑现不重演。
+	switch {
+	case in.Purpose == PurposeCustomerResume && p.Status != StatusPending && p.Status != StatusInProgress:
+		return RedeemResult{}, ErrInvalidTransition
+	case in.Purpose == PurposeStaffVerify &&
+		p.Status != StatusPending && p.Status != StatusInProgress && p.Status != StatusAwaitingReview:
+		return RedeemResult{}, ErrInvalidTransition
+	}
+
+	// 事务性单次消费:条件更新,0 行 = 并发已被用。所有校验已过才走到这里。
 	res, err := s.db.Exec(`UPDATE handoff_credentials SET used_at=? WHERE id=? AND used_at='' AND revoked_at=''`,
 		rfc3339(now), c.ID)
 	if err != nil {
@@ -636,10 +651,6 @@ func (s *Service) Redeem(_ context.Context, in RedeemInput) (RedeemResult, error
 		return RedeemResult{}, ErrCredentialUsed
 	}
 
-	p, err := s.getScoped(c.ParticipationID, c.TenantID)
-	if err != nil {
-		return RedeemResult{}, err
-	}
 	out := RedeemResult{}
 	if c.AttemptID != "" {
 		if a, err := s.getAttempt(c.AttemptID, c.TenantID); err == nil {
@@ -700,7 +711,8 @@ func (s *Service) PeekCredential(_ context.Context, token string) (Participation
 	return p, c, nil
 }
 
-func (s *Service) getAttempt(id, tenantID string) (Attempt, error) {	row := s.db.QueryRow(`SELECT id, tenant_id, participation_id, platform, handoff_method,
+func (s *Service) getAttempt(id, tenantID string) (Attempt, error) {
+	row := s.db.QueryRow(`SELECT id, tenant_id, participation_id, platform, handoff_method,
 		content_pack_version, rule_version, status, created_at, updated_at
 		FROM participation_attempts WHERE id=? AND tenant_id=?`, id, tenantID)
 	var a Attempt

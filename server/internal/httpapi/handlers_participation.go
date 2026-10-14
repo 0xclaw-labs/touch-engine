@@ -476,6 +476,7 @@ func (s *Server) handleParticipationStaffView(w http.ResponseWriter, r *http.Req
 	}
 	p, err := s.Participation.GetForStaff(r.Context(), r.PathValue("id"), participation.StaffView{
 		TenantID: c.Member.TenantID, Role: string(c.Member.Role), StoreScope: c.Member.StoreScope,
+		Revoked:  !c.Member.Enabled, // 撤权域层即拒,authz 再审(双 fail-closed)
 	})
 	if err != nil {
 		writeParticipationError(w, err)
@@ -533,6 +534,7 @@ func (s *Server) handleParticipationStaffRedeem(w http.ResponseWriter, r *http.R
 	}
 	if _, err := s.Participation.GetForStaff(r.Context(), p.ID, participation.StaffView{
 		TenantID: c.Member.TenantID, Role: string(c.Member.Role), StoreScope: c.Member.StoreScope,
+		Revoked:  !c.Member.Enabled,
 	}); err != nil {
 		writeParticipationError(w, err)
 		return

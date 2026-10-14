@@ -525,3 +525,29 @@ func TestCleanupAnonymizesAndDeletes(t *testing.T) {
 		t.Fatalf("visitor id must be anonymized, got %q", p.VisitorID)
 	}
 }
+
+// T14 复审补强:取消是显式终态—— outstanding 凭据不得把已取消参与
+// 「复活」到新设备;已兑现参与同样拒绝重演兑换。
+func TestRedeemRefusesTerminalParticipation(t *testing.T) {
+	svc, tenant, store, campaign := newService(t, nil)
+	svc.opts.Now = func() time.Time { return time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC) }
+	ctx := context.Background()
+	started, _ := svc.Start(ctx, startInput(tenant, store, campaign, "visit_a", "idem_1", "cp"))
+	id := started.Participation.ID
+
+	h, _ := svc.CreateAttempt(ctx, AttemptInput{ParticipationID: id, VisitorID: "visit_a", Platform: "douyin", Method: MethodH5})
+	hk, err := svc.BeginHandoff(ctx, HandoffInput{ParticipationID: id, VisitorID: "visit_a", AttemptID: h.ID})
+	if err != nil {
+		t.Fatalf("handoff: %v", err)
+	}
+	if _, err := svc.Cancel(ctx, id, "visit_a"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if _, err := svc.Redeem(ctx, RedeemInput{Token: hk.Token, Purpose: PurposeCustomerResume, TargetScope: "h5", NewVisitorID: "visit_b"}); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("redeem on canceled must be ErrInvalidTransition, got %v", err)
+	}
+	// 凭据未被消费:幂等守卫在消费前判定(重放矩阵不互相干扰)。
+	if _, err := svc.Redeem(ctx, RedeemInput{Token: hk.Token, Purpose: PurposeCustomerResume, TargetScope: "h5", NewVisitorID: "visit_c"}); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("second attempt must also refuse, got %v", err)
+	}
+}

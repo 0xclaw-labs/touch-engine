@@ -44,7 +44,7 @@ const (
 type AttemptStatus string
 
 const (
-	AttemptPrepared  AttemptStatus = "prepared"  // 已备好,尚未交接(版本未冻结)
+	AttemptPrepared  AttemptStatus = "prepared"   // 已备好,尚未交接(版本未冻结)
 	AttemptHandedOff AttemptStatus = "handed_off" // 已交接,内容与规则已冻结
 	AttemptCompleted AttemptStatus = "completed"  // 该次尝试闭环(顾客回传完成)
 	AttemptCanceled  AttemptStatus = "canceled"
@@ -66,9 +66,9 @@ const (
 type HandoffMethod string
 
 const (
-	MethodH5                HandoffMethod = "h5"                  // 同浏览器/站内续接
-	MethodPlatformMini      HandoffMethod = "platform_miniprogram" // 去平台小程序发布
-	MethodStaffView         HandoffMethod = "staff_view"           // 店员目测核验
+	MethodH5           HandoffMethod = "h5"                   // 同浏览器/站内续接
+	MethodPlatformMini HandoffMethod = "platform_miniprogram" // 去平台小程序发布
+	MethodStaffView    HandoffMethod = "staff_view"           // 店员目测核验
 )
 
 // Purpose of a handoff credential.
@@ -76,7 +76,7 @@ type Purpose string
 
 const (
 	PurposeCustomerResume Purpose = "customer_resume" // 顾客跨端续接(换绑 visitor)
-	PurposeStaffVerify    Purpose = "staff_verify"     // 店员扫码核验(需商家会话)
+	PurposeStaffVerify    Purpose = "staff_verify"    // 店员扫码核验(需商家会话)
 )
 
 // Reservation states. Only confirmed means G3 acknowledged the reservation;
@@ -92,16 +92,16 @@ const (
 
 // Sentinel errors (stable for tests/handlers).
 var (
-	ErrNotFound             = errors.New("participation: not found")
-	ErrIdempotencyConflict  = errors.New("participation: idempotency key conflict")
-	ErrFrozen               = errors.New("participation: versions frozen at handoff")
-	ErrInvalidSource        = errors.New("participation: invalid touchpoint source")
-	ErrInvalidTransition    = errors.New("participation: illegal status transition")
-	ErrCredentialExpired    = errors.New("participation: handoff credential expired")
-	ErrCredentialUsed       = errors.New("participation: handoff credential already used")
-	ErrCredentialRevoked    = errors.New("participation: handoff credential revoked")
-	ErrTargetMismatch       = errors.New("participation: handoff target mismatch")
-	ErrNotEntitled          = errors.New("participation: not entitled to read this participation")
+	ErrNotFound            = errors.New("participation: not found")
+	ErrIdempotencyConflict = errors.New("participation: idempotency key conflict")
+	ErrFrozen              = errors.New("participation: versions frozen at handoff")
+	ErrInvalidSource       = errors.New("participation: invalid touchpoint source")
+	ErrInvalidTransition   = errors.New("participation: illegal status transition")
+	ErrCredentialExpired   = errors.New("participation: handoff credential expired")
+	ErrCredentialUsed      = errors.New("participation: handoff credential already used")
+	ErrCredentialRevoked   = errors.New("participation: handoff credential revoked")
+	ErrTargetMismatch      = errors.New("participation: handoff target mismatch")
+	ErrNotEntitled         = errors.New("participation: not entitled to read this participation")
 )
 
 // Window is the participation validity window (RFC3339 strings, campaign-
@@ -167,24 +167,24 @@ func ValidSource(s Source) bool {
 // campaign. It is tenant/store/campaign bound from birth; nothing in it is
 // derived from a phone number or a platform identity.
 type Participation struct {
-	ID                  string
-	TenantID            string
-	StoreID             string
-	CampaignID          string
-	LinkCode            string
-	Source              Source
-	RuleVersion         int
-	ContentPackVersion  string
-	VisitorID           string
-	Status              Status
-	IdempotencyKey      string
-	BenefitSlot         string
-	ReservationRef      string
-	ReservationState    ReservationState
-	FulfillmentRef      string
-	Window              Window
-	CreatedAt           string
-	UpdatedAt           string
+	ID                 string
+	TenantID           string
+	StoreID            string
+	CampaignID         string
+	LinkCode           string
+	Source             Source
+	RuleVersion        int
+	ContentPackVersion string
+	VisitorID          string
+	Status             Status
+	IdempotencyKey     string
+	BenefitSlot        string
+	ReservationRef     string
+	ReservationState   ReservationState
+	FulfillmentRef     string
+	Window             Window
+	CreatedAt          string
+	UpdatedAt          string
 }
 
 // Attempt is one distinguishable publish/handoff try. Its content and rule
