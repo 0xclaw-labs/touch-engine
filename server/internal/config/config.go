@@ -57,6 +57,12 @@ const (
 	// on = 只读白名单计数端口,无券码/面额/成本。/work 管理面与受信内部
 	// 预留调用不加开关(仓内惯例:后台功能不加 FEATURE)。
 	EnvFeatureRewardOps = "FEATURE_REWARD_OPS"
+	// EnvFeatureParticipation (HUI-3546 碰一碰门店交付 A2): 登记制开关,默认 off。
+	// off = 参与/尝试/交接凭据全部路由不注册(404 不可见)且 handler gate
+	// 再答统一 404(双保险)。on = 顾客面凭首方 visitor cookie + 短时交接
+	// 凭据读写自身参与;店员面走既有商家会话 + 门店作用域。权益预留仍走
+	// BenefitReserver 端口,生产接线随 HUI-1671 安排,nil = 停 pending 不伪报。
+	EnvFeatureParticipation = "FEATURE_PARTICIPATION"
 )
 
 // Config is the resolved server configuration.
@@ -136,6 +142,7 @@ type Config struct {
 	FeatureDashboardCache bool
 	FeatureContentPacks   bool
 	FeatureRewardOps      bool
+	FeatureParticipation  bool
 
 	// Brand registry read client (HUI-2049). Touch never writes this registry
 	// and never treats a brand host as a tenant or a payer.
@@ -199,6 +206,7 @@ func Load(get func(string) string) Config {
 		FeatureDashboardCache: isTruthy(get(EnvFeatureDashboardCache)),
 		FeatureContentPacks:   isTruthy(get(EnvFeatureContentPacks)),
 		FeatureRewardOps:      isTruthy(get(EnvFeatureRewardOps)),
+		FeatureParticipation:  isTruthy(get(EnvFeatureParticipation)),
 		BrandBaseURL:          strings.TrimSpace(get("PLATFORM_BRAND_BASE_URL")),
 		BrandToken:            get("PLATFORM_BRAND_TOKEN"),
 		SubscriptionStatus:    firstNonEmpty(get("TOUCH_SUBSCRIPTION_STATUS"), "unconfirmed"),
