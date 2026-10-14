@@ -364,6 +364,285 @@ func TestRewardBenefitsByCodeScan(t *testing.T) {
 	mustEqual(t, status, http.StatusNotFound)
 }
 
+// ---- T4: 全链验收矩阵 ---------------------------------------------------------------
+
+// benefitFor: 从权益列表里找该参与的权益(无则 nil)。
+func benefitFor(t *testing.T, f *serviceDeskFixture, session, tenant, campaignID, participationID string) map[string]any {
+	t.Helper()
+	status, _, out := f.do(t, "GET", "/api/v1/campaigns/"+campaignID+"/reward-benefits", session, tenant, "")
+	mustEqual(t, status, http.StatusOK)
+	items, _ := out["items"].([]any)
+	for _, it := range items {
+		ben, _ := it.(map[string]any)
+		if ben["participation_id"] == participationID {
+			return ben
+		}
+	}
+	return nil
+}
+
+func TestServiceDeskFullChainConfirmIssueRedeem(t *testing.T) {
+	f := newServiceDeskFixture(t)
+	pid, cookie := f.startParticipation(t, "idem-chain-1")
+	token := f.mintStaffVerify(t, pid, cookie)
+
+	// 扫码开卡(peek,不消费)。
+	status, _, peeked := f.do(t, "POST", "/api/v1/participations/staff/peek", "sess-mgr-a", f.tenA, fmt.Sprintf(`{"token":%q}`, token))
+	mustEqual(t, status, http.StatusOK)
+	if peeked["id"] != pid {
+		t.Fatalf("peek id = %v, want %v", peeked["id"], pid)
+	}
+
+	// 一次明确确认:按批次允许证据选「店员见到提交」→ 发放。
+	status, _, out := f.do(t, "POST", "/api/v1/campaigns/"+f.campaignA+"/reward-confirm", "sess-mgr-a", f.tenA,
+		confirmBody(pid, "first_publish", "staff_observed_submission", f.storeA, "evt-chain-1"))
+	mustEqual(t, status, http.StatusOK)
+	if out["outcome"] != "issued" || out["replay"] != false {
+		t.Fatalf("confirm outcome = %v", out)
+	}
+	ben := benefitFor(t, f, "sess-mgr-a", f.tenA, f.campaignA, pid)
+	if ben == nil || ben["status"] != "issued" {
+		t.Fatalf("benefit after confirm = %v", ben)
+	}
+	code, _ := ben["code"].(string)
+	if code == "" {
+		t.Fatal("store_coupon must carry a code")
+	}
+
+	// 券码扫码 → 核销卡 → 独立核销入口。
+	status, _, byCode := f.do(t, "GET", "/api/v1/reward-benefits/by-code?code="+code, "sess-mgr-a", f.tenA, "")
+	mustEqual(t, status, http.StatusOK)
+	benID, _ := byCode["id"].(string)
+	status, _, rd := f.do(t, "POST", "/api/v1/campaigns/"+f.campaignA+"/reward-benefits/"+benID+"/redeem", "sess-mgr-a", f.tenA,
+		fmt.Sprintf(`{"event_id":"evt-chain-redeem","store_id":%q}`, f.storeA))
+	mustEqual(t, status, http.StatusOK)
+	if rd["outcome"] != "redeemed" {
+		t.Fatalf("redeem outcome = %v", rd)
+	}
+	ben = benefitFor(t, f, "sess-mgr-a", f.tenA, f.campaignA, pid)
+	if ben["status"] != "redeemed" {
+		t.Fatalf("benefit after redeem = %v", ben)
+	}
+	// 处理人/时间可读(另一端「已处理」显示的数据源)。
+	if ben["redeemed_by"] != "usr_mgr_a" || ben["redeemed_at"] == "" {
+		t.Fatalf("redeem actor/time = %v/%v", ben["redeemed_by"], ben["redeemed_at"])
+	}
+}
+
+func TestServiceDeskTwoStaffRedeemExactlyOne(t *testing.T) {
+	f := newServiceDeskFixture(t)
+	pid, _ := f.startParticipation(t, "idem-race-1")
+	benID, _ := f.seedIssuedBenefit(t, pid, "first_publish", "staff_observed_submission", "evt-race-issue")
+
+	// 两位店员先后核销(1671 单事务原子):第一位 applied,第二位读回已处理。
+	status, _, first := f.do(t, "POST", "/api/v1/campaigns/"+f.campaignA+"/reward-benefits/"+benID+"/redeem", "sess-mgr-a", f.tenA,
+		fmt.Sprintf(`{"event_id":"evt-race-a","store_id":%q}`, f.storeA))
+	mustEqual(t, status, http.StatusOK)
+	if first["outcome"] != "redeemed" || first["applied"] != true {
+		t.Fatalf("first redeem = %v", first)
+	}
+	_ = first
+	status, _, second := f.do(t, "POST", "/api/v1/campaigns/"+f.campaignA+"/reward-benefits/"+benID+"/redeem", "sess-owner-a", f.tenA,
+		fmt.Sprintf(`{"event_id":"evt-race-b","store_id":%q}`, f.storeA))
+	mustEqual(t, status, http.StatusOK)
+	if second["outcome"] != "already_redeemed" {
+		t.Fatalf("second redeem = %v, want already_redeemed", second)
+	}
+	// 账本恰好一份:权益仍只有一条,核销人是第一位。
+	ben := benefitFor(t, f, "sess-owner-a", f.tenA, f.campaignA, pid)
+	if ben["redeemed_by"] != "usr_mgr_a" {
+		t.Fatalf("redeemed_by = %v, want the first staff only", ben["redeemed_by"])
+	}
+}
+
+func TestServiceDeskConfirmReplaySameEvent(t *testing.T) {
+	f := newServiceDeskFixture(t)
+	pid, _ := f.startParticipation(t, "idem-replay-1")
+
+	// 断网重试:同 event_id 重放由账本去重——不重复发放、不提示重领。
+	status, _, first := f.do(t, "POST", "/api/v1/campaigns/"+f.campaignA+"/reward-confirm", "sess-mgr-a", f.tenA,
+		confirmBody(pid, "first_publish", "staff_observed_submission", f.storeA, "evt-replay-1"))
+	mustEqual(t, status, http.StatusOK)
+	if first["replay"] != false {
+		t.Fatalf("first confirm = %v, want applied (not a replay)", first)
+	}
+	status, _, again := f.do(t, "POST", "/api/v1/campaigns/"+f.campaignA+"/reward-confirm", "sess-mgr-a", f.tenA,
+		confirmBody(pid, "first_publish", "staff_observed_submission", f.storeA, "evt-replay-1"))
+	mustEqual(t, status, http.StatusOK)
+	if again["replay"] != true || again["outcome"] != "issued" {
+		t.Fatalf("replay confirm = %v", again)
+	}
+	// 恰好一条权益。
+	status, _, out := f.do(t, "GET", "/api/v1/campaigns/"+f.campaignA+"/reward-benefits", "sess-owner-a", f.tenA, "")
+	mustEqual(t, status, http.StatusOK)
+	items, _ := out["items"].([]any)
+	n := 0
+	for _, it := range items {
+		if b, _ := it.(map[string]any); b["participation_id"] == pid {
+			n++
+		}
+	}
+	mustEqual(t, n, 1)
+}
+
+func TestServiceDeskOfficialOnlyRuleRefusesStaffAndFabricated(t *testing.T) {
+	f := newServiceDeskFixture(t)
+	pid, _ := f.startParticipation(t, "idem-official-1")
+
+	// 规则只认官方确认:人工证据被拒(official_evidence_required)。
+	status, _, out := f.do(t, "POST", "/api/v1/campaigns/"+f.campaignA+"/reward-confirm", "sess-mgr-a", f.tenA,
+		confirmBody(pid, "official_first", "staff_observed_submission", f.storeA, "evt-off-1"))
+	mustEqual(t, status, http.StatusUnprocessableEntity)
+	if out["error"] != "official_evidence_required" {
+		t.Fatalf("staff evidence on official-only = %v", out)
+	}
+
+	// 人工不能冒充官方回执:编造 fact/post 被 1671 拒(fabricated_official_receipt)。
+	status, _, out = f.do(t, "POST", "/api/v1/campaigns/"+f.campaignA+"/reward-confirm", "sess-mgr-a", f.tenA,
+		fmt.Sprintf(`{"participation_id":%q,"benefit_slot":"official_first","rule_version":1,"event_id":"evt-off-2","evidence":"official_publish_confirmed","official":{"fact_id":"fake-fact","platform_post_id":"fake-post","receipt_source":"official_query"},"store_id":%q,"note":"","fulfill_now":false}`, pid, f.storeA))
+	mustEqual(t, status, http.StatusUnprocessableEntity)
+	if out["error"] != "fabricated_official_receipt" {
+		t.Fatalf("fabricated receipt = %v", out)
+	}
+
+	// 被拒的确认不留账本行(「暂不符合/证据不符」零写入)。
+	if ben := benefitFor(t, f, "sess-owner-a", f.tenA, f.campaignA, pid); ben != nil {
+		t.Fatalf("refused confirm must leave no benefit row, got %v", ben)
+	}
+}
+
+func TestServiceDeskGiftFulfillNowTwoFacts(t *testing.T) {
+	f := newServiceDeskFixture(t)
+	pid, _ := f.startParticipation(t, "idem-gift-1")
+
+	// 现场赠品/折扣:「确认并现场兑现」= 同事务发放+核销两条事实。
+	body := fmt.Sprintf(`{"participation_id":%q,"benefit_slot":"gift_today","rule_version":1,"event_id":"evt-gift-1","evidence":"staff_observed_submission","store_id":%q,"note":"现场给过","fulfill_now":true,"redeem_event_id":"evt-gift-1-redeem"}`, pid, f.storeA)
+	status, _, out := f.do(t, "POST", "/api/v1/campaigns/"+f.campaignA+"/reward-confirm", "sess-mgr-a", f.tenA, body)
+	mustEqual(t, status, http.StatusOK)
+	if out["outcome"] != "issued_and_redeemed" {
+		t.Fatalf("gift fulfill-now = %v", out)
+	}
+	ben := benefitFor(t, f, "sess-mgr-a", f.tenA, f.campaignA, pid)
+	if ben["status"] != "redeemed" || ben["issued_at"] == "" || ben["redeemed_at"] == "" {
+		t.Fatalf("gift benefit = %v", ben)
+	}
+	// 现场赠品无券码。
+	if code, _ := ben["code"].(string); code != "" {
+		t.Fatalf("gift benefit must be code-less, got %q", code)
+	}
+}
+
+func TestServiceDeskStockExhausted(t *testing.T) {
+	f := newServiceDeskFixture(t)
+	// first_publish 批次余量 2:两单成功,第三单 422 out_of_stock。
+	for i, key := range []string{"idem-stock-1", "idem-stock-2", "idem-stock-3"} {
+		pid, _ := f.startParticipation(t, key)
+		status, _, out := f.do(t, "POST", "/api/v1/campaigns/"+f.campaignA+"/reward-confirm", "sess-mgr-a", f.tenA,
+			confirmBody(pid, "first_publish", "staff_observed_submission", f.storeA, "evt-stock-"+fmt.Sprint(i)))
+		if i < 2 {
+			mustEqual(t, status, http.StatusOK)
+		} else {
+			mustEqual(t, status, http.StatusUnprocessableEntity)
+			if out["error"] != "out_of_stock" {
+				t.Fatalf("third confirm = %v, want out_of_stock", out)
+			}
+		}
+	}
+}
+
+func TestServiceDeskWrongStoreRefusals(t *testing.T) {
+	f := newServiceDeskFixture(t)
+	pid, _ := f.startParticipation(t, "idem-wrongstore-1")
+
+	// 邻店经理对本店活动:campaignScoped 404 掩蔽。
+	status, _, _ := f.do(t, "POST", "/api/v1/campaigns/"+f.campaignA+"/reward-confirm", "sess-mgr-b", f.tenA,
+		confirmBody(pid, "first_publish", "staff_observed_submission", f.storeB, "evt-ws-1"))
+	mustEqual(t, status, http.StatusNotFound)
+
+	// 参与属于本店、却声明在别店确认:确认门店必须与参与门店一致(403)。
+	status, _, out := f.do(t, "POST", "/api/v1/campaigns/"+f.campaignA+"/reward-confirm", "sess-owner-a", f.tenA,
+		confirmBody(pid, "first_publish", "staff_observed_submission", f.storeB, "evt-ws-2"))
+	mustEqual(t, status, http.StatusForbidden)
+	if out["error"] != "target_mismatch" {
+		t.Fatalf("wrong store confirm = %v", out)
+	}
+	// 被拒确认不留账本行。
+	if ben := benefitFor(t, f, "sess-owner-a", f.tenA, f.campaignA, pid); ben != nil {
+		t.Fatalf("refused confirm must leave no benefit row, got %v", ben)
+	}
+}
+
+func TestServiceDeskConfirmBindsRealParticipation(t *testing.T) {
+	f := newServiceDeskFixture(t)
+
+	// 编造参与引用不能过账:确认必须绑定真实参与(防伪造确认绕过准入)。
+	status, _, _ := f.do(t, "POST", "/api/v1/campaigns/"+f.campaignA+"/reward-confirm", "sess-mgr-a", f.tenA,
+		confirmBody("pt_forged000000000000000000000000000", "first_publish", "staff_observed_submission", f.storeA, "evt-forged-1"))
+	mustEqual(t, status, http.StatusNotFound)
+	if ben := benefitFor(t, f, "sess-owner-a", f.tenA, f.campaignA, "pt_forged000000000000000000000000000"); ben != nil {
+		t.Fatalf("forged participation must leave no benefit row, got %v", ben)
+	}
+}
+
+func TestServiceDeskRevokedMemberCannotAct(t *testing.T) {
+	f := newServiceDeskFixture(t)
+	pid, _ := f.startParticipation(t, "idem-revoked-1")
+
+	// 撤权成员确认/核销:403 member_disabled。
+	status, _, _ := f.do(t, "POST", "/api/v1/campaigns/"+f.campaignA+"/reward-confirm", "sess-off-a", f.tenA,
+		confirmBody(pid, "first_publish", "staff_observed_submission", f.storeA, "evt-rv-1"))
+	mustEqual(t, status, http.StatusForbidden)
+	status, _, _ = f.do(t, "GET", "/api/v1/campaigns/"+f.campaignA+"/reward-benefits", "sess-off-a", f.tenA, "")
+	mustEqual(t, status, http.StatusForbidden)
+}
+
+func TestServiceDeskExpiredWindowParticipation(t *testing.T) {
+	f := newServiceDeskFixture(t)
+	pid, _ := f.startParticipation(t, "idem-expired-1")
+
+	// 参与窗口已关闭(时间推移后过期):确认被拒(409 frozen),不发奖。
+	_, err := f.s.St.DB.Exec(`UPDATE participations SET expires_at=? WHERE id=?`,
+		time.Now().UTC().Add(-time.Hour).Format(time.RFC3339), pid)
+	mustNoErr(t, err)
+	status, _, out := f.do(t, "POST", "/api/v1/campaigns/"+f.campaignA+"/reward-confirm", "sess-mgr-a", f.tenA,
+		confirmBody(pid, "first_publish", "staff_observed_submission", f.storeA, "evt-exp-1"))
+	mustEqual(t, status, http.StatusConflict)
+	if out["error"] != "frozen" {
+		t.Fatalf("expired participation confirm = %v, want frozen", out)
+	}
+	if ben := benefitFor(t, f, "sess-owner-a", f.tenA, f.campaignA, pid); ben != nil {
+		t.Fatalf("expired participation must leave no benefit row, got %v", ben)
+	}
+}
+
+func TestServiceDeskReverseOwnerOnly(t *testing.T) {
+	f := newServiceDeskFixture(t)
+	pid, _ := f.startParticipation(t, "idem-reverse-1")
+	benID, _ := f.seedIssuedBenefit(t, pid, "first_publish", "staff_observed_submission", "evt-rev-issue")
+
+	// 店员/店经理没有更正撤销权(预算权归总部)。
+	status, _, _ := f.do(t, "POST", "/api/v1/campaigns/"+f.campaignA+"/reward-benefits/"+benID+"/reverse", "sess-mgr-a", f.tenA,
+		`{"reason":"测试","event_id":"evt-rev-mgr"}`)
+	mustEqual(t, status, http.StatusForbidden)
+
+	// org_owner + 原因:撤销保留原记录(追加,不删账)。
+	status, _, out := f.do(t, "POST", "/api/v1/campaigns/"+f.campaignA+"/reward-benefits/"+benID+"/reverse", "sess-owner-a", f.tenA,
+		`{"reason":"误扫顾客甲","event_id":"evt-rev-owner"}`)
+	mustEqual(t, status, http.StatusOK)
+	if out["outcome"] != "reversed" {
+		t.Fatalf("reverse = %v", out)
+	}
+	ben := benefitFor(t, f, "sess-owner-a", f.tenA, f.campaignA, pid)
+	if ben["status"] != "reversed" || ben["reverse_reason"] != "误扫顾客甲" || ben["issued_at"] == "" {
+		t.Fatalf("reversed benefit must keep the original issue facts: %v", ben)
+	}
+
+	// 无原因不撤销。
+	status, _, _ = f.do(t, "POST", "/api/v1/campaigns/"+f.campaignA+"/reward-benefits/"+benID+"/reverse", "sess-owner-a", f.tenA,
+		`{"reason":"","event_id":"evt-rev-noreason"}`)
+	mustEqual(t, status, http.StatusBadRequest)
+}
+
 // ---- T2: 手输限流 -------------------------------------------------------------------
 
 func TestStaffTokenEntryRateLimited(t *testing.T) {

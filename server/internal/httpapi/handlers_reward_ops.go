@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/bianjiefilm/touch-engine/server/internal/authz"
+	"github.com/bianjiefilm/touch-engine/server/internal/participation"
 	"github.com/bianjiefilm/touch-engine/server/internal/rewardops"
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
 )
@@ -309,6 +310,29 @@ func (s *Server) handleRewardConfirm(w http.ResponseWriter, r *http.Request) {
 	if !decision.Allowed {
 		fail(w, http.StatusForbidden, decision.Reason, "not allowed to confirm rewards")
 		return
+	}
+	// HUI-3562 店员台硬化:参与域上线的部署(FEATURE_PARTICIPATION on)里,
+	// 确认必须绑定本租户「真实存在」的参与(店员作用域内),且确认门店与
+	// 参与门店一致——编造参与引用/跨店确认在此拒绝,不进账本。off 部署
+	// (参与域未上线的存量商家)保持 1671 原语义,零行为变化。
+	if s.Cfg.FeatureParticipation && s.Participation != nil {
+		p, err := s.Participation.GetForStaff(r.Context(), body.ParticipationID, participation.StaffView{
+			TenantID: camp.TenantID, Role: string(c.Member.Role), StoreScope: c.Member.StoreScope,
+			Revoked: !c.Member.Enabled,
+		})
+		if err != nil {
+			writeParticipationError(w, err)
+			return
+		}
+		if p.Window.Expired(time.Now().UTC()) {
+			// 过期参与:窗口已关闭,不再发新承诺(读取仍允许顾客查看)。
+			writeParticipationError(w, participation.ErrFrozen)
+			return
+		}
+		if strings.TrimSpace(body.StoreID) != p.StoreID {
+			fail(w, http.StatusForbidden, "target_mismatch", "确认门店必须与参与门店一致。")
+			return
+		}
 	}
 	ben, outcome, err := s.St.ConfirmRewardBenefit(store.RewardConfirmInput{
 		TenantID: camp.TenantID, CampaignID: camp.ID,
