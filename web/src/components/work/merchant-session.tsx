@@ -24,10 +24,11 @@ export interface MerchantResult {
 // 缺省一律按 off 处理，不猜测服务端未声明的能力。
 const NO_FEATURES: { serviceDesk: boolean } = { serviceDesk: false };
 
-function parseFeatures(data: Record<string, unknown>): { serviceDesk: boolean } {
+// 线上字段是蛇形 service_desk（whoami Go map 键），这里做唯一的命名翻译。
+export function parseFeatures(data: Record<string, unknown>): { serviceDesk: boolean } {
   const features = data.features;
   if (!features || typeof features !== "object") return NO_FEATURES;
-  return { serviceDesk: (features as Record<string, unknown>).serviceDesk === true };
+  return { serviceDesk: (features as Record<string, unknown>).service_desk === true };
 }
 
 export interface MerchantSession {
