@@ -509,6 +509,9 @@ func (s *Server) handleParticipationStaffRedeem(w http.ResponseWriter, r *http.R
 		fail(w, http.StatusUnauthorized, "unauthenticated", "sign in required")
 		return
 	}
+	if !s.allowStaffTokenAttempt(c, w) {
+		return
+	}
 	var body struct {
 		Token string `json:"token"`
 	}
@@ -548,4 +551,87 @@ func (s *Server) handleParticipationStaffRedeem(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeJSON(w, http.StatusOK, newParticipationView(res.Participation))
+}
+
+// handleParticipationStaffPeek (HUI-3562 店员台): 扫/手输核验凭据打开参与卡,
+// **不消费**凭据——重复扫码幂等回同一张卡,两位店员可同时开卡;消费仍由
+// staff/redeem 单独负责。鉴权与 staff/redeem 同序:域层租户/门店作用域先审,
+// authz read_record 再审,双 fail-closed;载荷是店员面白名单(参与视图 +
+// campaign_id/store_id 供卡面取奖励上下文),访客键/幂等键/预留引用不出。
+func (s *Server) handleParticipationStaffPeek(w http.ResponseWriter, r *http.Request) {
+	if !s.participationReady(w) {
+		return
+	}
+	c := callerFrom(r)
+	if c == nil || c.Member == nil {
+		fail(w, http.StatusUnauthorized, "unauthenticated", "sign in required")
+		return
+	}
+	if !s.allowStaffTokenAttempt(c, w) {
+		return
+	}
+	var body struct {
+		Token string `json:"token"`
+	}
+	if !decodeParticipationBody(w, r, &body) {
+		return
+	}
+	if strings.TrimSpace(body.Token) == "" {
+		fail(w, http.StatusBadRequest, "bad_request", "token is required")
+		return
+	}
+	p, _, err := s.Participation.PeekCredential(r.Context(), body.Token)
+	if err != nil {
+		writeParticipationError(w, err)
+		return
+	}
+	if p.TenantID != c.Member.TenantID {
+		fail(w, http.StatusForbidden, "target_mismatch", "this handoff credential does not apply here")
+		return
+	}
+	if _, err := s.Participation.GetForStaff(r.Context(), p.ID, participation.StaffView{
+		TenantID: c.Member.TenantID, Role: string(c.Member.Role), StoreScope: c.Member.StoreScope,
+		Revoked: !c.Member.Enabled,
+	}); err != nil {
+		writeParticipationError(w, err)
+		return
+	}
+	if !s.requireScopedAction(c, authz.ActionReadRecord, authz.RecordScope{TenantID: c.Member.TenantID, StoreID: p.StoreID}, true, w) {
+		return
+	}
+	attempts, err := s.Participation.ListAttemptsForStaff(r.Context(), p.ID, p.TenantID)
+	if err != nil {
+		writeParticipationError(w, err)
+		return
+	}
+	view := newParticipationView(p)
+	view.Attempts = make([]attemptView, 0, len(attempts))
+	for _, a := range attempts {
+		view.Attempts = append(view.Attempts, newAttemptView(a))
+	}
+	// 卡面载荷:参与视图平铺 + 奖励上下文(campaign/store),仍无访客键/
+	// 幂等键/预留引用/租户 id。
+	card := map[string]any{
+		"campaign_id": p.CampaignID,
+		"store_id":    p.StoreID,
+		"attempts":    view.Attempts,
+	}
+	if raw, err := json.Marshal(view); err == nil {
+		_ = json.Unmarshal(raw, &card)
+	}
+	writeJSON(w, http.StatusOK, card)
+}
+
+// allowStaffTokenAttempt charges one token-entry attempt against the member's
+// budget (staff/peek + staff/redeem share one window: manual entry must not
+// become a probing channel). A nil limiter (never in production) stays open.
+func (s *Server) allowStaffTokenAttempt(c *caller, w http.ResponseWriter) bool {
+	if s.StaffTokenLimiter == nil {
+		return true
+	}
+	if s.StaffTokenLimiter.Allow(c.Member.PrincipalRef) {
+		return true
+	}
+	fail(w, http.StatusTooManyRequests, "too_many_attempts", "尝试太频繁，请稍后再试。")
+	return false
 }

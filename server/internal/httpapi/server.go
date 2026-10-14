@@ -69,6 +69,12 @@ type Server struct {
 	// (single-process sliding window; not distributed by design for T1).
 	LeadsLimiter *leads.RateLimiter
 
+	// StaffTokenLimiter (HUI-3562) gates the staff token-entry surface
+	// (staff/peek + staff/redeem) per member principal: manual entry of a
+	// handoff token must not become a probing channel. Same single-process
+	// sliding window as LeadsLimiter; tests may replace it with a tight one.
+	StaffTokenLimiter *leads.RateLimiter
+
 	// Matrix consumes a public-permission read and a matrix draft sink.
 	// Nil means that supply is missing: only the matrix button is disabled.
 	Matrix *matrixconsume.Consumer
@@ -117,6 +123,12 @@ type dashboardEntry struct {
 // anyway); strict enough to stop bulk form spam. Single-process scope by design.
 const leadsRatePerMinute = 30
 
+// staffTokenRatePerMinute (HUI-3562) bounds staff token-entry attempts per
+// member across staff/peek + staff/redeem. A handoff token already carries
+// 128-bit entropy + a checksum prefilter; the limiter is the second lock so
+// manual entry can never become a probing channel either.
+const staffTokenRatePerMinute = 30
+
 // New builds a Server over an opened database.
 func New(cfg config.Config, database *sql.DB, idc *identity.Client, upc *upload.Client, logger *log.Logger) *Server {
 	if logger == nil {
@@ -125,8 +137,9 @@ func New(cfg config.Config, database *sql.DB, idc *identity.Client, upc *upload.
 	st := store.New(database)
 	return &Server{
 		Cfg: cfg, St: st, ID: idc, Upload: upc, Log: logger,
-		LeadsLimiter: leads.NewRateLimiter(leadsRatePerMinute, time.Minute),
-		Matrix:       matrixFromConfig(cfg),
+		LeadsLimiter:      leads.NewRateLimiter(leadsRatePerMinute, time.Minute),
+		StaffTokenLimiter: leads.NewRateLimiter(staffTokenRatePerMinute, time.Minute),
+		Matrix:            matrixFromConfig(cfg),
 		PubCache: readcache.New[store.ResolvedRows](readcache.Options{
 			Capacity: publicCacheCapacity, TTL: publicCacheTTL, Jitter: publicCacheJitter,
 			Epoch: st.Epoch,
@@ -535,6 +548,8 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("DELETE /api/v1/participations/{id}/handoff/{credentialId}", http.HandlerFunc(s.handleParticipationHandoffRevoke))
 		mux.Handle("GET /api/v1/participations/{id}/staff-view", s.requireSession(s.handleParticipationStaffView))
 		mux.Handle("POST /api/v1/participations/staff/redeem", s.requireSession(s.handleParticipationStaffRedeem))
+		// HUI-3562 店员台:扫/手输凭据开参与卡(不消费,重复扫码幂等)。
+		mux.Handle("POST /api/v1/participations/staff/peek", s.requireSession(s.handleParticipationStaffPeek))
 	}
 
 	// channel admission (HUI-3535 渠道准入与承接清单): 登记制开关
