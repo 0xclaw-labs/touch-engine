@@ -14,7 +14,9 @@ CREATE TABLE IF NOT EXISTS reward_benefits (
     participation_id  TEXT NOT NULL,
     benefit_slot      TEXT NOT NULL,
     rule_version      INTEGER NOT NULL CHECK (rule_version >= 1),
-    evidence          TEXT NOT NULL CHECK (evidence IN ('staff_observed_submission', 'staff_verified_post', 'official_publish_confirmed')),
+    -- evidence stays '' while only reserved: no evidence exists yet.
+    -- It is written at confirmation and never rewritten afterwards.
+    evidence          TEXT NOT NULL CHECK (evidence IN ('', 'staff_observed_submission', 'staff_verified_post', 'official_publish_confirmed')),
     code              TEXT NOT NULL DEFAULT '',
     status            TEXT NOT NULL CHECK (status IN ('reserved', 'issued', 'redeemed', 'reversed', 'expired')),
     store_id          TEXT NOT NULL DEFAULT '',
