@@ -405,14 +405,9 @@ export default function MaterialsPage() {
             <h2 className="tk-section-title">帮我制作</h2>
             <p className="tk-note">没有合适成片时,可以让制作能力按这个活动的目的、门店资料和选定素材帮你做。只打开制作工程不扣费;生成前沿既有报价与确认。</p>
             <p className="tk-note tk-unknown" data-field="produce-reason">{produceReason}</p>
-            <button
-              className="tk-button"
-              type="button"
-              disabled={!produceAvailable}
-              onClick={() => {
-                if (produceAvailable) return;
-              }}
-            >
+            {/* 制作交接 brief(活动目的/门店资料/选定素材/期望形式)在能力接通后
+                经 POST content-handoffs 提交;本票能力恒不可用,按钮保持禁用。 */}
+            <button className="tk-button" type="button" disabled={!produceAvailable}>
               帮我制作
             </button>
           </section>

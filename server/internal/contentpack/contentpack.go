@@ -85,13 +85,19 @@ const (
 	ReasonBadContentKind          = "bad_content_kind"
 	ReasonBadTitle                = "bad_title"
 	ReasonMissingTitle            = "missing_title"
+	ReasonBadBody                 = "bad_body"
 	ReasonMissingBody             = "missing_body"
+	ReasonBadStoreName            = "bad_store_name"
+	ReasonMissingStoreName        = "missing_store_name"
+	ReasonBadPriceNote            = "bad_price_note"
+	ReasonMissingPriceNote        = "missing_price_note"
+	ReasonBadValidNote            = "bad_valid_note"
+	ReasonMissingValidNote        = "missing_valid_note"
+	ReasonBadTopics               = "bad_topics"
+	ReasonBadGrantRef             = "bad_grant_ref"
 	ReasonMissingVideoRef         = "missing_video_ref"
 	ReasonMissingCoverRef         = "missing_cover_ref"
 	ReasonMissingImageText        = "missing_image_text"
-	ReasonMissingStoreName        = "missing_store_name"
-	ReasonMissingPriceNote        = "missing_price_note"
-	ReasonMissingValidNote        = "missing_valid_note"
 	ReasonMissingPlatform         = "missing_platform"
 	ReasonBadPlatformVersion      = "bad_platform_version"
 	ReasonBadSnapshot             = "bad_snapshot"
@@ -267,7 +273,7 @@ func ValidateVersionSpec(in VersionSpec) error {
 		return invalid(ReasonMissingBody, "body")
 	}
 	if len(in.Body) > MaxBody {
-		return invalid(ReasonBadTitle, "body")
+		return invalid(ReasonBadBody, "body")
 	}
 	switch kind {
 	case ContentKindVideo:
@@ -297,27 +303,27 @@ func ValidateVersionSpec(in VersionSpec) error {
 		return invalid(ReasonMissingStoreName, "store_name")
 	}
 	if len(in.StoreName) > MaxStoreName {
-		return invalid(ReasonBadTitle, "store_name")
+		return invalid(ReasonBadStoreName, "store_name")
 	}
 	if in.PriceNote == "" {
 		return invalid(ReasonMissingPriceNote, "price_note")
 	}
 	if len(in.PriceNote) > MaxPriceNote {
-		return invalid(ReasonBadTitle, "price_note")
+		return invalid(ReasonBadPriceNote, "price_note")
 	}
 	if in.ValidNote == "" {
 		return invalid(ReasonMissingValidNote, "valid_note")
 	}
 	if len(in.ValidNote) > MaxValidNote {
-		return invalid(ReasonBadTitle, "valid_note")
+		return invalid(ReasonBadValidNote, "valid_note")
 	}
 	topics := NormalizeTopics(in.Topics)
 	if len(topics) > MaxTopics {
-		return invalid(ReasonBadTitle, "topics")
+		return invalid(ReasonBadTopics, "topics")
 	}
 	for _, t := range topics {
 		if len(t) > MaxTopicLen {
-			return invalid(ReasonBadTitle, "topics")
+			return invalid(ReasonBadTopics, "topics")
 		}
 	}
 	for i, pv := range in.PlatformVersions {
@@ -333,7 +339,7 @@ func ValidateVersionSpec(in VersionSpec) error {
 	}
 	for i, g := range in.GrantRefs {
 		if strings.TrimSpace(g) == "" || len(g) > MaxGrantRef {
-			return invalid(ReasonBadTitle, fmt.Sprintf("grant_refs[%d]", i))
+			return invalid(ReasonBadGrantRef, fmt.Sprintf("grant_refs[%d]", i))
 		}
 	}
 	if in.GrantUntil != "" {
@@ -396,7 +402,7 @@ func ValidateBlockReason(reason string) error {
 	case r == "":
 		return invalid(ReasonMissingBlockReason, "reason")
 	case len(r) > MaxBlockReason:
-		return invalid(ReasonBadTitle, "reason")
+		return invalid(ReasonBadBody, "reason")
 	}
 	return nil
 }
