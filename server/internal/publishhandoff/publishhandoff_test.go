@@ -126,7 +126,7 @@ func TestMigrationsCreatePublishHandoffSchema(t *testing.T) {
 	if _, err := d.Exec(insertEvent, eventArgs("phe_a", "customer_done_requested", "")...); err != nil {
 		t.Fatalf("insert event: %v", err)
 	}
-	if _, err := d.Exec(insertEvent, eventArgs("phe_b", "platform_confirmed", "rcp_1")...); err != nil {
+	if _, err := d.Exec(insertEvent, eventArgs("phe_b", "official_confirmed", "rcp_1")...); err != nil {
 		t.Fatalf("insert official event: %v", err)
 	}
 	if _, err := d.Exec(insertEvent, eventArgs("phe_c", "platform_confirmed", "rcp_1")...); err == nil {
