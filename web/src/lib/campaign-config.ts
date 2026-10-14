@@ -229,6 +229,9 @@ export function defaultSpec(mode = MODES[0]): PublishSpec {
       kind: "store_coupon",
       slot: "",
       budget_mode: "total_quantity",
+      // 显式 0:草稿允许不完整,但预算口径「数量模式必须带数值」是形状约束;
+      // 商家保存前改成真实名额,启用时服务端仍按库存真值把关。
+      total_quantity: 0,
       currency: "CNY",
       store_ids: [],
       claim_from: "",
