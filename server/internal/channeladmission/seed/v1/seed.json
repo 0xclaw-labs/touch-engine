@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "generated_at": "2026-10-14",
+  "records": [
+    {
+      "platform": "douyin",
+      "entry_mode": "h5",
+      "scenario": "store_promo",
+      "app_binding": "none",
+      "tenant_scope": "*",
+      "status": "not_admitted",
+      "reward_admitted": false,
+      "reason_code": "not_admitted",
+      "reason_text": "抖音发布能力使用规范明确排除商铺宣传、商品介绍等营销内容场景；普通 H5 能传视频不等于本场景获准，不得推定。",
+      "capabilities": {
+        "media": "unknown",
+        "title": "unknown",
+        "body": "unknown",
+        "topic": "unknown",
+        "poi": "unknown",
+        "receipt": "unknown",
+        "callback": "unknown"
+      },
+      "missing": [
+        "官方对商铺宣传/营销内容场景的明确准入（当前规范明确排除）"
+      ],
+      "official_sources": [
+        "https://developer.open-douyin.com/docs/resource/zh-CN/dop/operation-standard/platform-capabilities/useclue"
+      ],
+      "last_checked_at": "2026-10-14",
+      "valid_until": "2027-01-12",
+      "close_reason": ""
+    },
+    {
+      "platform": "douyin",
+      "entry_mode": "miniapp",
+      "scenario": "reward_task",
+      "app_binding": "platform_app",
+      "tenant_scope": "*",
+      "status": "unknown",
+      "reward_admitted": false,
+      "reason_code": "admission_unknown",
+      "reason_text": "基础发布与任务查询/状态推送是不同能力，任务能力需申请；未获平台批复前不得用于奖励玩法（转发门店预制广告换券未获准）。",
+      "capabilities": {
+        "media": "unknown",
+        "title": "unknown",
+        "body": "unknown",
+        "topic": "unknown",
+        "poi": "unknown",
+        "receipt": "unknown",
+        "callback": "unknown"
+      },
+      "missing": [
+        "抖音小程序任务能力申请及平台批复",
+        "拟用玩法的平台答复记录"
+      ],
+      "official_sources": [
+        "https://developer.open-douyin.com/docs/resource/zh-CN/mini-app/open-capacity/operation/douyin-video/douyin-task"
+      ],
+      "last_checked_at": "2026-10-14",
+      "valid_until": "2027-01-12",
+      "close_reason": ""
+    },
+    {
+      "platform": "xiaohongshu",
+      "entry_mode": "miniapp",
+      "scenario": "store_promo",
+      "app_binding": "platform_app",
+      "tenant_scope": "*",
+      "status": "unknown",
+      "reward_admitted": false,
+      "reason_code": "admission_unknown",
+      "reason_text": "发小红书组件存在（媒体/标题/正文/话题/关联参数/回调入口列明），但外部拉起、小程序发布、回调权限及奖励规则未确认；不默认没有回调，也不默认允许激励方式。",
+      "capabilities": {
+        "media": "unknown",
+        "title": "unknown",
+        "body": "unknown",
+        "topic": "unknown",
+        "poi": "unknown",
+        "receipt": "unknown",
+        "callback": "unknown"
+      },
+      "missing": [
+        "外部拉起权限确认",
+        "发布回调权限确认",
+        "激励/奖励规则确认"
+      ],
+      "official_sources": [
+        "https://miniapp.xiaohongshu.com/doc/DC530301",
+        "https://miniapp.xiaohongshu.com/doc/DC137160"
+      ],
+      "last_checked_at": "2026-10-14",
+      "valid_until": "2027-01-12",
+      "close_reason": ""
+    },
+    {
+      "platform": "bilibili",
+      "entry_mode": "h5",
+      "scenario": "store_promo",
+      "app_binding": "none",
+      "tenant_scope": "*",
+      "status": "unknown",
+      "reward_admitted": false,
+      "reason_code": "admission_unknown",
+      "reason_text": "B站开放平台存在认证、应用与授权接入，不等于外部 H5 能把稿件直接带入手机发布页；相同体验的官方路线待核实，不得编造 deep link 或假设已有权限。",
+      "capabilities": {
+        "media": "unknown",
+        "title": "unknown",
+        "body": "unknown",
+        "topic": "unknown",
+        "poi": "unknown",
+        "receipt": "unknown",
+        "callback": "unknown"
+      },
+      "missing": [
+        "移动端发布页带入的官方路线核实"
+      ],
+      "official_sources": [
+        "https://open.bilibili.com/"
+      ],
+      "last_checked_at": "2026-10-14",
+      "valid_until": "2027-01-12",
+      "close_reason": ""
+    },
+    {
+      "platform": "kuaishou",
+      "entry_mode": "native",
+      "scenario": "store_promo",
+      "app_binding": "platform_app",
+      "tenant_scope": "*",
+      "status": "unknown",
+      "reward_admitted": false,
+      "reason_code": "admission_unknown",
+      "reason_text": "快手 Android SDK 能打开单视频发布页但属移动应用路线；文档 FAQ 对话题携带另有限制，不能承诺跨平台所有字段自动填好，不能推定 H5 可用。",
+      "capabilities": {
+        "media": "unknown",
+        "title": "unknown",
+        "body": "unknown",
+        "topic": "unknown",
+        "poi": "unknown",
+        "receipt": "unknown",
+        "callback": "unknown"
+      },
+      "missing": [
+        "移动应用接入及真实设备验证",
+        "话题携带限制边界确认"
+      ],
+      "official_sources": [
+        "https://open.kuaishou.com/platformDocs/develop/mobile-app/android.html"
+      ],
+      "last_checked_at": "2026-10-14",
+      "valid_until": "2027-01-12",
+      "close_reason": ""
+    }
+  ]
+}
