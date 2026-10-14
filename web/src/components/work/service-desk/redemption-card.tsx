@@ -10,6 +10,7 @@ import { redeemRecordText } from "@/lib/service-desk";
 
 export interface RedemptionBenefit {
   id: string;
+  campaign_id?: string;
   status: string;
   evidence: string;
   code?: string;

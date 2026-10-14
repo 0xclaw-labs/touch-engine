@@ -101,14 +101,16 @@ export function ServiceDesk() {
   useEffect(() => stopCamera, [stopCamera]);
 
   const loadRecords = useCallback(
-    async (cid: string) => {
-      if (!cid) return;
+    async (cid: string): Promise<BenefitItem[]> => {
+      if (!cid) return [];
       const [revRes, benRes] = await Promise.all([
         session.api("GET", `campaigns/${cid}/reward-review-requests`),
         session.api("GET", `campaigns/${cid}/reward-benefits`),
       ]);
+      const freshBenefits = benRes.ok && Array.isArray(benRes.data.items) ? (benRes.data.items as BenefitItem[]) : [];
       setReviewQueue(revRes.ok && Array.isArray(revRes.data.items) ? (revRes.data.items as ReviewRequestItem[]) : []);
-      setBenefits(benRes.ok && Array.isArray(benRes.data.items) ? (benRes.data.items as BenefitItem[]) : []);
+      setBenefits(freshBenefits);
+      return freshBenefits;
     },
     [session],
   );
@@ -265,7 +267,7 @@ export function ServiceDesk() {
     [session, reloadCardContext],
   );
 
-  // 扫券码 → 核销卡。
+  // 扫券码 → 核销卡。核销动作必须打回券所属活动(campaign_id 来自权益行)。
   const openCoupon = useCallback(
     async (raw: string) => {
       const code = raw.trim();
@@ -277,10 +279,11 @@ export function ServiceDesk() {
       try {
         const res = await session.api("GET", `reward-benefits/by-code?code=${encodeURIComponent(code)}`);
         if (res.ok && typeof res.data.id === "string") {
-          setRedemption(res.data as unknown as BenefitItem);
+          const benefit = res.data as unknown as BenefitItem;
+          setRedemption(benefit);
           setCard(null);
           setScanNote("核销卡已打开。");
-          if (typeof res.data.campaign_id === "string") await loadRecords(res.data.campaign_id);
+          if (benefit.campaign_id) await loadRecords(benefit.campaign_id);
         } else {
           setScanNote(rateLimitText(res.status, res.data));
         }
@@ -293,19 +296,13 @@ export function ServiceDesk() {
     [session, loadRecords],
   );
 
-  const reloadAfterWrite = useCallback(
-    async (cid: string, participationId: string): Promise<boolean> => {
-      await loadRecords(cid);
-      return benefits.some((b) => b.participation_id === participationId);
-    },
-    [loadRecords, benefits],
-  );
-
-  // 主动作:确认并发奖 / 确认并现场兑现。网络未知先回查,不提示顾客重领。
+  // 主动作:确认并发奖 / 确认并现场兑现。网络未知先回查(回查用回读到的
+  // 新列表判断,不用渲染闭包里的旧列表),不提示顾客重领。
   const confirmCard = useCallback(
     async (body: Record<string, unknown>, _evidence: string) => {
       if (!card) return;
       const cid = card.campaign_id;
+      const participationId = card.id;
       setBusy(true);
       try {
         const res = await session.api("POST", `campaigns/${cid}/reward-confirm`, body);
@@ -317,13 +314,19 @@ export function ServiceDesk() {
         }
         await reloadCardContext(cid);
       } catch {
-        const found = await reloadAfterWrite(cid, card.id).catch(() => false);
+        let found = false;
+        try {
+          const fresh = await loadRecords(cid);
+          found = fresh.some((b) => b.participation_id === participationId);
+        } catch {
+          found = false;
+        }
         setActionNote(networkUnknownCopy(found));
       } finally {
         setBusy(false);
       }
     },
-    [card, session, reloadCardContext, reloadAfterWrite],
+    [card, session, reloadCardContext, loadRecords],
   );
 
   const notFit = useCallback(
@@ -334,10 +337,11 @@ export function ServiceDesk() {
     [],
   );
 
-  // 独立核销入口:1671 单事务,另一端读到已处理。
+  // 独立核销入口:1671 单事务,另一端读到已处理。活动取权益自己的
+  // campaign_id(扫券码进来的卡可能不属于当前选中的活动)。
   const redeemBenefit = useCallback(
     async (benefit: RedemptionBenefit, storeId: string) => {
-      const cid = campaignId;
+      const cid = benefit.campaign_id || campaignId;
       if (!cid) return;
       setBusy(true);
       try {
@@ -355,18 +359,24 @@ export function ServiceDesk() {
         }
         await loadRecords(cid);
       } catch {
-        const found = benefits.some((b) => b.id === benefit.id && b.status === "redeemed");
+        let found = false;
+        try {
+          const fresh = await loadRecords(cid);
+          found = fresh.some((b) => b.id === benefit.id && b.status === "redeemed");
+        } catch {
+          found = false;
+        }
         setActionNote(networkUnknownCopy(found));
       } finally {
         setBusy(false);
       }
     },
-    [campaignId, session, storeScope, loadRecords, benefits],
+    [campaignId, session, storeScope, loadRecords],
   );
 
   const reverseBenefit = useCallback(
     async (benefit: RedemptionBenefit, reason: string) => {
-      const cid = campaignId;
+      const cid = benefit.campaign_id || campaignId;
       if (!cid) return;
       setBusy(true);
       try {
