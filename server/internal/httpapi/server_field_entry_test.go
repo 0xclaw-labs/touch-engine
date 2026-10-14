@@ -10,6 +10,7 @@ package httpapi
 
 import (
 	"bytes"
+	"fmt"
 	"image/png"
 	"io"
 	"log"
@@ -18,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/makiuchi-d/gozxing"
 	qrcode "github.com/makiuchi-d/gozxing/qrcode"
@@ -171,5 +173,91 @@ func TestFieldEntryChainFromCSVURLToCampaign(t *testing.T) {
 	mustEqual(t, status, http.StatusOK)
 	if payload := decodeQRPayload(t, rawPNG); payload != want {
 		t.Fatalf("qr payload = %q, want %q", payload, want)
+	}
+}
+
+// seedFieldCampaignWithStore:建门店 + 绑定该门店的 active 活动 + nLinks 条短码。
+// 参与出生即绑门店(participations.store_id NOT NULL),换绑工作流的活动必须带店。
+func seedFieldCampaignWithStore(t *testing.T, f *fixture, title string, nLinks int) (campaignID string, linkIDs, codes []string) {
+	t.Helper()
+	status, _, st := f.do(t, "POST", "/api/v1/stores", "sess-owner-a", f.tenA, `{"name":"旗舰店","address":"北京市"}`)
+	mustEqual(t, status, http.StatusCreated)
+	storeID := st["id"].(string)
+
+	now := time.Now().UTC()
+	payload := fmt.Sprintf(`{"title":%q,"public_content":"到店有礼","starts_at":%q,"ends_at":%q,"store_id":%q}`,
+		title, now.Add(-1*time.Hour).Format(time.RFC3339), now.Add(48*time.Hour).Format(time.RFC3339), storeID)
+	status, _, cmp := f.do(t, "POST", "/api/v1/campaigns", "sess-owner-a", f.tenA, payload)
+	mustEqual(t, status, http.StatusCreated)
+	campaignID = cmp["id"].(string)
+	for i := 0; i < nLinks; i++ {
+		status, _, lnk := f.do(t, "POST", "/api/v1/campaigns/"+campaignID+"/links", "sess-owner-a", f.tenA, "")
+		mustEqual(t, status, http.StatusCreated)
+		linkIDs = append(linkIDs, lnk["id"].(string))
+		codes = append(codes, lnk["code"].(string))
+	}
+	status, _, _ = f.do(t, "POST", "/api/v1/campaigns/"+campaignID+"/status", "sess-owner-a", f.tenA, `{"status":"active"}`)
+	mustEqual(t, status, http.StatusOK)
+	return campaignID, linkIDs, codes
+}
+
+// TestFieldRebindWorkflowOldCardKeepsOldTarget:后台换绑的完整现场工作流。
+// 模型语义(1665 拍板「绑定以 link 为准」):换绑 = URL 变。因此
+//   - 物理卡 URL 不变时,访客仍进旧目标 —— 这就是「卡内URL不变的同卡换标」
+//     必须重写卡的原因(GAP-1,见 docs/evidence/hui-1663/rebind-verification.md);
+//   - 原参与(旧活动)保留原规则权益,不受换绑影响。
+func TestFieldRebindWorkflowOldCardKeepsOldTarget(t *testing.T) {
+	f := fixtureField(t, map[string]string{"FEATURE_PARTICIPATION": "on"})
+	campaignA, linkIDsA, _ := seedFieldCampaignWithStore(t, f, "周年庆", 1)
+
+	// 卡已按 URL_A 写出(仓内等价:导出 CSV 取号)
+	status, _, batch := f.do(t, "POST", "/api/v1/nfc/tags/batch", "sess-owner-a", f.tenA,
+		batchReq(campaignA, linkIDsA[:1], 1, "", "", "桌贴-A01", "shared"))
+	mustEqual(t, status, http.StatusCreated)
+	tagID := batch["items"].([]any)[0].(map[string]any)["id"].(string)
+	urlA := fieldCSVURLs(t, f)[0]
+	codeA := codeFromEntryURL(t, urlA)
+
+	// 顾客通过旧卡参与(campaign A)
+	status, hdr, started := f.doCookie(t, "POST", "/api/v1/participations", "", startBody(codeA, "idem-field-1", "cp_v1"))
+	mustEqual(t, status, http.StatusCreated)
+	partID := started["id"].(string)
+
+	// 第二活动 B + link,把 tag 换绑过去
+	status, _, c2 := f.do(t, "POST", "/api/v1/campaigns", "sess-owner-a", f.tenA, `{"title":"春季展"}`)
+	mustEqual(t, status, http.StatusCreated)
+	campaignB := c2["id"].(string)
+	status, _, l2 := f.do(t, "POST", "/api/v1/campaigns/"+campaignB+"/links", "sess-owner-a", f.tenA, "")
+	mustEqual(t, status, http.StatusCreated)
+	linkB := l2["id"].(string)
+	status, _, _ = f.do(t, "POST", "/api/v1/campaigns/"+campaignB+"/status", "sess-owner-a", f.tenA, `{"status":"active"}`)
+	mustEqual(t, status, http.StatusOK)
+	status, _, _ = f.do(t, "PATCH", "/api/v1/nfc/tags/"+tagID, "sess-owner-a", f.tenA, `{"link_id":"`+linkB+`"}`)
+	mustEqual(t, status, http.StatusOK)
+
+	// 换绑后:管理面导出的新 URL 指向 B(换绑=换 URL)
+	urlB := codeFromEntryURL(t, fieldCSVURLs(t, f)[0])
+	if urlB == codeA {
+		t.Fatal("rebind must change exported url (GAP-1: same-url retarget unsupported)")
+	}
+	got, state, view := fieldPublicGet(t, f, urlB)
+	mustEqual(t, got, http.StatusOK)
+	if state != "available" || view["title"] != "春季展" {
+		t.Fatalf("new target = %d %v", got, view)
+	}
+
+	// 旧卡(URL 不变)仍指旧活动 —— 换绑不会把旧卡上的访客带去新活动
+	got, state, view = fieldPublicGet(t, f, codeA)
+	mustEqual(t, got, http.StatusOK)
+	if state != "available" || view["title"] != "周年庆" {
+		t.Fatalf("old card after rebind = %d %v", got, view)
+	}
+
+	// 原参与保留原权益:同访客 lookup 仍恢复旧 link 上的原参与
+	cookie := cookiePair(hdr)
+	status, _, looked := f.doCookie(t, "POST", "/api/v1/participations/lookup", cookie, `{"link_code":"`+codeA+`"}`)
+	mustEqual(t, status, http.StatusOK)
+	if looked["id"] != partID || looked["link_code"] != codeA {
+		t.Fatalf("lookup = %v, want id %s on link %s", looked, partID, codeA)
 	}
 }
