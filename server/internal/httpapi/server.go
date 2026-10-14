@@ -89,6 +89,12 @@ type Server struct {
 	PubCache  *readcache.Cache[store.ResolvedRows]
 	DashCache *readcache.Cache[dashboardEntry]
 
+	// TpCache (HUI-1665 增量) is the stable-touchpoint twin of PubCache: the
+	// /t/{code} alias rows behind the same epoch/TTL discipline. Consulted
+	// only when FEATURE_PUBLIC_CACHE is on (one cache-policy decision); alias
+	// create/disable/rebind all bumpEpoch, so 0 stale requests.
+	TpCache *readcache.Cache[store.TouchpointRows]
+
 	// Participation (HUI-3546) owns the participation/attempt/handoff
 	// tables. Constructed always; its routes register only under
 	// FEATURE_PARTICIPATION. The BenefitReserver stays nil until the reward
@@ -148,6 +154,10 @@ func New(cfg config.Config, database *sql.DB, idc *identity.Client, upc *upload.
 		StaffTokenLimiter: leads.NewRateLimiter(staffTokenRatePerMinute, time.Minute),
 		Matrix:            matrixFromConfig(cfg),
 		PubCache: readcache.New[store.ResolvedRows](readcache.Options{
+			Capacity: publicCacheCapacity, TTL: publicCacheTTL, Jitter: publicCacheJitter,
+			Epoch: st.Epoch,
+		}),
+		TpCache: readcache.New[store.TouchpointRows](readcache.Options{
 			Capacity: publicCacheCapacity, TTL: publicCacheTTL, Jitter: publicCacheJitter,
 			Epoch: st.Epoch,
 		}),
@@ -379,6 +389,29 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PATCH /api/v1/nfc/tags/{id}", s.requireSession(s.handleTagPatch))
 	mux.Handle("DELETE /api/v1/nfc/tags/{id}", s.requireSession(s.handleTagDelete))
 	mux.Handle("POST /api/v1/nfc/tags/{id}/status", s.requireSession(s.handleTagStatus))
+
+	// Touchpoint stable entries (HUI-1665 增量): the /work/touchpoints management
+	// surface. Tags wrap campaign_links; aliases are the per-card independent
+	// entry layer on top (disable/rebind never touch campaign_links). No
+	// FEATURE gate: this is an admin surface (仓内惯例). Reuse the NFC face
+	// authorization (org_owner全租户 / store_manager本店, 服务端强制作用域).
+	mux.Handle("GET /api/v1/touchpoints", s.requireSession(s.handleTouchpointList))
+	mux.Handle("POST /api/v1/touchpoints", s.requireSession(s.handleTouchpointProvision))
+	mux.Handle("GET /api/v1/touchpoints/export.csv", s.requireSession(s.handleTouchpointExportCSV))
+	mux.Handle("GET /api/v1/touchpoints/{id}", s.requireSession(s.handleTouchpointGet))
+	mux.Handle("POST /api/v1/touchpoints/{id}/rebind-preview", s.requireSession(s.handleTouchpointRebindPreview))
+	mux.Handle("POST /api/v1/touchpoints/{id}/rebind", s.requireSession(s.handleTouchpointRebind))
+	mux.Handle("POST /api/v1/touchpoints/{id}/status", s.requireSession(s.handleTouchpointStatus))
+	mux.Handle("POST /api/v1/touchpoints/{id}/stage", s.requireSession(s.handleTouchpointStage))
+	mux.Handle("GET /api/v1/touchpoints/{id}/qrcode", s.requireSession(s.handleTouchpointQRCode))
+
+	// 公共稳定入口解析(FEATURE_TOUCHPOINT_ENTRY 默认 off;off = 路由不注册且
+	// handler gate 再答统一 404 —— 双保险,同 FEATURE_DASHBOARD 写法)。GET-only,
+	// 白名单 {state}/{state,code};available 交既有 /c/{code} 呈现(1896 零重复),
+	// 旧 /c 链接语义与权限零变化。
+	if s.Cfg.FeatureTouchpointEntry {
+		mux.Handle("GET /api/v1/public/touchpoints/{code}", http.HandlerFunc(s.handlePublicTouchpoint))
+	}
 
 	mux.Handle("GET /api/v1/admin/members", s.requireSession(s.handleMemberList))
 	mux.Handle("POST /api/v1/admin/members", s.requireSession(s.handleMemberCreate))

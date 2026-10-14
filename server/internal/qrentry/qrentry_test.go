@@ -157,3 +157,21 @@ func TestPNGDecodeRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestPublicTouchEntryURL(HUI-1665 增量):稳定触点入口 <base>/t/<alias>。
+// 与短码同 base 纪律、同码形闸;载荷仍是纯不透明 URL。
+func TestPublicTouchEntryURL(t *testing.T) {
+	got, err := PublicTouchEntryURL(testBase+"/", "ABC123XYZ789")
+	if err != nil || got != testBase+"/t/ABC123XYZ789" {
+		t.Fatalf("PublicTouchEntryURL = %q %v", got, err)
+	}
+	// 坏 base 与坏码形逐一拒绝(与 PublicEntryURL 同一裁决)
+	for _, base := range []string{"", "ftp://x.com", "https://x.com/?a=1", "https://x.com/#f", "not a url"} {
+		if _, err := PublicTouchEntryURL(base, "ABC123XYZ789"); err == nil {
+			t.Fatalf("base %q accepted", base)
+		}
+	}
+	if _, err := PublicTouchEntryURL(testBase, "bad code!"); err == nil {
+		t.Fatal("bad code accepted")
+	}
+}

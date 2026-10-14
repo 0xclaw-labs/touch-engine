@@ -74,6 +74,9 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"stores",
 		"tenant_exports",
 		"tenants",
+		// HUI-1665 增量(0040/0041)
+		"touchpoint_aliases",
+		"touchpoint_events",
 		"video_template_assignments",
 		"video_template_versions",
 		"video_templates",

@@ -83,6 +83,13 @@ const (
 	// 门店作用域,官方回执回调走服务端验签;真实平台密钥未配置时验签
 	// 一律拒绝(NOT_VERIFIED 残差),不伪造确认。
 	EnvFeaturePublishHandoff = "FEATURE_PUBLISH_HANDOFF"
+	// EnvFeatureTouchpointEntry (HUI-1665 增量 2026-10-14): 公共稳定入口解析
+	// (/t/{code} → /api/v1/public/touchpoints/{code})的登记制开关,默认 off。
+	// off = 公共解析路由不注册(404 不可见)且 handler gate 再答统一 404(双保险,
+	// 同 FEATURE_DASHBOARD 写法);管理面 /api/v1/touchpoints 不加开关(仓内惯例)。
+	// on = 访客稳定别名解析可用:available 交既有 /c/{code} 呈现,别名停用/未知
+	// 同形 404;缓存沿 FEATURE_PUBLIC_CACHE 既有策略(epoch 结构失效)。
+	EnvFeatureTouchpointEntry = "FEATURE_TOUCHPOINT_ENTRY"
 )
 
 // Config is the resolved server configuration.
@@ -180,6 +187,7 @@ type Config struct {
 	FeatureChannelAdmission bool
 	FeatureServiceDesk      bool
 	FeaturePublishHandoff   bool
+	FeatureTouchpointEntry  bool
 
 	// Brand registry read client (HUI-2049). Touch never writes this registry
 	// and never treats a brand host as a tenant or a payer.
@@ -252,6 +260,7 @@ func Load(get func(string) string) Config {
 		FeatureChannelAdmission:        isTruthy(get(EnvFeatureChannelAdmission)),
 		FeatureServiceDesk:             isTruthy(get(EnvFeatureServiceDesk)),
 		FeaturePublishHandoff:          isTruthy(get(EnvFeaturePublishHandoff)),
+		FeatureTouchpointEntry:         isTruthy(get(EnvFeatureTouchpointEntry)),
 		BrandBaseURL:                   strings.TrimSpace(get("PLATFORM_BRAND_BASE_URL")),
 		BrandToken:                     get("PLATFORM_BRAND_TOKEN"),
 		SubscriptionStatus:             firstNonEmpty(get("TOUCH_SUBSCRIPTION_STATUS"), "unconfirmed"),
