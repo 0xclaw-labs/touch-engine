@@ -33,7 +33,7 @@ describe("账上路由恰好一条普查", () => {
   it("和账本同一组路由，一条不多一条不少", () => {
     const ledger = pageLedger().map((page) => page.route);
     const census = pageCensus();
-    expect(ledger).toHaveLength(13); // HUI-3562 店员台 + HUI-1665 /t/[code] 稳定入口
+    expect(ledger).toHaveLength(14); // HUI-3562 店员台 + HUI-1665 /t/[code] 与 /work/touchpoints
     expect(census.map((page) => page.route)).toEqual(ledger);
     expect(new Set(census.map((page) => page.route)).size).toBe(census.length);
     expect(census.some((page) => page.route === "/login" || page.route.startsWith("/api"))).toBe(false);
@@ -111,12 +111,14 @@ describe("surface 归类", () => {
       ["/work/rewards", "work"],
       ["/work/service", "work"],
       ["/work/analytics", "work"],
+      // HUI-1665:触点管理台是商家工作台列表页。
+      ["/work/touchpoints", "work"],
       ["/c/[code]", "public"],
       ["/c/[code]/contact", "public"],
       // HUI-1665:/t 稳定入口是公开消费者面。
       ["/t/[code]", "public"],
     ]);
-    expect(want.size).toBe(13); // HUI-3562 店员台 + HUI-1665 /t/[code] 稳定入口
+    expect(want.size).toBe(14); // HUI-3562 店员台 + HUI-1665 /t/[code] 与 /work/touchpoints
     for (const page of pageCensus()) {
       expect(page.surface).toBe(classifySurface(page.route, page.id));
       expect(page.surface).toBe(want.get(page.route));
@@ -230,6 +232,8 @@ describe("半成品标记", () => {
       ["/c/[code]/contact", []],
       // HUI-1665:/t 稳定入口页是 server 闸门薄壳,交互在 touch-entry.tsx,页面源零标记。
       ["/t/[code]", []],
+      // HUI-1665:触点管理台页面是薄壳,交互全部在组件里,页面源零标记。
+      ["/work/touchpoints", []],
     ]);
     const census = pageCensus();
     expect(census).toHaveLength(want.size);
