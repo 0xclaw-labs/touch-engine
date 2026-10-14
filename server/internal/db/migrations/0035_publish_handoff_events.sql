@@ -11,7 +11,9 @@
 --       editor_open_proved       可证实的编辑器打开(verifier 判定 OK)
 --       receipt_rejected         回执被拒(错签名/错绑定/超时乱序回查)
 --       canceled                 顾客/店员取消
---   - receipt_id 部分唯一索引:官方回执按其 ID 去重,重放回原事件;
+--   - receipt_id 部分唯一索引:同一官方回执只允许一条 official_confirmed
+--     (重放幂等、绝不双计);被拒回执(receipt_rejected)允许在状态推进后
+--     重新评估(=回查语义),同 ID 多条拒绝留痕不冲突;
 --   - payload JSON 记 from/to/原因等,白名单字段,无凭据明文。
 
 PRAGMA foreign_keys = ON;
@@ -33,6 +35,6 @@ CREATE TABLE IF NOT EXISTS publish_handoff_events (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_phe_receipt
     ON publish_handoff_events(tenant_id, receipt_id)
-    WHERE receipt_id != '';
+    WHERE receipt_id != '' AND kind = 'official_confirmed';
 CREATE INDEX IF NOT EXISTS idx_phe_handoff
     ON publish_handoff_events(tenant_id, handoff_id, created_at);

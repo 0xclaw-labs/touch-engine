@@ -146,7 +146,7 @@ func CanTransition(from, to State) bool {
 // canceled 只有顾客动作或店员观察(系统超时不构成取消)。
 var requiredEvidence = map[State]map[EvidenceSource]bool{
 	StateHandoffPreparing:  {EvidenceCustomerAction: true},
-	StateHandoffReady:      {EvidenceSystemAdapter: true},
+	StateHandoffReady:      {EvidenceSystemAdapter: true, EvidenceSystemRecovery: true}, // 初铸或重启后按冻结快照恢复
 	StateEditorOpened:      {EvidenceVerifierProof: true},
 	StateSubmitting:        {EvidenceSystemAdapter: true},
 	StateAwaitingReview:    {EvidenceStaffObservation: true},

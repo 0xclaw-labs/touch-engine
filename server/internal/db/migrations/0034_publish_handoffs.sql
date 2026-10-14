@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS publish_handoffs (
     evidence_source          TEXT NOT NULL CHECK (evidence_source != ''),
     content_version          TEXT NOT NULL DEFAULT '',
     content_pack_version_id  TEXT NOT NULL DEFAULT '',
+    -- 交接时冻结的快照(media/text JSON):换稿=新 attempt+新交接,绝不
+    -- 静默更新顾客即将发出的内容;重取媒体 URL 从快照重铸,不回源改稿。
+    media_json               TEXT NOT NULL DEFAULT '[]',
+    text_json                TEXT NOT NULL DEFAULT '{}',
     visitor_id               TEXT NOT NULL DEFAULT '',
     query_count              INTEGER NOT NULL DEFAULT 0,
     timed_out                INTEGER NOT NULL DEFAULT 0,
