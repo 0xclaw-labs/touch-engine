@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/bianjiefilm/touch-engine/server/internal/store"
 )
 
 // Funnel stage keys, fixed order (票面漏斗七级;第 1 级复用 PR#7 的触发事实).
@@ -114,6 +116,9 @@ type OpsFacts struct {
 	Inventory []InventoryFactLine
 	Anomalies AnomalyFacts
 	Cost      CostFacts
+
+	// Dims carries the scope-narrowed reference rows (来源引用贯穿).
+	Dims store.DashboardDimensions
 }
 
 // InventoryFactLine is one reward_inventory batch with its benefit counts.
@@ -246,6 +251,9 @@ type OperationsResponse struct {
 	Cost       CostPanel         `json:"cost"`
 	Anomalies  AnomalyPanel      `json:"anomalies"`
 	Notes      OperationsNotes   `json:"notes"`
+	// Dimensions carries the reference rows the breakdown keys point into
+	// (来源引用贯穿,同 PR#7 惯例), already narrowed to the caller's scope.
+	Dimensions store.DashboardDimensions `json:"dimensions"`
 }
 
 const (
@@ -471,6 +479,7 @@ func BuildOperations(w Window, sc Scope, f OpsFacts, filters FilterSet) Operatio
 		ExpiredInWindow:   f.Anomalies.ExpiredInWindow,
 	}
 	resp.Notes = OperationsNotes{EntryMarker: entryMarkerNote, Visitor: visitorNote}
+	resp.Dimensions = f.Dims
 	return resp
 }
 
