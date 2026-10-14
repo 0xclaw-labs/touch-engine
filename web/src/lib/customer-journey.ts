@@ -114,6 +114,12 @@ export function evidenceStepCopy(evidence: string | undefined): string {
   }
 }
 
+// 参与已 fulfilled 但顾客面读不到券码记录(1671 无按访客的权益读面):
+// 如实说店员已完成、以现场出示为准;不编造券码,也不伪报「已发放到账」。
+export function staffFulfilledCopy(): string {
+  return "门店已完成确认。券码或赠品以店员现场出示为准。";
+}
+
 // 未准入/未知路线:诚实说明不可用原因;绝不出「先手动发布完再来领」的
 // 手动后门(平台限制不藏到领取最后一步)。
 export function admissionLines(admission: AdmissionView | null | undefined): string[] {
