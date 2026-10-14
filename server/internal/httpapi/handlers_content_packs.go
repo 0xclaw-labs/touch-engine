@@ -107,23 +107,23 @@ type markingBody struct {
 }
 
 type versionSpecBody struct {
-	ContentKind      string                `json:"content_kind"`
-	VideoAssetID     string                `json:"video_asset_id"`
-	CoverAssetID     string                `json:"cover_asset_id"`
-	ImageTextAssetIDs []string             `json:"image_text_asset_ids"`
-	Title            string                `json:"title"`
-	Body             string                `json:"body"`
-	Topics           []string              `json:"topics"`
-	StoreName        string                `json:"store_name"`
-	PriceNote        string                `json:"price_note"`
-	ValidNote        string                `json:"valid_note"`
-	PlatformVersions []platformVersionBody `json:"platform_versions"`
-	GrantRefs        []string              `json:"grant_refs"`
-	GrantUntil       string                `json:"grant_until"`
-	Marking          markingBody           `json:"marking"`
-	Source           string                `json:"source"`
-	IdempotencyKey   string                `json:"idempotency_key"`
-	Status           string                `json:"status"`
+	ContentKind       string                `json:"content_kind"`
+	VideoAssetID      string                `json:"video_asset_id"`
+	CoverAssetID      string                `json:"cover_asset_id"`
+	ImageTextAssetIDs []string              `json:"image_text_asset_ids"`
+	Title             string                `json:"title"`
+	Body              string                `json:"body"`
+	Topics            []string              `json:"topics"`
+	StoreName         string                `json:"store_name"`
+	PriceNote         string                `json:"price_note"`
+	ValidNote         string                `json:"valid_note"`
+	PlatformVersions  []platformVersionBody `json:"platform_versions"`
+	GrantRefs         []string              `json:"grant_refs"`
+	GrantUntil        string                `json:"grant_until"`
+	Marking           markingBody           `json:"marking"`
+	Source            string                `json:"source"`
+	IdempotencyKey    string                `json:"idempotency_key"`
+	Status            string                `json:"status"`
 }
 
 func (b versionSpecBody) spec() contentpack.VersionSpec {
@@ -525,11 +525,11 @@ func (s *Server) handleMediaHandoffMint(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"url":                  "/api/v1/media-handoffs/" + token,
-		"token":                token,
-		"expires_at":           claim.ExpiresAt.UTC().Format(time.RFC3339),
-		"content_type":         claim.ContentType,
-		"content_disposition":  claim.ContentDisposition(),
+		"url":                 "/api/v1/media-handoffs/" + token,
+		"token":               token,
+		"expires_at":          claim.ExpiresAt.UTC().Format(time.RFC3339),
+		"content_type":        claim.ContentType,
+		"content_disposition": claim.ContentDisposition(),
 	})
 }
 

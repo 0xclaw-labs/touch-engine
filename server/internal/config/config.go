@@ -57,6 +57,19 @@ const (
 	// on = 只读白名单计数端口,无券码/面额/成本。/work 管理面与受信内部
 	// 预留调用不加开关(仓内惯例:后台功能不加 FEATURE)。
 	EnvFeatureRewardOps = "FEATURE_REWARD_OPS"
+	// EnvFeatureParticipation (HUI-3546 碰一碰门店交付 A2): 登记制开关,默认 off。
+	// off = 参与/尝试/交接凭据全部路由不注册(404 不可见)且 handler gate
+	// 再答统一 404(双保险)。on = 顾客面凭首方 visitor cookie + 短时交接
+	// 凭据读写自身参与;店员面走既有商家会话 + 门店作用域。权益预留仍走
+	// BenefitReserver 端口,生产接线随 HUI-1671 安排,nil = 停 pending 不伪报。
+	EnvFeatureParticipation = "FEATURE_PARTICIPATION"
+	// EnvFeatureChannelAdmission (HUI-3535 渠道准入与承接清单): 登记制开关,
+	// 默认 off。off = 准入读路由不注册(404 不可见)且种子不装载,现行为逐字节
+	// 不变。on = 启动时装载 docs/contracts/channel-admission/v1/seed.json 的
+	// vendored 真值进库,商家面/公共面只读路由可见;Gate 纯函数供 HUI-1670
+	// 交接前服务端强制(前端隐藏按钮不算数)。零外部依赖:种子是仓内版本化
+	// JSON,不调平台 API,不伪造官方结果。
+	EnvFeatureChannelAdmission = "FEATURE_CHANNEL_ADMISSION"
 	// EnvFeatureServiceDesk (HUI-2222): 登记制开关,默认 off。
 	// off = 商家面不出现「确认与核销」入口,/work/service 路由不存在。
 	// on = 仅渲染入口(web 导航槽位,经 whoami features.service_desk 下发);
@@ -128,21 +141,23 @@ type Config struct {
 	// closed (503 qr_not_configured) when it is unset.
 	PublicBaseURL string
 
-	FeatureUpload         bool
-	FeatureNotify         bool
-	FeatureTask           bool
-	FeatureLeadsCapture   bool
-	FeatureDashboard      bool
-	FeatureCampaignRules  bool
-	FeatureAssetLib       bool
-	FeatureVideoTemplates bool
-	FeatureAgency         bool
-	FeatureBrand          bool
-	FeaturePublicCache    bool
-	FeatureDashboardCache bool
-	FeatureContentPacks   bool
-	FeatureRewardOps      bool
-	FeatureServiceDesk    bool
+	FeatureUpload           bool
+	FeatureNotify           bool
+	FeatureTask             bool
+	FeatureLeadsCapture     bool
+	FeatureDashboard        bool
+	FeatureCampaignRules    bool
+	FeatureAssetLib         bool
+	FeatureVideoTemplates   bool
+	FeatureAgency           bool
+	FeatureBrand            bool
+	FeaturePublicCache      bool
+	FeatureDashboardCache   bool
+	FeatureContentPacks     bool
+	FeatureRewardOps        bool
+	FeatureParticipation    bool
+	FeatureChannelAdmission bool
+	FeatureServiceDesk      bool
 
 	// Brand registry read client (HUI-2049). Touch never writes this registry
 	// and never treats a brand host as a tenant or a payer.
@@ -164,52 +179,54 @@ func FromEnv() Config {
 // and for alternate config sources).
 func Load(get func(string) string) Config {
 	return Config{
-		HTTPAddr:              firstNonEmpty(get("TOUCH_HTTP_ADDR"), "127.0.0.1:18240"),
-		DBPath:                firstNonEmpty(get("TOUCH_DB_PATH"), "data/touch.db"),
-		Env:                   firstNonEmpty(get("TOUCH_ENV"), "development"),
-		AppID:                 firstNonEmpty(get("TOUCH_APP_ID"), "touch-engine"),
-		InternalToken:         get("TOUCH_INTERNAL_TOKEN"),
-		SessionCookie:         firstNonEmpty(get("TOUCH_SESSION_COOKIE"), "touch_session"),
-		IdentityBaseURL:       get("PLATFORM_IDENTITY_BASE_URL"),
-		IdentityToken:         get("PLATFORM_IDENTITY_TOKEN"),
-		IdentityAppHost:       get("PLATFORM_IDENTITY_APP_HOST"),
-		UploadBaseURL:         get("PLATFORM_UPLOAD_BASE_URL"),
-		UploadToken:           get("PLATFORM_UPLOAD_TOKEN"),
-		NotifyBaseURL:         get("PLATFORM_NOTIFY_BASE_URL"),
-		NotifyToken:           get("PLATFORM_NOTIFY_TOKEN"),
-		TaskBaseURL:           get("PLATFORM_TASK_BASE_URL"),
-		TaskToken:             get("PLATFORM_TASK_TOKEN"),
-		BillingBaseURL:        strings.TrimRight(strings.TrimSpace(get("PLATFORM_BILLING_BASE_URL")), "/"),
-		BillingToken:          get("PLATFORM_BILLING_TOKEN"),
-		CopyModelProvider:     strings.TrimSpace(get("COPY_MODEL_PROVIDER")),
-		CopyModelID:           strings.TrimSpace(get("COPY_MODEL_ID")),
-		CopyModelVersion:      strings.TrimSpace(get("COPY_MODEL_VERSION")),
-		CopyPricingVersion:    strings.TrimSpace(get("COPY_PRICING_VERSION")),
-		LeadsTargetApp:        get("LEADS_TARGET_APP_ID"),
-		LeadsPhonePepper:      get("LEADS_PHONE_PEPPER"),
-		LeadsFollowUpBaseURL:  strings.TrimRight(strings.TrimSpace(get("LEADS_FOLLOW_UP_BASE_URL")), "/"),
-		LeadsFollowUpToken:    get("LEADS_FOLLOW_UP_TOKEN"),
-		PublicPermissionURL:   strings.TrimRight(strings.TrimSpace(get("TOUCH_PUBLIC_PERMISSION_URL")), "/"),
-		MatrixDraftURL:        strings.TrimRight(strings.TrimSpace(get("TOUCH_MATRIX_DRAFT_URL")), "/"),
-		PublicBaseURL:         strings.TrimSpace(get("PUBLIC_BASE_URL")),
-		FeatureUpload:         isTruthy(get(EnvFeatureUpload)),
-		FeatureNotify:         isTruthy(get(EnvFeatureNotify)),
-		FeatureTask:           isTruthy(get(EnvFeatureTask)),
-		FeatureLeadsCapture:   isTruthy(get(EnvFeatureLeadsCapture)),
-		FeatureDashboard:      isTruthy(get(EnvFeatureDashboard)),
-		FeatureCampaignRules:  isTruthy(get(EnvFeatureCampaignRules)),
-		FeatureAssetLib:       isTruthy(get(EnvFeatureAssetLib)),
-		FeatureVideoTemplates: isTruthy(get(EnvFeatureVideoTemplates)),
-		FeatureAgency:         isTruthy(get(EnvFeatureAgency)),
-		FeatureBrand:          isTruthy(get(EnvFeatureBrand)),
-		FeaturePublicCache:    isTruthy(get(EnvFeaturePublicCache)),
-		FeatureDashboardCache: isTruthy(get(EnvFeatureDashboardCache)),
-		FeatureContentPacks:   isTruthy(get(EnvFeatureContentPacks)),
-		FeatureRewardOps:      isTruthy(get(EnvFeatureRewardOps)),
-		FeatureServiceDesk:    isTruthy(get(EnvFeatureServiceDesk)),
-		BrandBaseURL:          strings.TrimSpace(get("PLATFORM_BRAND_BASE_URL")),
-		BrandToken:            get("PLATFORM_BRAND_TOKEN"),
-		SubscriptionStatus:    firstNonEmpty(get("TOUCH_SUBSCRIPTION_STATUS"), "unconfirmed"),
+		HTTPAddr:                firstNonEmpty(get("TOUCH_HTTP_ADDR"), "127.0.0.1:18240"),
+		DBPath:                  firstNonEmpty(get("TOUCH_DB_PATH"), "data/touch.db"),
+		Env:                     firstNonEmpty(get("TOUCH_ENV"), "development"),
+		AppID:                   firstNonEmpty(get("TOUCH_APP_ID"), "touch-engine"),
+		InternalToken:           get("TOUCH_INTERNAL_TOKEN"),
+		SessionCookie:           firstNonEmpty(get("TOUCH_SESSION_COOKIE"), "touch_session"),
+		IdentityBaseURL:         get("PLATFORM_IDENTITY_BASE_URL"),
+		IdentityToken:           get("PLATFORM_IDENTITY_TOKEN"),
+		IdentityAppHost:         get("PLATFORM_IDENTITY_APP_HOST"),
+		UploadBaseURL:           get("PLATFORM_UPLOAD_BASE_URL"),
+		UploadToken:             get("PLATFORM_UPLOAD_TOKEN"),
+		NotifyBaseURL:           get("PLATFORM_NOTIFY_BASE_URL"),
+		NotifyToken:             get("PLATFORM_NOTIFY_TOKEN"),
+		TaskBaseURL:             get("PLATFORM_TASK_BASE_URL"),
+		TaskToken:               get("PLATFORM_TASK_TOKEN"),
+		BillingBaseURL:          strings.TrimRight(strings.TrimSpace(get("PLATFORM_BILLING_BASE_URL")), "/"),
+		BillingToken:            get("PLATFORM_BILLING_TOKEN"),
+		CopyModelProvider:       strings.TrimSpace(get("COPY_MODEL_PROVIDER")),
+		CopyModelID:             strings.TrimSpace(get("COPY_MODEL_ID")),
+		CopyModelVersion:        strings.TrimSpace(get("COPY_MODEL_VERSION")),
+		CopyPricingVersion:      strings.TrimSpace(get("COPY_PRICING_VERSION")),
+		LeadsTargetApp:          get("LEADS_TARGET_APP_ID"),
+		LeadsPhonePepper:        get("LEADS_PHONE_PEPPER"),
+		LeadsFollowUpBaseURL:    strings.TrimRight(strings.TrimSpace(get("LEADS_FOLLOW_UP_BASE_URL")), "/"),
+		LeadsFollowUpToken:      get("LEADS_FOLLOW_UP_TOKEN"),
+		PublicPermissionURL:     strings.TrimRight(strings.TrimSpace(get("TOUCH_PUBLIC_PERMISSION_URL")), "/"),
+		MatrixDraftURL:          strings.TrimRight(strings.TrimSpace(get("TOUCH_MATRIX_DRAFT_URL")), "/"),
+		PublicBaseURL:           strings.TrimSpace(get("PUBLIC_BASE_URL")),
+		FeatureUpload:           isTruthy(get(EnvFeatureUpload)),
+		FeatureNotify:           isTruthy(get(EnvFeatureNotify)),
+		FeatureTask:             isTruthy(get(EnvFeatureTask)),
+		FeatureLeadsCapture:     isTruthy(get(EnvFeatureLeadsCapture)),
+		FeatureDashboard:        isTruthy(get(EnvFeatureDashboard)),
+		FeatureCampaignRules:    isTruthy(get(EnvFeatureCampaignRules)),
+		FeatureAssetLib:         isTruthy(get(EnvFeatureAssetLib)),
+		FeatureVideoTemplates:   isTruthy(get(EnvFeatureVideoTemplates)),
+		FeatureAgency:           isTruthy(get(EnvFeatureAgency)),
+		FeatureBrand:            isTruthy(get(EnvFeatureBrand)),
+		FeaturePublicCache:      isTruthy(get(EnvFeaturePublicCache)),
+		FeatureDashboardCache:   isTruthy(get(EnvFeatureDashboardCache)),
+		FeatureContentPacks:     isTruthy(get(EnvFeatureContentPacks)),
+		FeatureRewardOps:        isTruthy(get(EnvFeatureRewardOps)),
+		FeatureParticipation:    isTruthy(get(EnvFeatureParticipation)),
+		FeatureChannelAdmission: isTruthy(get(EnvFeatureChannelAdmission)),
+		FeatureServiceDesk:      isTruthy(get(EnvFeatureServiceDesk)),
+		BrandBaseURL:            strings.TrimSpace(get("PLATFORM_BRAND_BASE_URL")),
+		BrandToken:              get("PLATFORM_BRAND_TOKEN"),
+		SubscriptionStatus:      firstNonEmpty(get("TOUCH_SUBSCRIPTION_STATUS"), "unconfirmed"),
 	}
 }
 

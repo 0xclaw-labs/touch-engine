@@ -34,10 +34,10 @@ func TestNormalizePhone(t *testing.T) {
 		{"86-13800138000", "13800138000", true},
 		{"（+86）138 0013 8000", "13800138000", true},
 		// 无法归一出合法 11 位 CN 手机号的仍拒绝
-		{"+86138001380", "", false},  // 12 位:前缀不完整,非 13 位前缀形态
-		{"86138001380", "", false},   // 11 位但 8 开头:不是前缀形态也不是合法手机号
-		{"8623800138000", "", false}, // 86 前缀剥掉后 2 开头:仍不合法
-		{"86138001380001", "", false},// 14 位:超长
+		{"+86138001380", "", false},   // 12 位:前缀不完整,非 13 位前缀形态
+		{"86138001380", "", false},    // 11 位但 8 开头:不是前缀形态也不是合法手机号
+		{"8623800138000", "", false},  // 86 前缀剥掉后 2 开头:仍不合法
+		{"86138001380001", "", false}, // 14 位:超长
 		{"23800138000", "", false},
 		{"1380013800", "", false},
 		{"138001380001", "", false},
@@ -168,12 +168,12 @@ func TestMarshalEnvelopeRejectsContactPII(t *testing.T) {
 
 func TestScanForContactPIIReasons(t *testing.T) {
 	cases := map[string]bool{
-		`{"contact_phone":"13800138000"}`:      true,
-		`{"email":"a@b.com"}`:                  true,
-		`{"note":"call +8613800138000 now"}`:   true,
-		`{"payload":{"wechat":"abc"}}`:         true,
+		`{"contact_phone":"13800138000"}`:       true,
+		`{"email":"a@b.com"}`:                   true,
+		`{"note":"call +8613800138000 now"}`:    true,
+		`{"payload":{"wechat":"abc"}}`:          true,
 		`{"hash":"1f2e3d4c5b6a798812345678ab"}`: false, // hex runs are not phone shapes
-		`{"campaign_ref":"cmp_abc"}`:           false,
+		`{"campaign_ref":"cmp_abc"}`:            false,
 		`{"consent_at":"2026-09-19T00:00:00Z"}`: false,
 	}
 	for raw, wantHit := range cases {

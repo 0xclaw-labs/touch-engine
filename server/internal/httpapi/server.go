@@ -28,12 +28,14 @@ import (
 
 	"github.com/bianjiefilm/touch-engine/server/internal/authz"
 	"github.com/bianjiefilm/touch-engine/server/internal/brandctx"
+	"github.com/bianjiefilm/touch-engine/server/internal/channeladmission"
 	"github.com/bianjiefilm/touch-engine/server/internal/config"
 	"github.com/bianjiefilm/touch-engine/server/internal/copyjob"
 	"github.com/bianjiefilm/touch-engine/server/internal/db"
 	"github.com/bianjiefilm/touch-engine/server/internal/identity"
 	"github.com/bianjiefilm/touch-engine/server/internal/leads"
 	"github.com/bianjiefilm/touch-engine/server/internal/matrixconsume"
+	"github.com/bianjiefilm/touch-engine/server/internal/participation"
 	"github.com/bianjiefilm/touch-engine/server/internal/readcache"
 	"github.com/bianjiefilm/touch-engine/server/internal/redact"
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
@@ -79,6 +81,13 @@ type Server struct {
 	// with short-TTL instances.
 	PubCache  *readcache.Cache[store.ResolvedRows]
 	DashCache *readcache.Cache[dashboardEntry]
+
+	// Participation (HUI-3546) owns the participation/attempt/handoff
+	// tables. Constructed always; its routes register only under
+	// FEATURE_PARTICIPATION. The BenefitReserver stays nil until the reward
+	// domain (HUI-1671) lands: reservations then remain pending and the
+	// customer is never told 已保留.
+	Participation *participation.Service
 }
 
 // Frozen cache budgets (HUI-2981 comparison report §2.1 — do not tune without
@@ -126,6 +135,7 @@ func New(cfg config.Config, database *sql.DB, idc *identity.Client, upc *upload.
 			Capacity: dashCacheCapacity, TTL: dashCacheTTL, Jitter: dashCacheJitter,
 			Epoch: st.Epoch,
 		}),
+		Participation: participation.New(database, nil, participation.Options{}),
 	}
 }
 
@@ -152,6 +162,19 @@ func Open(cfg config.Config, logger *log.Logger) (*Server, error) {
 	s := New(cfg, d, idc, upc, logger)
 	if cfg.FeatureBrand {
 		s.Brand = &brandctx.Client{BaseURL: cfg.BrandBaseURL, Token: cfg.BrandToken}
+	}
+	// HUI-3535: load the vendored channel-admission seed truth at startup when
+	// the surface is registered. The seed is compile-locked to the versioned
+	// contract by package tests; a load failure is a build bug and fails the
+	// start (fail-closed) rather than serving an empty admission table.
+	if cfg.FeatureChannelAdmission {
+		seed, err := channeladmission.EmbeddedSeed()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := s.St.LoadAdmissionSeed(seed); err != nil {
+			return nil, err
+		}
 	}
 	s.closeDB = func() { d.Close() }
 	return s, nil
@@ -492,6 +515,40 @@ func (s *Server) Handler() http.Handler {
 	// HUI-1671 B3 真实奖励交付: /work 管理面(无开关)、受信预留(internal token)、
 	// 公共 Summary(FEATURE_REWARD_OPS 默认 off)注册段集中在一个方法里。
 	s.registerRewardOpsRoutes(mux)
+
+	// HUI-3546 participation & cross-device resume. 登记制开关
+	// FEATURE_PARTICIPATION(默认 off;off = 全部路由不注册且 handler gate
+	// 再答统一 404 —— 双保险,同 FEATURE_DASHBOARD 写法)。顾客面无会话概念:
+	// 首方 visitor cookie 只做同浏览器续接,跨端走短时/单用途/可撤销交接
+	// 凭据(码 ≠ 发奖授权);店员面走 requireSession + 既有 authz 门店作用域。
+	// 权益预留只经 BenefitReserver 受信端口,未确认绝不返回"已保留"。
+	if s.Cfg.FeatureParticipation {
+		mux.Handle("POST /api/v1/participations", http.HandlerFunc(s.handleParticipationStart))
+		mux.Handle("POST /api/v1/participations/lookup", http.HandlerFunc(s.handleParticipationLookup))
+		mux.Handle("POST /api/v1/participations/handoff/redeem", http.HandlerFunc(s.handleParticipationRedeem))
+		mux.Handle("GET /api/v1/participations/{id}", http.HandlerFunc(s.handleParticipationGet))
+		mux.Handle("PATCH /api/v1/participations/{id}/content", http.HandlerFunc(s.handleParticipationContent))
+		mux.Handle("POST /api/v1/participations/{id}/cancel", http.HandlerFunc(s.handleParticipationCancel))
+		mux.Handle("GET /api/v1/participations/{id}/attempts", http.HandlerFunc(s.handleParticipationAttempts))
+		mux.Handle("POST /api/v1/participations/{id}/attempts", http.HandlerFunc(s.handleParticipationAttemptCreate))
+		mux.Handle("POST /api/v1/participations/{id}/handoff", http.HandlerFunc(s.handleParticipationHandoff))
+		mux.Handle("DELETE /api/v1/participations/{id}/handoff/{credentialId}", http.HandlerFunc(s.handleParticipationHandoffRevoke))
+		mux.Handle("GET /api/v1/participations/{id}/staff-view", s.requireSession(s.handleParticipationStaffView))
+		mux.Handle("POST /api/v1/participations/staff/redeem", s.requireSession(s.handleParticipationStaffRedeem))
+	}
+
+	// channel admission (HUI-3535 渠道准入与承接清单): 登记制开关
+	// FEATURE_CHANNEL_ADMISSION(默认 off;off = 路由不注册且 handler gate
+	// 再答统一 404 —— 双保险同款;种子亦不装载,现行为逐字节不变)。on =
+	// 启动装载 vendored 种子真值(docs/contracts/channel-admission/v1),两个
+	// GET 只读端点:商家面(HUI-1676 消费,可选渠道+缺项原因)与顾客/交接面
+	// (HUI-1670/1896 消费,当前可执行动作+缺字段提示,租户取自短码链路)。
+	// 服务端强制闸是 channeladmission.Gate 纯函数:1670 交接前必须过闸,
+	// 前端隐藏按钮不算数;unknown 永不等价 allowed。
+	if s.Cfg.FeatureChannelAdmission {
+		mux.Handle("GET /api/v1/channel-admissions", s.requireSession(s.handleChannelAdmissionList))
+		mux.Handle("GET /api/v1/public/links/{code}/channel-admission", http.HandlerFunc(s.handlePublicChannelAdmission))
+	}
 
 	return s.withRequestLog(mux)
 }

@@ -16,8 +16,8 @@ func TestSanitizeFieldInjectionMatrix(t *testing.T) {
 		{"普通标签", "普通标签"},
 		{"ABC123", "ABC123"},
 		{"", ""},
-		{"a=b", "a=b"},        // 只有开头字符才触发
-		{" =cmd", " =cmd"},    // 前导空格不触发(规范只看首字符)
+		{"a=b", "a=b"},     // 只有开头字符才触发
+		{" =cmd", " =cmd"}, // 前导空格不触发(规范只看首字符)
 		{"'已带引号", "'已带引号"}, // 已有前导 ' 原样保留
 	}
 	for _, c := range cases {
