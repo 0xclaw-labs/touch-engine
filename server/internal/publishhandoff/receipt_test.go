@@ -78,7 +78,8 @@ func TestHMACVerifierRejectsForgedReceipts(t *testing.T) {
 func TestNoSecretMeansNotVerified(t *testing.T) {
 	v := NewHMACVerifier("") // 生产未配置平台验签密钥
 	r := fixtureReceipt()
-	if _, err := v.Verify(ReceiptWire{Receipt: r, Signature: fixtureSign(t, "", r)}); err == nil {
+	// 未配置密钥时无论签名长什么样(哪怕自洽)一律拒绝。
+	if _, err := v.Verify(ReceiptWire{Receipt: r, Signature: "anything"}); err == nil {
 		t.Fatal("unconfigured verifier must refuse everything (NOT_VERIFIED residual)")
 	}
 }
