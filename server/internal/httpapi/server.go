@@ -28,6 +28,7 @@ import (
 
 	"github.com/bianjiefilm/touch-engine/server/internal/authz"
 	"github.com/bianjiefilm/touch-engine/server/internal/brandctx"
+	"github.com/bianjiefilm/touch-engine/server/internal/channeladmission"
 	"github.com/bianjiefilm/touch-engine/server/internal/config"
 	"github.com/bianjiefilm/touch-engine/server/internal/copyjob"
 	"github.com/bianjiefilm/touch-engine/server/internal/db"
@@ -161,6 +162,19 @@ func Open(cfg config.Config, logger *log.Logger) (*Server, error) {
 	s := New(cfg, d, idc, upc, logger)
 	if cfg.FeatureBrand {
 		s.Brand = &brandctx.Client{BaseURL: cfg.BrandBaseURL, Token: cfg.BrandToken}
+	}
+	// HUI-3535: load the vendored channel-admission seed truth at startup when
+	// the surface is registered. The seed is compile-locked to the versioned
+	// contract by package tests; a load failure is a build bug and fails the
+	// start (fail-closed) rather than serving an empty admission table.
+	if cfg.FeatureChannelAdmission {
+		seed, err := channeladmission.EmbeddedSeed()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := s.St.LoadAdmissionSeed(seed); err != nil {
+			return nil, err
+		}
 	}
 	s.closeDB = func() { d.Close() }
 	return s, nil
@@ -521,6 +535,17 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("DELETE /api/v1/participations/{id}/handoff/{credentialId}", http.HandlerFunc(s.handleParticipationHandoffRevoke))
 		mux.Handle("GET /api/v1/participations/{id}/staff-view", s.requireSession(s.handleParticipationStaffView))
 		mux.Handle("POST /api/v1/participations/staff/redeem", s.requireSession(s.handleParticipationStaffRedeem))
+	// channel admission (HUI-3535 渠道准入与承接清单): 登记制开关
+	// FEATURE_CHANNEL_ADMISSION(默认 off;off = 路由不注册且 handler gate
+	// 再答统一 404 —— 双保险同款;种子亦不装载,现行为逐字节不变)。on =
+	// 启动装载 vendored 种子真值(docs/contracts/channel-admission/v1),两个
+	// GET 只读端点:商家面(HUI-1676 消费,可选渠道+缺项原因)与顾客/交接面
+	// (HUI-1670/1896 消费,当前可执行动作+缺字段提示,租户取自短码链路)。
+	// 服务端强制闸是 channeladmission.Gate 纯函数:1670 交接前必须过闸,
+	// 前端隐藏按钮不算数;unknown 永不等价 allowed。
+	if s.Cfg.FeatureChannelAdmission {
+		mux.Handle("GET /api/v1/channel-admissions", s.requireSession(s.handleChannelAdmissionList))
+		mux.Handle("GET /api/v1/public/links/{code}/channel-admission", http.HandlerFunc(s.handlePublicChannelAdmission))
 	}
 
 	return s.withRequestLog(mux)
