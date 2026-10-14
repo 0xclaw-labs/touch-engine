@@ -24,6 +24,9 @@ export interface ServiceBatch {
   store_id?: string;
   valid_from?: string;
   valid_until?: string;
+  face_value_minor?: number;
+  cost_minor?: number;
+  currency?: string;
 }
 
 export interface ParticipationCard {

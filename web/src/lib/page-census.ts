@@ -95,6 +95,8 @@ const markerBook: readonly { route: string; markers: readonly Marker[] }[] = [
   { route: "/work/materials", markers: ["raw button", "raw input"] },
   // HUI-2628 r3：错误态补「重试」钮后各记 1 个 raw button（账本同步，命中只记账）。
   { route: "/work/rewards", markers: ["raw button", "raw input"] },
+  // HUI-3562：店员台页面是薄壳，交互全部在组件里，页面源零标记。
+  { route: "/work/service", markers: [] },
   { route: "/work/analytics", markers: ["raw button"] },
   { route: "/c/[code]", markers: [] },
   { route: "/c/[code]/contact", markers: [] },
