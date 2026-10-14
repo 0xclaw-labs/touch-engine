@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { ExtraJumpPanel } from "@/components/admin/ExtraJumpPanel";
 import { TaskHandoffActions } from "@/components/admin/TaskHandoffActions";
 import { failureText, useSession } from "@/components/work/merchant-session";
+import { ContentPackPanel } from "@/components/work/content-pack-panel";
 import { MotionHandoffBrief } from "@/components/work/motion-handoff-brief";
 import { StoreMotionNote } from "@/components/work/store-motion-note";
 import { isPastEnd, surfaceLabel } from "@/lib/product-finish";
@@ -148,6 +149,7 @@ export default function CampaignDetailPage() {
             <StoreMotionNote campaignId={id} />
           </section>
           <MotionHandoffBrief campaignId={id} />
+          <ContentPackPanel campaignId={id} />
           <section id="touch" className="tk-section">
             <h2 className="tk-section-title">碰一碰和二维码</h2>
             <p className="tk-note">{leads}。两个数不合成一个转化。</p>
