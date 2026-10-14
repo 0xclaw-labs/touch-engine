@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { TaskHandoffActions } from "@/components/admin/TaskHandoffActions";
 import { MerchantGate, useSession } from "@/components/work/merchant-session";
+import { SERVICE_DESK_HREF, SERVICE_DESK_LABEL, serviceDeskEntryVisible } from "@/lib/work/service-desk";
 import { planToday, pickHandoff, surfaceLabel, type TodayItem } from "@/lib/product-finish";
 import { contentGap } from "@/lib/workbench/compose";
 
@@ -95,6 +96,10 @@ function TodayBody() {
         <li><a href="/work/materials">素材</a></li>
         <li><a href="/work/rewards">奖励</a></li>
         <li><a href="/work/analytics">统计</a></li>
+        {/* HUI-2222：确认与核销入口，登记制开关+核销角色，判定收口 service-desk */}
+        {serviceDeskEntryVisible(session.features, session.role) ? (
+          <li><a href={SERVICE_DESK_HREF}>{SERVICE_DESK_LABEL}</a></li>
+        ) : null}
       </ul>
       {phase === "loading" ? <p className="tk-state" data-state="loading">{surfaceLabel("loading")}</p> : null}
       {phase === "error" ? (

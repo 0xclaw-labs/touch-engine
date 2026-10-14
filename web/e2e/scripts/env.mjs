@@ -22,6 +22,12 @@ const EMAIL = "owner@e2e.test";
 const PASSWORD = "e2e-pass-123";
 const PRINCIPAL = "usr_e2e_owner";
 const TENANT_NAME = "磁石科技";
+// HUI-2222 多组织/无权限正向链：双成员 principal（A=staff、B=org_owner）与
+// 零成员 principal。principal_id 必须与 identity-stub.mjs 的 email 派生规则一致。
+const MULTI_EMAIL = "multi@e2e.test";
+const MULTI_PASSWORD = "e2e-pass-multi";
+const MULTI_PRINCIPAL = "usr_e2e_multi";
+const TENANT_B_NAME = "连锁二号店";
 
 const procs = [];
 const state = { db: "", session: "", tenantId: "", urls: {} };
@@ -136,6 +142,11 @@ async function seed() {
     email: EMAIL,
     password: PASSWORD,
     tenantName: TENANT_NAME,
+    // HUI-2222：多组织/无权限场景凭据与第二租户（唯一真实来源，spec 只读这里）。
+    multiEmail: MULTI_EMAIL,
+    multiPassword: MULTI_PASSWORD,
+    tenantBId: state.tenantBId ?? "",
+    tenantBName: TENANT_B_NAME,
   };
   writeFileSync(path.join(evidenceDir, "seed.json"), JSON.stringify(state.urls, null, 2));
 }
@@ -158,6 +169,29 @@ function provision(goBin, dbPath, goEnv) {
     ["provision-member", "-db", dbPath, "-tenant", tenantId, "-principal", PRINCIPAL, "-role", "owner", "-name", "E2E 店长"],
     { env: goEnv },
   );
+
+  // HUI-2222：第二租户 + 双成员 principal（A=staff、B=org_owner）。
+  // B 不种任何活动/门店——切组织后「上一户数据不残留」才有真断言面。
+  const outB = execFileSync(goBin, ["provision-tenant", "-db", dbPath, "-name", TENANT_B_NAME], {
+    env: goEnv,
+    encoding: "utf8",
+  });
+  const tenantBId = outB.split("\n").map((l) => l.trim()).find((l) => l.startsWith("tnt_"));
+  if (!tenantBId) {
+    throw new Error(`[env] provision second tenant stdout 未解析出 tnt_* id: ${JSON.stringify(outB)}`);
+  }
+  state.tenantBId = tenantBId;
+  execFileSync(
+    goBin,
+    ["provision-member", "-db", dbPath, "-tenant", tenantId, "-principal", MULTI_PRINCIPAL, "-role", "staff", "-name", "E2E 店员"],
+    { env: goEnv },
+  );
+  execFileSync(
+    goBin,
+    ["provision-member", "-db", dbPath, "-tenant", tenantBId, "-principal", MULTI_PRINCIPAL, "-role", "owner", "-name", "E2E 二号店主"],
+    { env: goEnv },
+  );
+  console.log(`[env] provisioned second tenant ${tenantBId} + multi-org principal ${MULTI_PRINCIPAL}`);
 }
 
 async function up() {
@@ -187,6 +221,8 @@ async function up() {
     LEADS_TARGET_APP_ID: "e2e-crm-app",
     LEADS_PHONE_PEPPER: "e2e-phone-pepper",
     FEATURE_DASHBOARD: "on",
+    // HUI-2222：本地测试部署开确认与核销入口（生产默认 off，启用裁决归 HUI-3531）
+    FEATURE_SERVICE_DESK: "on",
   };
 
   execFileSync(go, ["build", "-o", path.join(artDir, "touch-server"), "./cmd/touch-server"], { cwd: serverDir, env: goEnv });

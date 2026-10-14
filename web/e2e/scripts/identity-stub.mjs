@@ -10,7 +10,15 @@
 import http from "node:http";
 
 const port = Number(process.argv[2] || 18461);
-const PRINCIPAL = process.env.E2E_PRINCIPAL || "usr_e2e_owner";
+
+// HUI-2222：principal 从 email 确定性派生（usr_e2e_ + 本地段）。
+// owner@e2e.test -> usr_e2e_owner（与历史默认一致）；multi@e2e.test ->
+// usr_e2e_multi（双成员）、nobody@e2e.test -> usr_e2e_nobody（零成员=无权限场景）。
+// 单一固定 principal 会把所有登录折叠成同一个成员集，多组织链就无法真实验证。
+function principalFor(email) {
+  const local = String(email || "").split("@")[0].replace(/[^a-z0-9_]/gi, "") || "unknown";
+  return "usr_e2e_" + local;
+}
 
 const pair = (email) => ({
   access_token: "sess-" + Buffer.from(email).toString("base64url"),
@@ -55,8 +63,16 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (req.method === "POST" && url === "/internal/v1/identity/refresh") {
+    // refresh_token = "refresh-" + b64url(email)；反解回同一 email，保持 principal 稳定。
+    let email = "owner@e2e.test";
+    try {
+      const raw = String(body.refresh_token || "");
+      if (raw.startsWith("refresh-")) email = Buffer.from(raw.slice(8), "base64url").toString("utf8") || email;
+    } catch {
+      /* fall back to owner */
+    }
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify(pair("owner@e2e.test")));
+    res.end(JSON.stringify(pair(email)));
     return;
   }
   if (req.method === "POST" && url === "/internal/v1/identity/revocations") {
@@ -73,7 +89,7 @@ const server = http.createServer(async (req, res) => {
     }
     const email = Buffer.from(token.slice(5), "base64url").toString("utf8");
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ authenticated: true, app_id: "touch-engine", session: { principal_id: PRINCIPAL, email } }));
+    res.end(JSON.stringify({ authenticated: true, app_id: "touch-engine", session: { principal_id: principalFor(email), email } }));
     return;
   }
   res.writeHead(404, { "content-type": "application/json" });

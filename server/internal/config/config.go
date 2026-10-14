@@ -70,6 +70,12 @@ const (
 	// 交接前服务端强制(前端隐藏按钮不算数)。零外部依赖:种子是仓内版本化
 	// JSON,不调平台 API,不伪造官方结果。
 	EnvFeatureChannelAdmission = "FEATURE_CHANNEL_ADMISSION"
+	// EnvFeatureServiceDesk (HUI-2222): 登记制开关,默认 off。
+	// off = 商家面不出现「确认与核销」入口,/work/service 路由不存在。
+	// on = 仅渲染入口(web 导航槽位,经 whoami features.service_desk 下发);
+	// /work/service 页面本体归 HUI-3562,本开关不注册任何服务端路由、
+	// 不加 Gate 项(仓内惯例:登记制开关零额外配置)。
+	EnvFeatureServiceDesk = "FEATURE_SERVICE_DESK"
 )
 
 // Config is the resolved server configuration.
@@ -151,6 +157,7 @@ type Config struct {
 	FeatureRewardOps        bool
 	FeatureParticipation    bool
 	FeatureChannelAdmission bool
+	FeatureServiceDesk      bool
 
 	// Brand registry read client (HUI-2049). Touch never writes this registry
 	// and never treats a brand host as a tenant or a payer.
@@ -216,6 +223,7 @@ func Load(get func(string) string) Config {
 		FeatureRewardOps:        isTruthy(get(EnvFeatureRewardOps)),
 		FeatureParticipation:    isTruthy(get(EnvFeatureParticipation)),
 		FeatureChannelAdmission: isTruthy(get(EnvFeatureChannelAdmission)),
+		FeatureServiceDesk:      isTruthy(get(EnvFeatureServiceDesk)),
 		BrandBaseURL:            strings.TrimSpace(get("PLATFORM_BRAND_BASE_URL")),
 		BrandToken:              get("PLATFORM_BRAND_TOKEN"),
 		SubscriptionStatus:      firstNonEmpty(get("TOUCH_SUBSCRIPTION_STATUS"), "unconfirmed"),
