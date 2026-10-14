@@ -229,3 +229,22 @@ func TestPublicBaseURL(t *testing.T) {
 		t.Fatalf("gate with only PUBLIC_BASE_URL set = %v, want 3 base entries", problems)
 	}
 }
+
+// HUI-1671 B3: FEATURE_REWARD_OPS gates only the guest-reachable public
+// reward surface (summary). It needs no extra platform configuration, so it
+// must never add Gate() entries. Default off.
+func TestFeatureRewardOpsDefaultOff(t *testing.T) {
+	cfg := Load(func(string) string { return "" })
+	if cfg.FeatureRewardOps {
+		t.Fatal("FEATURE_REWARD_OPS must default to off")
+	}
+	on := Load(func(key string) string {
+		if key == EnvFeatureRewardOps {
+			return "1"
+		}
+		return ""
+	})
+	if !on.FeatureRewardOps {
+		t.Fatal("FEATURE_REWARD_OPS=1 must turn the flag on")
+	}
+}
