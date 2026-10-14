@@ -162,6 +162,10 @@ type AssetSnapshot struct {
 
 func (a AssetSnapshot) empty() bool { return a.AssetID == "" && a.AssetRef == "" && a.SHA256 == "" }
 
+// IsEmpty reports whether the snapshot carries no reference (exported for
+// the HTTP layer; cross-package views use it to omit empty media refs).
+func (a AssetSnapshot) IsEmpty() bool { return a.empty() }
+
 func (a AssetSnapshot) valid() bool {
 	return strings.TrimSpace(a.AssetID) != "" && strings.TrimSpace(a.AssetRef) != "" &&
 		isSHA256Hex(NormalizeSHA256(a.SHA256))

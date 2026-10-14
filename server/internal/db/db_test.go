@@ -25,6 +25,7 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"campaign_rules",
 		"campaign_saved_copy",
 		"campaigns",
+		"content_handoffs",
 		"content_pack_adoptions",
 		"content_pack_version_events",
 		"content_pack_versions",

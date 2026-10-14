@@ -48,6 +48,10 @@ const (
 	// on = (租户,门店作用域,窗口) 维度的聚合层本地缓存,TTL 10s±2s,响应带
 	// as_of(可重建口径);key 含调用者实际权限范围,绝不跨租户/跨作用域。
 	EnvFeatureDashboardCache = "FEATURE_DASHBOARD_CACHE"
+	// EnvFeatureContentPacks (HUI-3553): 顾客侧内容快照读面的登记制开关,默认
+	// off。off = 快照/选择路由不注册(404 不可见)+ handler gate 双保险 ——
+	// 管理面端点不加开关(仓内惯例),只有顾客可触达面走本开关。
+	EnvFeatureContentPacks = "FEATURE_CONTENT_PACKS"
 )
 
 // Config is the resolved server configuration.
@@ -125,6 +129,7 @@ type Config struct {
 	FeatureBrand          bool
 	FeaturePublicCache    bool
 	FeatureDashboardCache bool
+	FeatureContentPacks   bool
 
 	// Brand registry read client (HUI-2049). Touch never writes this registry
 	// and never treats a brand host as a tenant or a payer.
@@ -186,6 +191,7 @@ func Load(get func(string) string) Config {
 		FeatureBrand:          isTruthy(get(EnvFeatureBrand)),
 		FeaturePublicCache:    isTruthy(get(EnvFeaturePublicCache)),
 		FeatureDashboardCache: isTruthy(get(EnvFeatureDashboardCache)),
+		FeatureContentPacks:   isTruthy(get(EnvFeatureContentPacks)),
 		BrandBaseURL:          strings.TrimSpace(get("PLATFORM_BRAND_BASE_URL")),
 		BrandToken:            get("PLATFORM_BRAND_TOKEN"),
 		SubscriptionStatus:    firstNonEmpty(get("TOUCH_SUBSCRIPTION_STATUS"), "unconfirmed"),

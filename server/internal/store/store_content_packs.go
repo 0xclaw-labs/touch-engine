@@ -242,18 +242,19 @@ func (s *Store) freezeAsset(tenantID, assetID string) (contentpack.AssetSnapshot
 	return contentpack.AssetSnapshot{AssetID: a.ID, AssetRef: a.AssetRef, SHA256: a.SHA256}, nil
 }
 
-// freezeSpec revalidates the spec (second gate, 同 UpsertCampaignRules 纪律) and
-// resolves every referenced asset into frozen snapshots.
-func (s *Store) freezeSpec(tenantID string, spec contentpack.VersionSpec) (contentpack.VersionSpec, error) {
-	if err := contentpack.ValidateVersionSpec(spec); err != nil {
-		return contentpack.VersionSpec{}, err
-	}
-	if spec.ContentKind == contentpack.ContentKindVideo {
+// resolveSpec fills every referenced asset snapshot from lib_assets (same
+// tenant; missing/cross-tenant -> media_missing, 商家面只传素材 ID 不传技术
+// 字段), THEN runs the domain creation matrix over the RESOLVED spec
+// (引用级快照先落定,声明矩阵再裁决 —— 同 UpsertCampaignRules 复用域校验纪律).
+func (s *Store) resolveSpec(tenantID string, spec contentpack.VersionSpec) (contentpack.VersionSpec, error) {
+	if spec.ContentKind == contentpack.ContentKindVideo && strings.TrimSpace(spec.Video.AssetID) != "" {
 		video, err := s.freezeAsset(tenantID, spec.Video.AssetID)
 		if err != nil {
 			return contentpack.VersionSpec{}, err
 		}
 		spec.Video = video
+	}
+	if spec.ContentKind == contentpack.ContentKindVideo && strings.TrimSpace(spec.Cover.AssetID) != "" {
 		cover, err := s.freezeAsset(tenantID, spec.Cover.AssetID)
 		if err != nil {
 			return contentpack.VersionSpec{}, err
@@ -261,6 +262,9 @@ func (s *Store) freezeSpec(tenantID string, spec contentpack.VersionSpec) (conte
 		spec.Cover = cover
 	}
 	for i := range spec.ImageText {
+		if strings.TrimSpace(spec.ImageText[i].AssetID) == "" {
+			continue
+		}
 		img, err := s.freezeAsset(tenantID, spec.ImageText[i].AssetID)
 		if err != nil {
 			return contentpack.VersionSpec{}, err
@@ -273,7 +277,11 @@ func (s *Store) freezeSpec(tenantID string, spec contentpack.VersionSpec) (conte
 	spec.PriceNote = contentpack.NormalizeText(spec.PriceNote)
 	spec.ValidNote = contentpack.NormalizeText(spec.ValidNote)
 	spec.Topics = contentpack.NormalizeTopics(spec.Topics)
+	spec.GrantUntil = contentpack.NormalizeText(spec.GrantUntil)
 	spec.IdempotencyKey = contentpack.NormalizeText(spec.IdempotencyKey)
+	if err := contentpack.ValidateVersionSpec(spec); err != nil {
+		return contentpack.VersionSpec{}, err
+	}
 	return spec, nil
 }
 
@@ -287,7 +295,7 @@ func (s *Store) CreateContentPackVersion(tenantID, packID string, spec contentpa
 	if err != nil {
 		return ContentPackVersion{}, err
 	}
-	spec, err = s.freezeSpec(tenantID, spec)
+	spec, err = s.resolveSpec(tenantID, spec)
 	if err != nil {
 		return ContentPackVersion{}, err
 	}
@@ -332,7 +340,7 @@ func (s *Store) AddReturnCandidate(tenantID, packID string, spec contentpack.Ver
 	if err != nil {
 		return ContentPackVersion{}, false, err
 	}
-	spec, err = s.freezeSpec(tenantID, spec)
+	spec, err = s.resolveSpec(tenantID, spec)
 	if err != nil {
 		return ContentPackVersion{}, false, err
 	}
