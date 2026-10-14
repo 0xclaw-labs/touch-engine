@@ -164,3 +164,115 @@ export function canSwitchDraft(
   if (!KNOWN_STATUSES.has(status)) return false;
   return !attempts.some((a) => (a.status ?? "") === "handed_off");
 }
+
+// ---- 参与门面(3546 消费面;只走同源 BFF /api/*) --------------------------------
+//
+// 纪律:
+//   - lookup 404 = 这个浏览器还没有参与 = 全新开始,不是错误态;
+//   - 开始是显式动作(按钮),浏览路径绝不调用 startParticipation;
+//   - 幂等键按活动码在会话内稳定:同一浏览器重复开始重放回原记录,
+//     不会开出第二条参与;键只在内存,不落 localStorage;
+//   - 网络失败返回 {error:"network"}:不判成功也不判失败(异常矩阵纪律);
+//   - qr_payload/token 只经返回值进内存,组件一次性出示。
+
+export type ParticipationResult =
+  | CustomerParticipation
+  | { error: "network" }
+  | { error: "start_failed" | "frozen"; message: string };
+
+async function postJson(url: string, body: unknown, method = "POST"): Promise<{ status: number; data: Record<string, unknown> | null }> {
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+    return { status: res.status, data };
+  } catch {
+    return { status: 0, data: null };
+  }
+}
+
+function asParticipation(data: Record<string, unknown> | null): CustomerParticipation | null {
+  if (data && typeof data.id === "string" && typeof data.status === "string") {
+    return data as CustomerParticipation;
+  }
+  return null;
+}
+
+function messageOf(data: Record<string, unknown> | null): string {
+  const m = data && typeof data.message === "string" ? data.message : "";
+  return m || "这一步没有完成。可以稍后再试，或请店员协助。";
+}
+
+/** 同设备重复碰触恢复:优先返回未完参与;404=全新开始(null);网络={error:"network"}。 */
+export async function lookupParticipation(code: string): Promise<ParticipationResult | null> {
+  const { status, data } = await postJson("/api/participations/lookup", { link_code: code });
+  if (status === 0) return { error: "network" };
+  if (status === 404) return null;
+  return asParticipation(data) ?? { error: "network" };
+}
+
+// 会话级幂等键:Map<link_code, key>。组件生命周期内稳定,刷新即新会话
+//(服务端另有 visitor cookie 兜底恢复,幂等键只防同会话双击/重试双开)。
+const idempotencyKeys = new Map<string, string>();
+
+function idempotencyKeyFor(code: string): string {
+  let key = idempotencyKeys.get(code);
+  if (!key) {
+    key = "cj-web-" + code + "-" + Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+    idempotencyKeys.set(code, key);
+  }
+  return key;
+}
+
+/** 显式开始参与(并申请预留;预留结果以 benefit_reservation_state 为准)。 */
+export async function startParticipation(code: string, contentPackVersion: string): Promise<ParticipationResult | null> {
+  const { status, data } = await postJson("/api/participations", {
+    link_code: code,
+    touchpoint_source: "manual",
+    content_pack_version: contentPackVersion,
+    idempotency_key: idempotencyKeyFor(code),
+  });
+  if (status === 0) return { error: "network" };
+  if (status === 200 || status === 201) {
+    return asParticipation(data) ?? { error: "start_failed", message: messageOf(data) };
+  }
+  return { error: "start_failed", message: messageOf(data) };
+}
+
+/** 未交接草稿换选;冻结(frozen 422)返回错误,不动已交接 attempt。 */
+export async function switchDraft(id: string, contentPackVersion: string): Promise<ParticipationResult | null> {
+  const { status, data } = await postJson(`/api/participations/${encodeURIComponent(id)}/content`, {
+    content_pack_version: contentPackVersion,
+  }, "PATCH");
+  if (status === 0) return { error: "network" };
+  if (status === 200) return asParticipation(data) ?? { error: "network" };
+  return { error: "frozen", message: messageOf(data) };
+}
+
+/** 用户取消:参与置 canceled(终态),不抹已发生记录。 */
+export async function cancelParticipation(id: string): Promise<ParticipationResult | null> {
+  const { status, data } = await postJson(`/api/participations/${encodeURIComponent(id)}/cancel`, {});
+  if (status === 0) return { error: "network" };
+  if (status === 200) return asParticipation(data) ?? { error: "network" };
+  return { error: "start_failed", message: messageOf(data) };
+}
+
+export interface ResumeCredential {
+  credential_id?: string;
+  token?: string;
+  qr_payload?: string;
+  expires_at?: string;
+  participation?: CustomerParticipation;
+}
+
+/** 参与码/恢复凭据:响应只出现一次,由调用方当次出示;本模块不落盘。 */
+export async function resumeCredential(id: string): Promise<ResumeCredential | null> {
+  const { status, data } = await postJson(`/api/participations/${encodeURIComponent(id)}/handoff`, {
+    purpose: "customer_resume",
+  });
+  if (status !== 201 || !data) return null;
+  return data as ResumeCredential;
+}
