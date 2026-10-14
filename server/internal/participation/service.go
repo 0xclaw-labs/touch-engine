@@ -118,7 +118,12 @@ func (s *Service) Start(ctx context.Context, in StartInput) (Started, error) {
 	if existing, ok, err := s.getByIdempotencyKey(in.TenantID, in.CampaignID, in.IdempotencyKey); err != nil {
 		return Started{}, err
 	} else if ok {
-		return Started{Participation: existing}, nil // 同键重放回原记录
+		// 同键重放回原记录——但只回给同一个 visitor:换浏览器重放同键
+		// 属冲突,不向陌生 visitor 泄漏原参与。
+		if existing.VisitorID != in.VisitorID {
+			return Started{}, ErrIdempotencyConflict
+		}
+		return Started{Participation: existing}, nil
 	}
 
 	now := rfc3339(s.now())
@@ -657,8 +662,30 @@ func (s *Service) Redeem(_ context.Context, in RedeemInput) (RedeemResult, error
 	return out, nil
 }
 
-func (s *Service) getAttempt(id, tenantID string) (Attempt, error) {
-	row := s.db.QueryRow(`SELECT id, tenant_id, participation_id, platform, handoff_method,
+// PeekCredential resolves a token to its participation and binding WITHOUT
+// consuming it. The staff surface authorizes the member against the
+// participation's store BEFORE Redeem spends the single use. Garbage and
+// unknown tokens answer ErrNotFound uniformly.
+func (s *Service) PeekCredential(_ context.Context, token string) (Participation, Credential, error) {
+	if !ValidTokenShape(token) {
+		return Participation{}, Credential{}, ErrNotFound
+	}
+	row := s.db.QueryRow(`SELECT `+credentialCols+` FROM handoff_credentials WHERE token_hash=?`, HashToken(token))
+	c, err := scanCredential(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Participation{}, Credential{}, ErrNotFound
+	}
+	if err != nil {
+		return Participation{}, Credential{}, fmt.Errorf("participation: credential lookup: %w", err)
+	}
+	p, err := s.getScoped(c.ParticipationID, c.TenantID)
+	if err != nil {
+		return Participation{}, Credential{}, err
+	}
+	return p, c, nil
+}
+
+func (s *Service) getAttempt(id, tenantID string) (Attempt, error) {	row := s.db.QueryRow(`SELECT id, tenant_id, participation_id, platform, handoff_method,
 		content_pack_version, rule_version, status, created_at, updated_at
 		FROM participation_attempts WHERE id=? AND tenant_id=?`, id, tenantID)
 	var a Attempt

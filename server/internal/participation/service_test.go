@@ -110,6 +110,37 @@ func TestStartIdempotentReplay(t *testing.T) {
 	}()); !errors.Is(err, ErrInvalidSource) {
 		t.Fatalf("invalid source must be rejected, got %v", err)
 	}
+
+	// 换浏览器重放同键:拒绝(不向陌生 visitor 泄漏原参与)。
+	if _, err := svc.Start(ctx, startInput(tenant, store, campaign, "visit_stranger", "idem_1", "cp")); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("same key from another visitor must conflict, got %v", err)
+	}
+}
+
+func TestPeekCredentialDoesNotConsume(t *testing.T) {
+	svc, tenant, store, campaign := newService(t, nil)
+	ctx := context.Background()
+	started, _ := svc.Start(ctx, startInput(tenant, store, campaign, "visit_a", "idem_1", "cp"))
+	id := started.Participation.ID
+	h, _ := svc.CreateAttempt(ctx, AttemptInput{ParticipationID: id, TenantID: tenant, VisitorID: "visit_a", Platform: "douyin", Method: MethodH5})
+	hk, err := svc.BeginHandoff(ctx, HandoffInput{ParticipationID: id, TenantID: tenant, VisitorID: "visit_a", AttemptID: h.ID})
+	if err != nil {
+		t.Fatalf("handoff: %v", err)
+	}
+
+	// Peek 返回参与与凭据绑定,不消费。
+	p, cred, err := svc.PeekCredential(ctx, hk.Token)
+	if err != nil || p.ID != id || cred.Purpose != PurposeCustomerResume {
+		t.Fatalf("peek: p=%+v cred=%+v err=%v", p, cred, err)
+	}
+	// Peek 之后仍可正常兑换(未被消费)。
+	if _, err := svc.Redeem(ctx, RedeemInput{Token: hk.Token, Purpose: PurposeCustomerResume, TargetScope: "h5", NewVisitorID: "visit_b"}); err != nil {
+		t.Fatalf("redeem after peek must succeed, got %v", err)
+	}
+	// 伪造 token:统一 NotFound。
+	if _, _, err := svc.PeekCredential(ctx, "garbage"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("garbage peek must be ErrNotFound, got %v", err)
+	}
 }
 
 func TestLookupAndAccessControl(t *testing.T) {
