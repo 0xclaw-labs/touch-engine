@@ -227,7 +227,8 @@ describe("半成品标记", () => {
       ["/work/rewards", ["raw button", "raw input"]],
       // HUI-3562：店员台页面是薄壳，交互全部在组件里，页面源零标记。
       ["/work/service", []],
-      ["/work/analytics", ["raw button"]],
+      // HUI-1677：经营看板页面是薄壳，交互全部在组件里，页面源零标记。
+      ["/work/analytics", []],
       ["/c/[code]", []],
       ["/c/[code]/contact", []],
       // HUI-1665:/t 稳定入口页是 server 闸门薄壳,交互在 touch-entry.tsx,页面源零标记。

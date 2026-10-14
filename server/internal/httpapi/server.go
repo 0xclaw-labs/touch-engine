@@ -473,8 +473,12 @@ func (s *Server) Handler() http.Handler {
 	// dashboard read surface (HUI-1677 FEAT-0178): gated by FEATURE_DASHBOARD
 	// (default off; off = route not registered AND handler gate answers uniform
 	// 404 — an invisible surface). Read-only aggregation, no write paths.
+	// /operations(+ /operations-summary) 是 2026-10-14 经营数据增量(HUI-1677):
+	// 同一开关,不新建开关名。
 	if s.Cfg.FeatureDashboard {
 		mux.Handle("GET /api/v1/dashboard", s.requireSession(s.handleDashboard))
+		mux.Handle("GET /api/v1/dashboard/operations", s.requireSession(s.handleDashboardOperations))
+		mux.Handle("GET /api/v1/dashboard/operations-summary", s.requireSession(s.handleDashboardOperationsSummary))
 	}
 
 	// campaign rules (HUI-1676 FEAT-0177): 登记制开关 FEATURE_CAMPAIGN_RULES

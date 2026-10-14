@@ -16,6 +16,11 @@ function errorStateSource(rel: string): string {
   if (source.includes('from "@/components/work/load-error-state"')) {
     return source + "\n" + read("components/work/load-error-state.tsx");
   }
+  // HUI-1677：/work/analytics 页面薄壳化（沿 HUI-3562 先例），错误相与
+  // 重试控件生效来源在视图组件里；守卫强度不变。
+  if (rel === "app/work/analytics/page.tsx") {
+    return source + "\n" + read("components/work/analytics/analytics-view.tsx");
+  }
   return source;
 }
 
@@ -82,7 +87,8 @@ describe("代表页面是真实路由", () => {
     // HUI-2628 r2：奖励未知样式经 rewardPresentation().className 下发（unknown→tk-unknown 行为已锁定），
     // 页面不再出现字面量 tk-ok/tk-unknown（uifinish unknown_reward_success_green 静态闸要求）。
     expect(read("app/work/rewards/page.tsx")).toContain("presented.className");
-    expect(read("app/work/analytics/page.tsx")).toContain("未知");
+    // HUI-1677：/work/analytics 页面薄壳化，「未知」文案生效来源在视图组件。
+    expect(read("components/work/analytics/analytics-view.tsx")).toContain("未知");
     expect(read("app/c/[code]/contact/page.tsx")).toContain("contact");
   });
 
