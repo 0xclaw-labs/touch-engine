@@ -106,6 +106,7 @@ type TouchpointView struct {
 	TagStatus      string `json:"tag_status,omitempty"`
 	GroupName      string `json:"group_name,omitempty"`
 	StoreName      string `json:"store_name,omitempty"`
+	UIDHint        string `json:"uid_hint,omitempty"` // 管理面回填提示,公共面零泄漏
 	CampaignTitle  string `json:"campaign_title"`
 	CampaignStatus string `json:"campaign_status"`
 	// EntryCode / EntryState: the canonical short code guests are redirected
@@ -116,7 +117,7 @@ type TouchpointView struct {
 }
 
 const touchpointViewSelect = `SELECT ` + aliasColsA + `,
-	COALESCE(t.label,''),COALESCE(t.status,''),COALESCE(g.name,''),COALESCE(st.name,''),
+	COALESCE(t.label,''),COALESCE(t.status,''),COALESCE(g.name,''),COALESCE(st.name,''),COALESCE(t.uid_hint,''),
 	c.title,c.status
 FROM touchpoint_aliases a
 LEFT JOIN nfc_tags t ON t.id=a.tag_id
@@ -130,16 +131,17 @@ const aliasColsA = `a.id,a.tenant_id,a.code,a.tag_id,a.campaign_id,a.store_id,a.
 
 func scanTouchpointView(sc interface{ Scan(...any) error }) (TouchpointView, error) {
 	var v TouchpointView
-	var tagID, storeID, position, stageNote, stageBy, stageAt, tagLabel, tagStatus, groupName, storeName sql.NullString
+	var tagID, storeID, position, stageNote, stageBy, stageAt, tagLabel, tagStatus, groupName, storeName, uidHint sql.NullString
 	err := sc.Scan(&v.ID, &v.TenantID, &v.Code, &tagID, &v.CampaignID, &storeID, &v.Label, &position,
 		&v.Status, &v.DeploymentStage, &stageNote, &stageBy, &stageAt, &v.CreatedBy, &v.CreatedAt, &v.UpdatedAt,
-		&tagLabel, &tagStatus, &groupName, &storeName, &v.CampaignTitle, &v.CampaignStatus)
+		&tagLabel, &tagStatus, &groupName, &storeName, &uidHint, &v.CampaignTitle, &v.CampaignStatus)
 	if err != nil {
 		return TouchpointView{}, err
 	}
 	v.TagID, v.StoreID, v.Position = tagID.String, storeID.String, position.String
 	v.StageNote, v.StageBy, v.StageAt = stageNote.String, stageBy.String, stageAt.String
-	v.TagLabel, v.TagStatus, v.GroupName, v.StoreName = tagLabel.String, tagStatus.String, groupName.String, storeName.String
+	v.TagLabel, v.TagStatus, v.GroupName, v.StoreName, v.UIDHint =
+		tagLabel.String, tagStatus.String, groupName.String, storeName.String, uidHint.String
 	return v, nil
 }
 
@@ -463,6 +465,13 @@ type TouchpointRows struct {
 
 	HasLink bool
 	Link    CampaignLink
+}
+
+// CampaignHasEntryLink reports whether the campaign owns at least one short
+// code (a rebind target without an entry cannot land guests anywhere).
+func (s *Store) CampaignHasEntryLink(tenantID, campaignID string) (bool, error) {
+	_, ok, err := s.pickCanonicalLink(tenantID, campaignID)
+	return ok, err
 }
 
 // pickCanonicalLink chooses the entry code of a campaign: oldest ENABLED link
