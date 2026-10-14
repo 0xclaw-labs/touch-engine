@@ -266,6 +266,23 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/campaigns/{id}/assets", s.requireSession(s.handleAssetAdd))
 	mux.Handle("DELETE /api/v1/campaigns/{id}/assets/{assetId}", s.requireSession(s.handleAssetRemove))
 
+	// HUI-3553 活动内容包:管理面不加 FEATURE 开关(仓内惯例)。管理动作
+	// (建包/建版本/明确采用/阻止新分发/回流候选/制作交接/受控媒体交接铸造)
+	// 仅 org_owner(authz.manage_content_packs);查询与交接兑换按既有业务角色。
+	// 顾客可触达的快照读面单独走 FEATURE_CONTENT_PACKS(默认 off,见下方
+	// 公共面注册点)。
+	mux.Handle("POST /api/v1/campaigns/{id}/content-packs", s.requireSession(s.handleContentPackCreate))
+	mux.Handle("GET /api/v1/campaigns/{id}/content-packs", s.requireSession(s.handleContentPackList))
+	mux.Handle("GET /api/v1/content-packs/{packId}", s.requireSession(s.handleContentPackGet))
+	mux.Handle("POST /api/v1/content-packs/{packId}/versions", s.requireSession(s.handleContentPackVersionCreate))
+	mux.Handle("POST /api/v1/content-packs/{packId}/versions/{versionId}/adopt", s.requireSession(s.handleContentPackVersionAdopt))
+	mux.Handle("POST /api/v1/content-packs/{packId}/versions/{versionId}/block", s.requireSession(s.handleContentPackVersionBlock))
+	mux.Handle("POST /api/v1/campaigns/{id}/content-packs/{packId}/return-candidates", s.requireSession(s.handleReturnCandidate))
+	mux.Handle("GET /api/v1/content-handoffs/capabilities", s.requireSession(s.handleContentHandoffCapabilities))
+	mux.Handle("POST /api/v1/campaigns/{id}/content-handoffs", s.requireSession(s.handleContentHandoffCreate))
+	mux.Handle("POST /api/v1/content-pack-versions/{versionId}/media-handoff", s.requireSession(s.handleMediaHandoffMint))
+	mux.Handle("GET /api/v1/media-handoffs/{token}", s.requireSession(s.handleMediaHandoffRedeem))
+
 	mux.Handle("GET /api/v1/campaigns/{id}/links", s.requireSession(s.handleLinkList))
 	mux.Handle("POST /api/v1/campaigns/{id}/links", s.requireSession(s.handleLinkCreate))
 	mux.Handle("POST /api/v1/campaigns/{id}/links/{linkId}/enabled", s.requireSession(s.handleLinkEnabled))
@@ -462,6 +479,15 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("POST /api/v1/tenant-exports", s.requireSession(s.handleTenantExportCreate))
 		mux.Handle("GET /api/v1/tenant-exports/{id}", s.requireSession(s.handleTenantExportGet))
 		mux.Handle("POST /api/v1/tenant-exports/{id}/revoke", s.requireSession(s.handleTenantExportRevoke))
+	}
+
+	// HUI-3553 顾客侧内容快照读(1670/1896 消费):登记制开关
+	// FEATURE_CONTENT_PACKS(默认 off;off = 路由不注册 + handler gate 再答
+	// 统一 404 —— 双保险同款)。GET-only 白名单字段;blocked/授权过期版本
+	// 拒新分发;访客多次碰触零生成通道(结构保证)。
+	if s.Cfg.FeatureContentPacks {
+		mux.Handle("GET /api/v1/public/links/{code}/content-choices", http.HandlerFunc(s.handlePublicContentChoices))
+		mux.Handle("GET /api/v1/public/links/{code}/content-snapshot", http.HandlerFunc(s.handlePublicContentSnapshot))
 	}
 
 	return s.withRequestLog(mux)

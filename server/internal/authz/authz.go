@@ -106,6 +106,10 @@ const (
 	// 留痕不冒充代理身份);agent 仅当激活代管关系(AgencyActive)。子账号
 	// 角色白名单(staff/store_manager)在处理层与存储层双重把关。
 	ActionManageAgencySubaccounts Action = "manage_agency_subaccounts"
+	// ActionManageContentPacks (HUI-3553 活动内容包): 建包/建版本/明确采用/
+	// 阻止新分发/回流候选/制作交接/受控媒体交接铸造 —— 管理动作限 org_owner。
+	// 查询不走本动作(按既有业务角色:ActionReadList/ActionReadRecord)。
+	ActionManageContentPacks Action = "manage_content_packs"
 )
 
 // Deny reason codes.
@@ -167,7 +171,8 @@ func Authorize(member *Member, action Action, rec RecordScope) Decision {
 	switch action {
 	case ActionManageMembers, ActionManageStores, ActionExportQR, ActionManageCampaignRules,
 		ActionManagePublishReward, ActionReviewPublishReward, ActionManageExtraJumps,
-		ActionManageAssetLib, ActionManageVideoTemplates, ActionManageAgency:
+		ActionManageAssetLib, ActionManageVideoTemplates, ActionManageAgency,
+		ActionManageContentPacks:
 		// 总部专属治理面。store_manager 对「本店」也无此权(不可建删/改门店);
 		// agent 无建立/解除代管权(建立/解除是 owner 类治理动作)。
 		if member.Role != RoleOrgOwner {
