@@ -248,3 +248,28 @@ func TestFeatureRewardOpsDefaultOff(t *testing.T) {
 		t.Fatal("FEATURE_REWARD_OPS=1 must turn the flag on")
 	}
 }
+
+// HUI-2222: FEATURE_SERVICE_DESK gates the merchant-facing "确认与核销" entry
+// slot (web nav) only. The /work/service page itself belongs to HUI-3562, so
+// this flag registers no route and needs no extra platform configuration —
+// it must never add Gate() entries. Default off.
+func TestFeatureServiceDeskDefaultOff(t *testing.T) {
+	cfg := Load(func(string) string { return "" })
+	if cfg.FeatureServiceDesk {
+		t.Fatal("FEATURE_SERVICE_DESK must default to off")
+	}
+	on := Load(func(key string) string {
+		if key == EnvFeatureServiceDesk {
+			return "on"
+		}
+		return ""
+	})
+	if !on.FeatureServiceDesk {
+		t.Fatal("FEATURE_SERVICE_DESK=on must turn the flag on")
+	}
+	for _, problem := range on.Gate() {
+		if strings.Contains(problem, "FEATURE_SERVICE_DESK") {
+			t.Fatalf("FEATURE_SERVICE_DESK must not add Gate entries, got: %v", problem)
+		}
+	}
+}

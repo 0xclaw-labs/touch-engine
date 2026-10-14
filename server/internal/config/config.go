@@ -57,6 +57,12 @@ const (
 	// on = 只读白名单计数端口,无券码/面额/成本。/work 管理面与受信内部
 	// 预留调用不加开关(仓内惯例:后台功能不加 FEATURE)。
 	EnvFeatureRewardOps = "FEATURE_REWARD_OPS"
+	// EnvFeatureServiceDesk (HUI-2222): 登记制开关,默认 off。
+	// off = 商家面不出现「确认与核销」入口,/work/service 路由不存在。
+	// on = 仅渲染入口(web 导航槽位,经 whoami features.service_desk 下发);
+	// /work/service 页面本体归 HUI-3562,本开关不注册任何服务端路由、
+	// 不加 Gate 项(仓内惯例:登记制开关零额外配置)。
+	EnvFeatureServiceDesk = "FEATURE_SERVICE_DESK"
 )
 
 // Config is the resolved server configuration.
@@ -136,6 +142,7 @@ type Config struct {
 	FeatureDashboardCache bool
 	FeatureContentPacks   bool
 	FeatureRewardOps      bool
+	FeatureServiceDesk    bool
 
 	// Brand registry read client (HUI-2049). Touch never writes this registry
 	// and never treats a brand host as a tenant or a payer.
@@ -199,6 +206,7 @@ func Load(get func(string) string) Config {
 		FeatureDashboardCache: isTruthy(get(EnvFeatureDashboardCache)),
 		FeatureContentPacks:   isTruthy(get(EnvFeatureContentPacks)),
 		FeatureRewardOps:      isTruthy(get(EnvFeatureRewardOps)),
+		FeatureServiceDesk:    isTruthy(get(EnvFeatureServiceDesk)),
 		BrandBaseURL:          strings.TrimSpace(get("PLATFORM_BRAND_BASE_URL")),
 		BrandToken:            get("PLATFORM_BRAND_TOKEN"),
 		SubscriptionStatus:    firstNonEmpty(get("TOUCH_SUBSCRIPTION_STATUS"), "unconfirmed"),
