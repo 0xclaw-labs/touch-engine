@@ -24,7 +24,7 @@ import (
 
 // Options configures the service. Now is injectable for tests.
 type Options struct {
-	Now     func() time.Time
+	Now      func() time.Time
 	MediaTTL time.Duration // 受控媒体 URL 有效期(contentpack 上限 1h)
 	// MediaSecret / MediaBaseURL feed contentpack.MintHandoff;未配置密钥时
 	// 媒体铸造失败 → 交接 failed(诚实失败,不伪造可用)。
@@ -40,7 +40,7 @@ type Options struct {
 	// (窗口失焦/自报永远不够)。
 	OpenVerifier OpenVerifier
 	// H5EntryBase / MiniappEntryBase are the admitted-route entry bases.
-	H5EntryBase    string
+	H5EntryBase      string
 	MiniappEntryBase string
 }
 
@@ -159,23 +159,23 @@ type StartResult struct {
 
 // Handoff is the safe-to-expose view of a handoff row.
 type Handoff struct {
-	ID              string
-	TenantID        string
-	StoreID         string
-	ParticipationID string
-	AttemptID       string
-	Platform        string
-	EntryMode       string
-	Scenario        string
-	Status          State
-	EvidenceSource  EvidenceSource
-	ContentVersion  string
+	ID                   string
+	TenantID             string
+	StoreID              string
+	ParticipationID      string
+	AttemptID            string
+	Platform             string
+	EntryMode            string
+	Scenario             string
+	Status               State
+	EvidenceSource       EvidenceSource
+	ContentVersion       string
 	ContentPackVersionID string
-	QueryCount      int
-	TimedOut        bool
-	CancelReason    string
-	CreatedAt       string
-	UpdatedAt       string
+	QueryCount           int
+	TimedOut             bool
+	CancelReason         string
+	CreatedAt            string
+	UpdatedAt            string
 }
 
 // receiptBinding is what official receipts must match for this handoff.

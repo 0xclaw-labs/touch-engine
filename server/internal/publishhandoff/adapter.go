@@ -2,13 +2,13 @@
 //
 // 三分计划(设计裁决 Q3):
 //   - refused     Gate 拒绝(not_admitted/closed/expired/wrong_binding…):
-//                 不给交接入口;not_admitted 同时不提供本玩法的手工发布
-//                 步骤——不把手工路径做成被禁营销玩法的后门(票面红线);
+//     不给交接入口;not_admitted 同时不提供本玩法的手工发布
+//     步骤——不把手工路径做成被禁营销玩法的后门(票面红线);
 //   - manual_only unknown 或 manual 入口:诚实降级为合规导出+手动指引
-//                 (PR#15 基线语义),交接管道照常(恢复/取消/验签/幂等不停);
+//     (PR#15 基线语义),交接管道照常(恢复/取消/验签/幂等不停);
 //   - automated   admitted:按 entry_mode 构造 H5 深链或小程序薄适配路径;
-//                 只携带 capability=supported 的字段,unknown/unsupported
-//                 字段在交接前逐项解释(不承诺全部预填)。
+//     只携带 capability=supported 的字段,unknown/unsupported
+//     字段在交接前逐项解释(不承诺全部预填)。
 package publishhandoff
 
 import (

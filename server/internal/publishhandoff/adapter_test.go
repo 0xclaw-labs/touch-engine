@@ -45,7 +45,7 @@ var planNow = time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
 func planInput(rec channeladmission.Record) PlanInput {
 	return PlanInput{
 		TenantID: "tnt_seed", Platform: rec.Platform, EntryMode: rec.EntryMode, Scenario: rec.Scenario,
-		Now: planNow,
+		Now:  planNow,
 		Text: TextInput{Title: "周末烘焙节", Body: "本周六全场八折", Topics: []string{"烘焙", "探店"}, StoreName: "南岸旗舰店"},
 		Media: []MediaItem{
 			{Kind: MediaVideo, AssetID: "as_v", SHA256: strings.Repeat("a", 64), ContentType: "video/mp4", Filename: "main.mp4"},

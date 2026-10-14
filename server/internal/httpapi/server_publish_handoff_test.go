@@ -38,10 +38,10 @@ const testReceiptSecret = "receipt-secret-cfg"
 const testVisitor = "visit_http_test"
 
 type handoffFixture struct {
-	s    *Server
-	ts   *httptest.Server
-	tenA string
-	code string
+	s      *Server
+	ts     *httptest.Server
+	tenA   string
+	code   string
 	packID string
 }
 

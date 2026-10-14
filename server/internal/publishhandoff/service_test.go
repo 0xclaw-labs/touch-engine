@@ -25,11 +25,11 @@ func newService(t *testing.T) (*Service, func()) {
 	d := openTestDB(t)
 	_, _, _ = seedRef(t, d)
 	s := New(d, Options{
-		Now: func() time.Time { return time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC) },
-		MediaSecret: testMediaSecret,
-		MediaBaseURL: "https://media.example.com/handoff",
+		Now:             func() time.Time { return time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC) },
+		MediaSecret:     testMediaSecret,
+		MediaBaseURL:    "https://media.example.com/handoff",
 		ReceiptVerifier: NewHMACVerifier("receipt-secret"),
-		AppRef: "app_touch_prod",
+		AppRef:          "app_touch_prod",
 	})
 	return s, func() { d.Close() }
 }
@@ -113,10 +113,10 @@ func startInput(participationID, attemptID, visitor string) StartInput {
 		TenantID: "tnt_seed", StoreID: "sto_seed", CampaignID: "cmp_seed", LinkCode: "link01",
 		ParticipationID: participationID, AttemptID: attemptID, VisitorID: visitor,
 		Platform: "xiaohongshu", EntryMode: channeladmission.EntryMiniapp, Scenario: "store_promo",
-		IdempotencyKey: "idem_" + attemptID,
-		MiniappBase:    "pages/publish/index",
+		IdempotencyKey:          "idem_" + attemptID,
+		MiniappBase:             "pages/publish/index",
 		ConfirmedContentVersion: ContentFingerprint(text, media),
-		Text: text, Media: media,
+		Text:                    text, Media: media,
 	}
 }
 
@@ -396,10 +396,10 @@ func TestForgedReceiptsRejectedWithTrail(t *testing.T) {
 		return ReceiptWire{Receipt: r, Signature: signWith(t, secret, r)}
 	}
 	forged := []ReceiptWire{
-		mkWire("rcp_b1", func(r *Receipt) {}, "customer-forged-key"),                        // 错密钥
-		mkWire("rcp_b2", func(r *Receipt) { r.AppRef = "app_evil" }, "receipt-secret"),      // 错 app
-		mkWire("rcp_b3", func(r *Receipt) { r.TenantID = "tnt_evil" }, "receipt-secret"),    // 错租户
-		mkWire("rcp_b4", func(r *Receipt) { r.AttemptID = "pta_evil" }, "receipt-secret"),   // 错 attempt
+		mkWire("rcp_b1", func(r *Receipt) {}, "customer-forged-key"),                         // 错密钥
+		mkWire("rcp_b2", func(r *Receipt) { r.AppRef = "app_evil" }, "receipt-secret"),       // 错 app
+		mkWire("rcp_b3", func(r *Receipt) { r.TenantID = "tnt_evil" }, "receipt-secret"),     // 错租户
+		mkWire("rcp_b4", func(r *Receipt) { r.AttemptID = "pta_evil" }, "receipt-secret"),    // 错 attempt
 		mkWire("rcp_b5", func(r *Receipt) { r.ContentVersion = "cv_old" }, "receipt-secret"), // 错内容版本
 		mkWire("rcp_b6", func(r *Receipt) { r.Outcome = "under_review" }, "receipt-secret"),  // 非确认结果
 	}
