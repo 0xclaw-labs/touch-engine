@@ -97,6 +97,13 @@ func fakeUpload(t *testing.T, assets map[string]string) *httptest.Server {
 
 func newFixture(t *testing.T, featureUpload bool) *fixture {
 	t.Helper()
+	return newFixtureEnv(t, featureUpload, nil)
+}
+
+// newFixtureEnv is newFixture with extra config env (HUI-2222: feature flags
+// such as FEATURE_SERVICE_DESK). Nil extras keep the original behavior.
+func newFixtureEnv(t *testing.T, featureUpload bool, extraEnv map[string]string) *fixture {
+	t.Helper()
 	d, err := db.Open(filepath.Join(t.TempDir(), "touch.db"))
 	if err != nil {
 		t.Fatalf("db: %v", err)
@@ -137,6 +144,9 @@ func newFixture(t *testing.T, featureUpload bool) *fixture {
 				return "on"
 			}
 			return "off"
+		}
+		if v, ok := extraEnv[k]; ok {
+			return v
 		}
 		return ""
 	})

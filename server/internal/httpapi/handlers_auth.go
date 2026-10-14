@@ -119,6 +119,9 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 		"role":          c.Member.Role,
 		"store_scope":   c.Member.StoreScope, // HUI-1674: "" = 总部/全门店;非空 = 仅该门店
 		"enabled":       c.Member.Enabled,
+		// HUI-2222: feature 开关下发 web 的单缝。恒存在,web 靠布尔值区分
+		// off 与缺省;当前只有 service_desk(/work/service 页面本体归 HUI-3562)。
+		"features": map[string]any{"service_desk": s.Cfg.FeatureServiceDesk},
 	}
 	if s.Cfg.FeatureBrand {
 		t, err := s.St.GetTenant(c.Member.TenantID)
