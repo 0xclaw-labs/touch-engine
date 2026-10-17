@@ -10,7 +10,13 @@ on:
 
 jobs:
   evidence-gate:
-    runs-on: ubuntu-latest  # org 无 org 级 self-hosted,leads/touch 未注册专机,先用 hosted
+    # 2026-10-17 迁 Windows 专机（win-ci）。python3 → python：Windows 无 python3 别名，
+    # ubuntu-latest 两者皆有，改动对原宿主无影响。shell 显式 bash（Windows 默认 pwsh）。
+    runs-on: [win-ci]
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
         with:
@@ -18,5 +24,5 @@ jobs:
       - name: 证据引用完整性门（仅新增审计文档）
         run: |
           BASE=$(git merge-base "origin/${{ github.base_ref || 'main' }}" HEAD)
-          python3 tools/ci/evidence-integrity-check.py . HEAD --only-added "$BASE" \
+          python tools/ci/evidence-integrity-check.py . HEAD --only-added "$BASE" \
             --cross-names public-ai,leads-engine,touch-engine,product-image-engine,shuhai-guanlan,guanlan-order,aicut,GoBoost
