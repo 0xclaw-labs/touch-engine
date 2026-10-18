@@ -751,10 +751,9 @@ func (s *Store) CreateContentHandoff(tenantID, campaignID string, in HandoffInpu
 			`SELECT `+handoffCols+` FROM content_handoffs WHERE tenant_id=? AND idempotency_key=?`, tenantID, key))
 		return h, err == nil, err
 	}
+	// Absent preference stays absent ("unspecified"): do not silently claim the
+	// merchant chose immediate. The migration default only backfills old rows.
 	preference := contentpack.NormalizeText(in.ExecutionPreference)
-	if preference == "" {
-		preference = "immediate"
-	}
 	policyVersion := in.PolicyVersion
 	if policyVersion < 0 {
 		policyVersion = 0
