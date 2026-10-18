@@ -1,0 +1,56 @@
+{
+  "contract_version": "mx-ops-c0/v1",
+  "object_kind": "execution_policy",
+  "policy_id": "pol_paid-elastic",
+  "policy_version": 7,
+  "policy_scope": {
+    "level": "tenant",
+    "tenant_id": "tenant-a",
+    "project_id": null,
+    "app_id": null,
+    "user_id": null,
+    "model_id": null,
+    "pool_ref": null
+  },
+  "template": "paid_elastic",
+  "applicable": {
+    "capabilities": [
+      "video.generate"
+    ],
+    "model_ids": [
+      "minimax-h3"
+    ],
+    "pool_refs": [
+      "compute://h3-fast-v1"
+    ]
+  },
+  "time_window": null,
+  "dispatch": {
+    "allow_create": true,
+    "allow_resume": true,
+    "allow_warm_keepalive": true,
+    "max_starting": 2
+  },
+  "compute_permission": {
+    "allowed_pool_refs": [
+      "compute://h3-fast-v1"
+    ],
+    "allow_borrow_idle": false,
+    "max_borrow_workers": null
+  },
+  "cost_bearing": {
+    "payer": "user",
+    "entitlement_ref": null
+  },
+  "service_level": {
+    "tier": "priority",
+    "weight": 80
+  },
+  "conflict": {
+    "mode": "intersect",
+    "on_conflict": "reject"
+  },
+  "enabled": true,
+  "published_at_unix": 1780000000,
+  "digest": "sha256:22e8a69cb621c1f6a08402f5795e34056699da67b563d7c5176887785c3e66fd"
+}

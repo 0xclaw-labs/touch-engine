@@ -8,6 +8,7 @@ import { failureText, useSession } from "@/components/work/merchant-session";
 import { CampaignConfigPanel } from "@/components/work/campaign-config-panel";
 import { ContentPackPanel } from "@/components/work/content-pack-panel";
 import { MotionHandoffBrief } from "@/components/work/motion-handoff-brief";
+import { ProductionPanel } from "@/components/work/production-panel";
 import { StoreMotionNote } from "@/components/work/store-motion-note";
 import { isPastEnd, surfaceLabel } from "@/lib/product-finish";
 import { takenList } from "@/lib/campaign-detail";
@@ -151,6 +152,7 @@ export default function CampaignDetailPage() {
             <StoreMotionNote campaignId={id} />
           </section>
           <MotionHandoffBrief campaignId={id} />
+          <ProductionPanel campaignId={id} campaignEndsAt={campaign.ends_at ?? null} />
           <ContentPackPanel campaignId={id} />
           <CampaignConfigPanel
             campaignId={id}

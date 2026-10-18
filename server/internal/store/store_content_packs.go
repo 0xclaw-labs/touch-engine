@@ -681,6 +681,11 @@ type HandoffInput struct {
 	DesiredForm    string
 	AssetIDs       []string
 	IdempotencyKey string
+	// MX-OPS R2 (HUI-3553): merchant execution preference + policy reference.
+	// Only narrows within the server-authorized template set; no priority field.
+	ExecutionPreference string
+	PolicyRef           string
+	PolicyVersion       int
 }
 
 // ContentHandoff is one recorded production-intent brief.
@@ -695,17 +700,29 @@ type ContentHandoff struct {
 	IdempotencyKey string   `json:"idempotency_key,omitempty"`
 	CreatedBy      string   `json:"created_by"`
 	CreatedAt      string   `json:"created_at"`
+	// MX-OPS R2 (HUI-3553): execution preference, policy reference and the
+	// authoritative queue projection (public shape only, internal_debug stripped).
+	ExecutionPreference string          `json:"execution_preference"`
+	PolicyRef           string          `json:"policy_ref,omitempty"`
+	PolicyVersion       int             `json:"policy_version,omitempty"`
+	JobRef              string          `json:"job_ref,omitempty"`
+	JobQueueView        json.RawMessage `json:"job_queue_view,omitempty"`
 }
 
-const handoffCols = `id,tenant_id,campaign_id,purpose,store_brief,desired_form,asset_ids,idempotency_key,created_by,created_at`
+const handoffCols = `id,tenant_id,campaign_id,purpose,store_brief,desired_form,asset_ids,idempotency_key,created_by,created_at,execution_preference,policy_ref,policy_version,job_ref,job_queue_view`
 
 func scanHandoff(sc interface{ Scan(...any) error }) (ContentHandoff, error) {
 	var h ContentHandoff
 	var idemKey string
 	var rawAssets string
-	err := sc.Scan(&h.ID, &h.TenantID, &h.CampaignID, &h.Purpose, &h.StoreBrief, &h.DesiredForm, &rawAssets, &idemKey, &h.CreatedBy, &h.CreatedAt)
+	var rawQueue string
+	err := sc.Scan(&h.ID, &h.TenantID, &h.CampaignID, &h.Purpose, &h.StoreBrief, &h.DesiredForm, &rawAssets, &idemKey, &h.CreatedBy, &h.CreatedAt,
+		&h.ExecutionPreference, &h.PolicyRef, &h.PolicyVersion, &h.JobRef, &rawQueue)
 	h.AssetIDs = unmarshalTags(rawAssets)
 	h.IdempotencyKey = idemKey
+	if strings.TrimSpace(rawQueue) != "" {
+		h.JobQueueView = json.RawMessage(rawQueue)
+	}
 	return h, err
 }
 
@@ -734,20 +751,59 @@ func (s *Store) CreateContentHandoff(tenantID, campaignID string, in HandoffInpu
 			`SELECT `+handoffCols+` FROM content_handoffs WHERE tenant_id=? AND idempotency_key=?`, tenantID, key))
 		return h, err == nil, err
 	}
+	// Absent preference stays absent ("unspecified"): do not silently claim the
+	// merchant chose immediate. The migration default only backfills old rows.
+	preference := contentpack.NormalizeText(in.ExecutionPreference)
+	policyVersion := in.PolicyVersion
+	if policyVersion < 0 {
+		policyVersion = 0
+	}
 	h := ContentHandoff{
 		ID: newID("cho_"), TenantID: tenantID, CampaignID: campaignID,
 		Purpose: contentpack.NormalizeText(in.Purpose), StoreBrief: in.StoreBrief,
 		DesiredForm: contentpack.NormalizeText(in.DesiredForm),
 		AssetIDs:    in.AssetIDs, IdempotencyKey: key, CreatedBy: createdBy, CreatedAt: now(),
+		ExecutionPreference: preference, PolicyRef: in.PolicyRef, PolicyVersion: policyVersion,
 	}
 	_, err := s.DB.Exec(
-		`INSERT INTO content_handoffs(`+handoffCols+`) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO content_handoffs(`+handoffCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		h.ID, h.TenantID, h.CampaignID, h.Purpose, h.StoreBrief, h.DesiredForm,
-		marshalJSONDefault(h.AssetIDs, "[]"), h.IdempotencyKey, h.CreatedBy, h.CreatedAt)
+		marshalJSONDefault(h.AssetIDs, "[]"), h.IdempotencyKey, h.CreatedBy, h.CreatedAt,
+		h.ExecutionPreference, h.PolicyRef, h.PolicyVersion, h.JobRef, "")
 	if err != nil {
 		return ContentHandoff{}, false, err
 	}
 	return h, false, nil
+}
+
+// GetContentHandoff returns one tenant-scoped brief (ErrNotFound on cross-tenant).
+func (s *Store) GetContentHandoff(tenantID, handoffID string) (ContentHandoff, error) {
+	h, err := scanHandoff(s.DB.QueryRow(
+		`SELECT `+handoffCols+` FROM content_handoffs WHERE tenant_id=? AND id=?`, tenantID, handoffID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ContentHandoff{}, ErrNotFound
+	}
+	return h, err
+}
+
+// UpdateContentHandoffQueueView stores the PUBLIC projection of a contract
+// job_queue_view (internal_debug already stripped by the caller). It never
+// reads or rewrites other handoff fields, and cross-tenant ids are ErrNotFound.
+func (s *Store) UpdateContentHandoffQueueView(tenantID, handoffID, jobRef string, publicView []byte) (ContentHandoff, error) {
+	res, err := s.DB.Exec(
+		`UPDATE content_handoffs SET job_ref=?, job_queue_view=? WHERE tenant_id=? AND id=?`,
+		jobRef, string(publicView), tenantID, handoffID)
+	if err != nil {
+		return ContentHandoff{}, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return ContentHandoff{}, err
+	}
+	if n == 0 {
+		return ContentHandoff{}, ErrNotFound
+	}
+	return s.GetContentHandoff(tenantID, handoffID)
 }
 
 // ListContentHandoffs returns the campaign's briefs oldest-first.

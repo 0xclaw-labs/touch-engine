@@ -1,0 +1,74 @@
+{
+  "contract_version": "mx-ops-c0/v1",
+  "object_kind": "execution_policy",
+  "policy_id": "pol_night-batch",
+  "policy_version": 7,
+  "policy_scope": {
+    "level": "project",
+    "tenant_id": null,
+    "project_id": "proj-night",
+    "app_id": null,
+    "user_id": null,
+    "model_id": null,
+    "pool_ref": null
+  },
+  "template": "night_batch",
+  "applicable": {
+    "capabilities": [
+      "video.generate"
+    ],
+    "model_ids": [
+      "minimax-h3"
+    ],
+    "pool_refs": [
+      "compute://h3-fast-v1"
+    ]
+  },
+  "time_window": {
+    "timezone": "Asia/Shanghai",
+    "windows": [
+      {
+        "days_of_week": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "start_minute_of_day": 1320,
+        "end_minute_of_day": 420
+      }
+    ],
+    "not_before_unix": null,
+    "start_before_unix": null,
+    "queue_ttl_seconds": 7200
+  },
+  "dispatch": {
+    "allow_create": true,
+    "allow_resume": true,
+    "allow_warm_keepalive": false,
+    "max_starting": 1
+  },
+  "compute_permission": {
+    "allowed_pool_refs": [
+      "compute://h3-fast-v1"
+    ],
+    "allow_borrow_idle": false,
+    "max_borrow_workers": null
+  },
+  "cost_bearing": {
+    "payer": "user",
+    "entitlement_ref": null
+  },
+  "service_level": {
+    "tier": "batch",
+    "weight": 30
+  },
+  "conflict": {
+    "mode": "intersect",
+    "on_conflict": "reject"
+  },
+  "enabled": true,
+  "published_at_unix": 1780000000,
+  "digest": "sha256:97f946709fed99aa74151b67369e64e5ed88a6792e9525929df2b1a8c741658d"
+}
