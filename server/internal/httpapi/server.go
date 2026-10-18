@@ -341,6 +341,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/campaigns/{id}/content-packs/{packId}/return-candidates", s.requireSession(s.handleReturnCandidate))
 	mux.Handle("GET /api/v1/content-handoffs/capabilities", s.requireSession(s.handleContentHandoffCapabilities))
 	mux.Handle("POST /api/v1/campaigns/{id}/content-handoffs", s.requireSession(s.handleContentHandoffCreate))
+	// MX-OPS R2 (HUI-3553): restore list + trusted queue-view sync seam. The
+	// queue view is contract-validated and stored as the PUBLIC projection only.
+	mux.Handle("GET /api/v1/campaigns/{id}/content-handoffs", s.requireSession(s.handleContentHandoffList))
+	mux.Handle("POST /api/v1/content-handoffs/{handoffId}/queue-view", s.requireSession(s.handleContentHandoffQueueView))
 	mux.Handle("POST /api/v1/content-pack-versions/{versionId}/media-handoff", s.requireSession(s.handleMediaHandoffMint))
 	mux.Handle("GET /api/v1/media-handoffs/{token}", s.requireSession(s.handleMediaHandoffRedeem))
 

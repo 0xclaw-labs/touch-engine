@@ -27,6 +27,7 @@ import (
 
 	"github.com/bianjiefilm/touch-engine/server/internal/authz"
 	"github.com/bianjiefilm/touch-engine/server/internal/contentpack"
+	"github.com/bianjiefilm/touch-engine/server/internal/mxopsview"
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
 )
 
@@ -437,15 +438,25 @@ func (s *Server) handleContentHandoffCreate(w http.ResponseWriter, r *http.Reque
 		DesiredForm    string   `json:"desired_form"`
 		AssetIDs       []string `json:"asset_ids"`
 		IdempotencyKey string   `json:"idempotency_key"`
+		// MX-OPS R2 (HUI-3553): preference only narrows within allowed templates;
+		// there is deliberately NO priority field (strict decode rejects it).
+		ExecutionPreference string `json:"execution_preference"`
+		PolicyRef           string `json:"policy_ref"`
+		PolicyVersion       int    `json:"policy_version"`
 	}
 	ok, err := decodePackBody(r, &in)
 	if err != nil || !ok {
 		fail(w, http.StatusBadRequest, "bad_request", "invalid or disallowed field in body")
 		return
 	}
+	if in.ExecutionPreference != "" && !validExecutionPreference(in.ExecutionPreference) {
+		fail(w, http.StatusBadRequest, "bad_request", "invalid execution_preference")
+		return
+	}
 	h, replayed, err := s.St.CreateContentHandoff(c.Member.TenantID, r.PathValue("id"), store.HandoffInput{
 		Purpose: in.Purpose, StoreBrief: in.StoreBrief, DesiredForm: in.DesiredForm,
 		AssetIDs: in.AssetIDs, IdempotencyKey: in.IdempotencyKey,
+		ExecutionPreference: in.ExecutionPreference, PolicyRef: in.PolicyRef, PolicyVersion: in.PolicyVersion,
 	}, c.Member.PrincipalRef)
 	if err != nil {
 		packStoreFail(w, err)
@@ -457,8 +468,79 @@ func (s *Server) handleContentHandoffCreate(w http.ResponseWriter, r *http.Reque
 		"handoff": map[string]any{
 			"id": h.ID, "campaign_id": h.CampaignID, "purpose": h.Purpose,
 			"desired_form": h.DesiredForm, "idempotency_key": h.IdempotencyKey,
+			"execution_preference": h.ExecutionPreference, "policy_ref": h.PolicyRef,
+			"policy_version": h.PolicyVersion, "job_ref": h.JobRef,
+			"job_queue_view": h.JobQueueView,
 		},
 		"replayed": replayed,
+	})
+}
+
+// validExecutionPreference accepts ONLY the contract template names; the client
+// cannot invent a priority (no numeric priority field exists on this wire).
+func validExecutionPreference(preference string) bool {
+	switch preference {
+	case "immediate", "night_batch", "free_idle", "paid_elastic":
+		return true
+	default:
+		return false
+	}
+}
+
+// GET /api/v1/campaigns/{id}/content-handoffs — the merchant production list
+// (restore entry: same handoff_id/job_ref, never a new production project).
+func (s *Server) handleContentHandoffList(w http.ResponseWriter, r *http.Request) {
+	c := callerFrom(r)
+	if !s.packTenantAction(c, authz.ActionReadList, w) {
+		return
+	}
+	campaignID := r.PathValue("id")
+	if _, err := s.St.GetCampaign(campaignID, c.Member.TenantID); err != nil {
+		packStoreFail(w, err)
+		return
+	}
+	handoffs, err := s.St.ListContentHandoffs(c.Member.TenantID, campaignID)
+	if err != nil {
+		packStoreFail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"handoffs": handoffs})
+}
+
+// POST /api/v1/content-handoffs/{handoffId}/queue-view — the adapter seam: a
+// trusted producer syncs the authoritative queue projection after strict
+// contract validation; the PUBLIC projection (internal_debug stripped) is all
+// that is stored/exposed. Clients cannot write internal fields directly.
+func (s *Server) handleContentHandoffQueueView(w http.ResponseWriter, r *http.Request) {
+	c := callerFrom(r)
+	if !s.packTenantAction(c, authz.ActionManageContentPacks, w) {
+		return
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+	if err != nil {
+		fail(w, http.StatusBadRequest, "bad_request", "unreadable queue view")
+		return
+	}
+	view, err := mxopsview.Parse(raw)
+	if err != nil {
+		// Strict contract rejection: never partially default a queue view.
+		fail(w, http.StatusUnprocessableEntity, "mx_ops_c0_invalid_queue_view", "queue view does not match mx-ops-c0/v1")
+		return
+	}
+	public, err := view.PublicJSON()
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "queue view projection failed")
+		return
+	}
+	h, err := s.St.UpdateContentHandoffQueueView(c.Member.TenantID, r.PathValue("handoffId"), view.JobRef, public)
+	if err != nil {
+		packStoreFail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"handoff_id":     h.ID,
+		"job_ref":        h.JobRef,
+		"job_queue_view": h.JobQueueView,
 	})
 }
 
