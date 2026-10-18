@@ -8,6 +8,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -104,6 +105,20 @@ type Config struct {
 	AppID string
 	// InternalToken is the shared secret between the web BFF and this server.
 	InternalToken string
+	// ServiceTokens maps a trusted service id to ITS OWN token for the
+	// queue-view producer seam (HUI-3553 W5). Parsed from
+	// TOUCH_SERVICE_TOKENS="service-id:token;...". Nil/empty means the
+	// service-producer auth path is unavailable (fail-closed, old session
+	// path unchanged). Never reuse TOUCH_INTERNAL_TOKEN here and never log
+	// these values.
+	ServiceTokens map[string]string
+	// ServiceRoles optionally narrows a registered service's producer role:
+	// TOUCH_SERVICE_ROLES="service-id:queue_producer;...". A registered
+	// service without an entry defaults to queue_producer.
+	ServiceRoles map[string]string
+	// ServiceRegistryErrors carries malformed/duplicate TOUCH_SERVICE_*
+	// entries so Gate() can fail closed instead of silently dropping them.
+	ServiceRegistryErrors []string
 	// SessionCookie is the cookie name carrying the identity session token.
 	SessionCookie string
 
@@ -208,7 +223,12 @@ func FromEnv() Config {
 // Load builds a Config from any key->value getter (injection point for tests
 // and for alternate config sources).
 func Load(get func(string) string) Config {
+	serviceTokens, serviceRoles, serviceProblems := parseServiceRegistry(
+		get("TOUCH_SERVICE_TOKENS"), get("TOUCH_SERVICE_ROLES"))
 	return Config{
+		ServiceTokens:                  serviceTokens,
+		ServiceRoles:                   serviceRoles,
+		ServiceRegistryErrors:          serviceProblems,
 		HTTPAddr:                       firstNonEmpty(get("TOUCH_HTTP_ADDR"), "127.0.0.1:18240"),
 		DBPath:                         firstNonEmpty(get("TOUCH_DB_PATH"), "data/touch.db"),
 		Env:                            firstNonEmpty(get("TOUCH_ENV"), "development"),
@@ -271,6 +291,9 @@ func Load(get func(string) string) Config {
 // An empty list means every authenticated path is fully configured.
 func (c Config) Gate() []string {
 	var problems []string
+	// HUI-3553 W5: a malformed/duplicate service registry must fail closed;
+	// an EMPTY registry is valid (service path simply unavailable).
+	problems = append(problems, c.ServiceRegistryErrors...)
 	if strings.TrimSpace(c.InternalToken) == "" {
 		problems = append(problems, "TOUCH_INTERNAL_TOKEN is required (web BFF -> server shared secret)")
 	}
@@ -336,6 +359,82 @@ func (c Config) Describe() string {
 	flags := fmt.Sprintf("upload=%v,notify=%v,task=%v,leads=%v,dashboard=%v,brand=%v", c.FeatureUpload, c.FeatureNotify, c.FeatureTask, c.FeatureLeadsCapture, c.FeatureDashboard, c.FeatureBrand)
 	return fmt.Sprintf("env=%s app_id=%s addr=%s db=%s features(%s)",
 		c.Env, c.AppID, c.HTTPAddr, c.DBPath, flags)
+}
+
+// ServiceProducerRole returns the producer role for a registered service.
+// Only queue_producer is meaningful in this ticket; unregistered services and
+// empty registries return "" (callers must fail closed).
+func (c Config) ServiceProducerRole(serviceID string) string {
+	serviceID = strings.TrimSpace(serviceID)
+	if serviceID == "" || len(c.ServiceTokens) == 0 {
+		return ""
+	}
+	if _, ok := c.ServiceTokens[serviceID]; !ok {
+		return ""
+	}
+	if role := strings.TrimSpace(c.ServiceRoles[serviceID]); role != "" {
+		return role
+	}
+	return "queue_producer"
+}
+
+// serviceIDPattern is deliberately narrow: ids appear in headers/audit.
+var serviceIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}$`)
+
+// parseServiceRegistry parses TOUCH_SERVICE_TOKENS="id:token;..." and
+// TOUCH_SERVICE_ROLES="id:role;...". It never returns a partially valid entry:
+// malformed pairs or duplicate ids are reported via the error list (Gate
+// fail-closed) and the offending entry is NOT registered. Token values are
+// returned in-memory only and never logged.
+func parseServiceRegistry(tokensRaw, rolesRaw string) (map[string]string, map[string]string, []string) {
+	var problems []string
+	tokens := map[string]string{}
+	roles := map[string]string{}
+	parse := func(raw, envName string, target map[string]string) {
+		for _, item := range strings.Split(raw, ";") {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+			parts := strings.SplitN(item, ":", 2)
+			if len(parts) != 2 {
+				problems = append(problems, envName+" entry must be service-id:value ("+envName+" is misconfigured)")
+				continue
+			}
+			id := strings.TrimSpace(parts[0])
+			value := strings.TrimSpace(parts[1])
+			if !serviceIDPattern.MatchString(id) || value == "" {
+				problems = append(problems, envName+" has an invalid service id or empty value ("+envName+" is misconfigured)")
+				continue
+			}
+			if _, dup := target[id]; dup {
+				problems = append(problems, envName+" has a duplicate service id ("+envName+" is misconfigured)")
+				continue
+			}
+			target[id] = value
+		}
+	}
+	parse(tokensRaw, "TOUCH_SERVICE_TOKENS", tokens)
+	parse(rolesRaw, "TOUCH_SERVICE_ROLES", roles)
+	// A role for an unregistered service is a config error (typo protection).
+	for id := range roles {
+		if _, ok := tokens[id]; !ok {
+			problems = append(problems, "TOUCH_SERVICE_ROLES names an unregistered service id (registry is misconfigured)")
+			delete(roles, id)
+		}
+	}
+	if len(problems) > 0 {
+		// Fail closed: a registry with any problem must not authenticate anyone.
+		return nil, nil, problems
+	}
+	if len(tokens) == 0 {
+		// Also fail closed if roles were provided without tokens.
+		if len(roles) > 0 {
+			return nil, nil, []string{"TOUCH_SERVICE_ROLES requires TOUCH_SERVICE_TOKENS"}
+		}
+		return nil, nil, nil
+	}
+	return tokens, roles, nil
 }
 
 func firstNonEmpty(vals ...string) string {
