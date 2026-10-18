@@ -1,0 +1,64 @@
+{
+  "contract_version": "mx-ops-c0/v1",
+  "object_kind": "execution_grant",
+  "grant_id": "egr_0123456789abcdef0123456789abcdef",
+  "grant_version": 1,
+  "issuer": {
+    "service": "modelxing",
+    "contract_version": "modelxing-catalog/v1"
+  },
+  "subject": {
+    "tenant_id": "tenant-a",
+    "app_id": "goboost",
+    "user_id": "usr_0123456789abcdef",
+    "payer_account_id": "acct_0123456789abcdef",
+    "payer_user_id": null
+  },
+  "entitlement": {
+    "entitlement_ref": "ent_paid_v1",
+    "kind": "paid",
+    "max_charge_minor": 500,
+    "currency": "CNY"
+  },
+  "cost_bearing": {
+    "payer_kind": "user",
+    "payer_ref": "payer_a"
+  },
+  "meter_only": true,
+  "cost_authorization": {
+    "authorization_ref": "authz_0123456789abcdef",
+    "amount_minor": 500,
+    "currency": "CNY",
+    "account_id": "acct_0123456789abcdef",
+    "expires_at_unix": 1780003600
+  },
+  "policy_ref": {
+    "policy_id": "pol_paid-elastic",
+    "policy_version": 7
+  },
+  "price_ref": {
+    "price_publication_ref": "pub_0123456789abcdef0123456789abcdef",
+    "pricing_version": "test-scenario-v1",
+    "quoted_amount_minor": 300,
+    "quote_expires_at_unix": 1780000600
+  },
+  "input_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "validity": {
+    "issued_at_unix": 1780000000,
+    "not_before_unix": null,
+    "expires_at_unix": 1780001800,
+    "revoked_at_unix": null
+  },
+  "idempotency": {
+    "key": "req-abc",
+    "logical_request_id": "lr_0123456789abcdef",
+    "scope": [
+      "tenant_id",
+      "app_id",
+      "user_id",
+      "payer_account_id"
+    ]
+  },
+  "verification_profile": "mx-ops-c0/v1",
+  "digest": "sha256:36e32cf49f5d23b32f2082dc061ff301a708e7e759bef54d81a0f61d9a36cb83"
+}

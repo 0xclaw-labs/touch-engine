@@ -1,0 +1,56 @@
+{
+  "contract_version": "mx-ops-c0/v1",
+  "object_kind": "execution_policy",
+  "policy_id": "pol_free-idle",
+  "policy_version": 7,
+  "policy_scope": {
+    "level": "user",
+    "tenant_id": null,
+    "project_id": null,
+    "app_id": null,
+    "user_id": "usr_0123456789abcdef",
+    "model_id": null,
+    "pool_ref": null
+  },
+  "template": "free_idle",
+  "applicable": {
+    "capabilities": [
+      "video.generate"
+    ],
+    "model_ids": [
+      "minimax-h3"
+    ],
+    "pool_refs": [
+      "compute://h3-fast-v1"
+    ]
+  },
+  "time_window": null,
+  "dispatch": {
+    "allow_create": false,
+    "allow_resume": false,
+    "allow_warm_keepalive": false,
+    "max_starting": null
+  },
+  "compute_permission": {
+    "allowed_pool_refs": [
+      "compute://h3-fast-v1"
+    ],
+    "allow_borrow_idle": true,
+    "max_borrow_workers": 1
+  },
+  "cost_bearing": {
+    "payer": "platform_subsidy",
+    "entitlement_ref": "ent_subsidy_v1"
+  },
+  "service_level": {
+    "tier": "batch",
+    "weight": 10
+  },
+  "conflict": {
+    "mode": "intersect",
+    "on_conflict": "reject"
+  },
+  "enabled": true,
+  "published_at_unix": 1780000000,
+  "digest": "sha256:cbaf95962e504c96b2c397a8d7d2b80437c2793a302ff07e44ff6d789104f49b"
+}
