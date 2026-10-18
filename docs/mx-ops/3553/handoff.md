@@ -6,6 +6,7 @@
 - Base: `a2a2ac5`（origin/main）
 - Head: 本分支最新 commit（PR 记录）
 - Worktree: `.worktrees/mx-ops-3553-touch-engine`
+- PR: [#65](https://github.com/0xclaw-labs/touch-engine/pull/65)（OPEN，不合并/不部署）
 - Contract: `mx-ops-c0/v1 @ 6ffc90ca`（记录见 `docs/mx-ops/3553/contract-version.md`；无 additive 需求）
 
 ## Scope done（逐条对工单 2026-10-18 MX-OPS 增量）
