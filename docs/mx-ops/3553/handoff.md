@@ -28,8 +28,9 @@
 
 ## Code review
 
-- Standards: 待补（分支收尾前执行）。
-- Spec: 待补。
+- Standards: PASS（gofmt 干净；沿用仓内 `tk-*`/source-contract 测试惯例；合同类型为原样副本，无双份语义）。
+  Judgement notes：①三仓同形内核是有意的独立部署副本，不抽共享包（避免新增发布物）；②queue-view 同步接缝当前走 session+manage 权限，真实接线应改为受信服务身份（已列 UNKNOWN/偏差）；③旧 `queue` 仅保留读取器，不改变冻结语义。
+- Spec: PASS（对照工单 2026-10-18 增量逐条：偏好/队列/ETA/夜间窗口/费用/候选/顾客零生成均有实现与测试）；缺口如实列 UNKNOWN：真实投影未接、夜间执行/账务未跑、touch 创建侧偏好 UI 仍受制作引擎未接通限制。
 
 ## Blocked / UNKNOWN
 
