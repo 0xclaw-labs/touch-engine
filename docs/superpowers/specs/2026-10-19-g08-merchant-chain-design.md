@@ -3,7 +3,7 @@
 - 日期：2026-10-19
 - 组/票：G08 / HUI-1702（product-image-engine）、HUI-2747（leads-engine）、HUI-3553（touch-engine）
 - 合同：`mx-ops-c0/v1 @ 6ffc90ca`（旧 45b32f4b；errata 只影响 config-command-response 消费方，本组不消费该对象）
-- 状态：设计已提交，待 Lead 批准计划后实现。真实模型/GPU/账务/生产调用不在本设计内。
+- 状态：已实现并交付 PR（设计/计划发出后 Lead 未显式回 PLAN APPROVED；按 DECISIONS D16「20 分钟默认继续」执行，Lead-delegated default）。真实模型/GPU/账务/生产调用不在本设计内。
 
 ## 1. 意图与边界
 
