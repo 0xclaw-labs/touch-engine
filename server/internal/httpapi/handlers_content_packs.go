@@ -512,9 +512,28 @@ func (s *Server) handleContentHandoffList(w http.ResponseWriter, r *http.Request
 // contract validation; the PUBLIC projection (internal_debug stripped) is all
 // that is stored/exposed. Clients cannot write internal fields directly.
 func (s *Server) handleContentHandoffQueueView(w http.ResponseWriter, r *http.Request) {
-	c := callerFrom(r)
-	if !s.packTenantAction(c, authz.ActionManageContentPacks, w) {
-		return
+	// HUI-3553 W5 dual auth: the service producer path (verified in
+	// requireServiceProducer) resolves the tenant from the handoff ROW — never
+	// from X-Tenant-ID — and skips the session/manage gate. The legacy session
+	// path keeps its exact authorisation and error behaviour.
+	producer := serviceProducerFrom(r.Context())
+	handoffID := r.PathValue("handoffId")
+	var tenantID string
+	if producer != nil {
+		h, err := s.St.GetContentHandoffByID(handoffID)
+		if err != nil {
+			// Unknown id is a uniform 404; no cross-tenant existence leak.
+			s.auditQueueViewProducer(producer, handoffID, "", "", "rejected", "handoff_not_found")
+			packStoreFail(w, err)
+			return
+		}
+		tenantID = h.TenantID
+	} else {
+		c := callerFrom(r)
+		if !s.packTenantAction(c, authz.ActionManageContentPacks, w) {
+			return
+		}
+		tenantID = c.Member.TenantID
 	}
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
 	if err != nil {
@@ -524,6 +543,9 @@ func (s *Server) handleContentHandoffQueueView(w http.ResponseWriter, r *http.Re
 	view, err := mxopsview.Parse(raw)
 	if err != nil {
 		// Strict contract rejection: never partially default a queue view.
+		if producer != nil {
+			s.auditQueueViewProducer(producer, handoffID, tenantID, "", "rejected", "invalid_queue_view")
+		}
 		fail(w, http.StatusUnprocessableEntity, "mx_ops_c0_invalid_queue_view", "queue view does not match mx-ops-c0/v1")
 		return
 	}
@@ -532,16 +554,37 @@ func (s *Server) handleContentHandoffQueueView(w http.ResponseWriter, r *http.Re
 		fail(w, http.StatusInternalServerError, "internal", "queue view projection failed")
 		return
 	}
-	h, err := s.St.UpdateContentHandoffQueueView(c.Member.TenantID, r.PathValue("handoffId"), view.JobRef, public)
+	h, err := s.St.UpdateContentHandoffQueueView(tenantID, handoffID, view.JobRef, public)
 	if err != nil {
+		if producer != nil {
+			s.auditQueueViewProducer(producer, handoffID, tenantID, view.JobRef, "rejected", "store_write_failed")
+		}
 		packStoreFail(w, err)
 		return
+	}
+	if producer != nil {
+		s.auditQueueViewProducer(producer, handoffID, tenantID, h.JobRef, "ok", "")
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"handoff_id":     h.ID,
 		"job_ref":        h.JobRef,
 		"job_queue_view": h.JobQueueView,
 	})
+}
+
+// auditQueueViewProducer records the trusted-service write (HUI-3553 W5).
+// It logs only non-secret facts: service id, handoff id, resolved tenant, job
+// ref and result. The service token and request body never enter the log.
+func (s *Server) auditQueueViewProducer(producer *serviceProducer, handoffID, tenantID, jobRef, result, reason string) {
+	if s == nil || s.Log == nil || producer == nil {
+		return
+	}
+	line := "mx_ops_queue_view_producer service=" + producer.ServiceID +
+		" handoff=" + handoffID + " tenant=" + tenantID + " job_ref=" + jobRef + " result=" + result
+	if reason != "" {
+		line += " reason=" + reason
+	}
+	s.Log.Print(line)
 }
 
 // ---- controlled media handoff (受控下载 URL,供 HUI-1670 消费) ---------------------------
