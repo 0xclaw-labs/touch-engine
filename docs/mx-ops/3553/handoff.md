@@ -36,7 +36,10 @@
 ## Blocked / UNKNOWN
 
 1. 真实星模 `job_queue_view` 投影未接：当前由 `POST .../queue-view` 显式同步接缝接收（fixture/未来上游 push），未连通真实运行时 → `UNKNOWN（未授权实机窗口）`。
-2. 同步接缝当前挂在 session + `manage_content_packs` 权限下（沿用仓内既有实现）；合同语义上队列投影应由受信运行时/服务身份推送。真实接线时应改为 internal 服务身份，并补「生产者身份」校验 → 列为已知偏差，不影响本票 fixture 验收，但真实集成前必须收口。
+2. 同步接缝受信服务身份：**已收口（W5，2026-10-19）**。新增 `requireServiceProducer` 双 auth：
+   受信服务用 `X-Service-ID`+per-service `X-Service-Token`（`TOUCH_SERVICE_TOKENS` registry）写 queue-view，
+   无需 session/共享 internal token/`X-Tenant-ID`；tenant 从 handoff 行反查；旧 session+`manage_content_packs`
+   路径保留且字节/状态码不变（双 auth 过渡）。真实 Runtime 推送仍 UNKNOWN（3836 窗口）。
 3. 真实夜间窗口执行/GPU 排队/回流：`NOT_RUN`；fixture 全链路通过不等于生产通过。
 4. 真实费用（商家工具费/活动预算/模型成本）：未接账务，UI 显示 `未提供`；`NOT_RUN`。
 5. 并发写者事件：实现期间同 worktree 出现非本代理写入的服务端文件（00:50–00:51），随后又出现/回滚未提交的 A6 文件（00:53–00:54）。当前 HEAD 内代码已由本代理复核、测试通过；若另有 G08-3553 执行者，请 Lead 协调，避免再次覆盖。
@@ -49,3 +52,40 @@
 ## Linear receipt
 
 Lead 统一回报；本代理不写 Linear。
+
+---
+
+## W5 收口：queue-view 受信服务生产身份（2026-10-19）
+
+- 分支：`mx-ops/3553-trusted-identity`（base `origin/main ea11bd3`，含 #65）；worktree `.worktrees/mx-ops-touch-identity`
+- 合同：`mx-ops-c0/v1 @ 6ffc90ca`；**无 DB 迁移/无新表/无新服务端口**；`order-receipt/v1`/公共 API 零改动
+- 改动：
+  - `server/internal/config`：`TOUCH_SERVICE_TOKENS`/`TOUCH_SERVICE_ROLES` per-service registry（默认空=nil）；
+    坏项/重复 id/未登记服务角色 → `Gate()` problem，registry 整体 fail-closed 不部分生效；token 只存内存。
+  - `server/internal/httpapi/server.go`：`requireServiceProducer` 中间件（`X-Service-ID`+`X-Service-Token`，
+    `subtle.ConstantTimeCompare`，`queue_producer` 角色；无服务头精确委托旧 `requireSession`；
+    服务路径优先；服务 token 不进日志/错误体）；queue-view 路由切换到该中间件。
+  - `handlers_content_packs.go`：handler 双路径分叉——服务生产身份用 store 按 id 反查行拿 tenant（忽略 `X-Tenant-ID`），
+    写入仍走 `mxopsview.Parse` + `PublicJSON()` 严格校验/64KiB；旧 session 路径原样；结构化审计
+    `mx_ops_queue_view_producer service/handoff/tenant/job_ref/result`（无 token/body）。
+  - `server/internal/store`：新增 `GetContentHandoffByID`（无租户过滤，调用方必须用返回行 tenant；未知=ErrNotFound）。
+  - 运维：`docs/mx-ops/3553/README.md`（env/headers/状态码/轮换/回滚/0600 纪律）。
+- 测试实际输出（2026-10-19，同一 head 内容）：
+```
+$ cd server && go build ./...                                                    => BUILD=0
+$ cd server && go vet ./...                                                      => VET=0
+$ cd server && go test -count=1 ./internal/config/ ./internal/store/ ./internal/httpapi/ ./internal/mxopsview/
+  ok  internal/config      0.294s
+  ok  internal/store       75.163s
+  ok  internal/httpapi     98.767s
+  ok  internal/mxopsview   0.713s
+  => TEST=0
+```
+  新增测试：config 3（registry 解析/默认关闭/坏项 fail-closed）、store 1（ByID found/404）、
+  httpapi 11（中间件：服务路径/优先级/拒绝矩阵×5/旧路径精确委托；端到端：写入/租户头忽略/
+  未知 404/坏合同+超限 parity/无 registry 503/审计）。
+- 旧路径回归：既有 `TestContentHandoffMXOpsSeam`/`TestContentHandoffQueueViewRejectsBadContract`
+  等全部保持；显式断言旧响应键集合与 `job_queue_view` 投影与服务路径逐键相等。
+- UNKNOWN：①真实星模 Runtime 推送 = HUI-3836 授权窗口（未接）；②真实 ETA/队列语义未联调；
+  ③真实跨应用交接/账务不在本项；④生产部署/轮换演练未执行（runbook 已备）。
+- 并发/过程注记：本项为 W5 独立收口，工作树无其他写者；PR-only 不 merge/deploy。
