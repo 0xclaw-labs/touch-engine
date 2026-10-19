@@ -786,6 +786,20 @@ func (s *Store) GetContentHandoff(tenantID, handoffID string) (ContentHandoff, e
 	return h, err
 }
 
+// GetContentHandoffByID returns one handoff WITHOUT tenant scoping (HUI-3553
+// W5 trusted-service producer seam). Callers MUST be trusted service producers
+// and MUST use the returned row's TenantID for any write — the row is the only
+// tenant truth, request headers are never trusted. Unknown id -> ErrNotFound
+// (uniform, no existence leak).
+func (s *Store) GetContentHandoffByID(handoffID string) (ContentHandoff, error) {
+	h, err := scanHandoff(s.DB.QueryRow(
+		`SELECT `+handoffCols+` FROM content_handoffs WHERE id=?`, handoffID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ContentHandoff{}, ErrNotFound
+	}
+	return h, err
+}
+
 // UpdateContentHandoffQueueView stores the PUBLIC projection of a contract
 // job_queue_view (internal_debug already stripped by the caller). It never
 // reads or rewrites other handoff fields, and cross-tenant ids are ErrNotFound.

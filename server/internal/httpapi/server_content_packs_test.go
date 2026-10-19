@@ -47,6 +47,14 @@ type contentPackFixture struct {
 }
 
 func newContentPackFixture(t *testing.T, packsPublicOn bool) *contentPackFixture {
+	return newContentPackFixtureWith(t, packsPublicOn, "", "", nil)
+}
+
+// newContentPackFixtureWith is the HUI-3553 W5 variant: it injects the trusted
+// service registry (TOUCH_SERVICE_TOKENS/ROLES) and an optional log sink so the
+// producer seam can be exercised end-to-end without the admin session.
+func newContentPackFixtureWith(t *testing.T, packsPublicOn bool, serviceTokens, serviceRoles string, logSink io.Writer) *contentPackFixture {
+	t.Helper()
 	flag := func(on bool) string {
 		if on {
 			return "on"
@@ -65,6 +73,10 @@ func newContentPackFixture(t *testing.T, packsPublicOn bool) *contentPackFixture
 			return "on"
 		case "FEATURE_CONTENT_PACKS":
 			return flag(packsPublicOn)
+		case "TOUCH_SERVICE_TOKENS":
+			return serviceTokens
+		case "TOUCH_SERVICE_ROLES":
+			return serviceRoles
 		}
 		return ""
 	})
@@ -112,7 +124,11 @@ func newContentPackFixture(t *testing.T, packsPublicOn bool) *contentPackFixture
 	})
 	idc := &identity.Client{BaseURL: idsrv.URL, Token: "identity-token", AppID: "touch-engine", HTTP: idsrv.Client()}
 
-	s := New(cfg, d, idc, &upload.Client{}, log.New(io.Discard, "", 0))
+	sink := logSink
+	if sink == nil {
+		sink = io.Discard
+	}
+	s := New(cfg, d, idc, &upload.Client{}, log.New(sink, "", 0))
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	return &contentPackFixture{s: s, ts: ts, tenA: tenA.ID, tenB: tenB.ID, campA: cA.ID, linkCode: link.Code}

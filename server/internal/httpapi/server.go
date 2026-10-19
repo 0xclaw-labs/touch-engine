@@ -18,6 +18,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -46,6 +47,13 @@ import (
 
 const internalTokenHeader = "X-Internal-Token"
 const tenantHeader = "X-Tenant-ID"
+
+// HUI-3553 W5: trusted service producer headers (queue-view seam). The token is
+// the service's OWN credential from TOUCH_SERVICE_TOKENS — never the shared
+// BFF internal token.
+const serviceIDHeader = "X-Service-ID"
+const serviceTokenHeader = "X-Service-Token"
+const serviceProducerRoleQueue = "queue_producer"
 
 // Server is the API server.
 type Server struct {
@@ -251,6 +259,24 @@ type ctxKey int
 
 const callerKey ctxKey = 1
 
+// serviceProducerKey carries the verified trusted-service identity on the
+// queue-view producer path (no session/member exists there).
+const serviceProducerKey ctxKey = 3
+
+// serviceProducer is the verified service producer identity.
+type serviceProducer struct {
+	ServiceID string
+}
+
+// serviceProducerFrom returns the verified producer, or nil on the legacy
+// session path.
+func serviceProducerFrom(ctx context.Context) *serviceProducer {
+	if v, ok := ctx.Value(serviceProducerKey).(*serviceProducer); ok {
+		return v
+	}
+	return nil
+}
+
 func callerFrom(r *http.Request) *caller {
 	if v, ok := r.Context().Value(callerKey).(*caller); ok {
 		return v
@@ -344,7 +370,9 @@ func (s *Server) Handler() http.Handler {
 	// MX-OPS R2 (HUI-3553): restore list + trusted queue-view sync seam. The
 	// queue view is contract-validated and stored as the PUBLIC projection only.
 	mux.Handle("GET /api/v1/campaigns/{id}/content-handoffs", s.requireSession(s.handleContentHandoffList))
-	mux.Handle("POST /api/v1/content-handoffs/{handoffId}/queue-view", s.requireSession(s.handleContentHandoffQueueView))
+	// HUI-3553 W5: dual auth — trusted service producer (per-service token,
+	// tenant from the handoff row) OR legacy session+manage (unchanged).
+	mux.Handle("POST /api/v1/content-handoffs/{handoffId}/queue-view", s.requireServiceProducer(s.handleContentHandoffQueueView))
 	mux.Handle("POST /api/v1/content-pack-versions/{versionId}/media-handoff", s.requireSession(s.handleMediaHandoffMint))
 	mux.Handle("GET /api/v1/media-handoffs/{token}", s.requireSession(s.handleMediaHandoffRedeem))
 
@@ -694,6 +722,67 @@ func (s *Server) requireInternal(next http.HandlerFunc) http.Handler {
 // alternate or stub mode.
 func (s *Server) requireSession(next http.HandlerFunc) http.Handler {
 	return s.requireIdentity(next, true)
+}
+
+// requireServiceProducer gates the queue-view producer seam with DUAL AUTH
+// (HUI-3553 W5):
+//
+//   - request carries X-Service-ID -> trusted service producer path: per-service
+//     token from TOUCH_SERVICE_TOKENS (constant-time compare) + queue_producer
+//     role; NO session, NO shared internal token, NO X-Tenant-ID (tenant is
+//     resolved from the handoff row by the handler). Empty/misconfigured
+//     registry fails closed (503). Service path takes priority when both
+//     service and session credentials are present.
+//   - no X-Service-ID -> delegate to the legacy requireSession path with its
+//     exact behaviour (internal token -> config gate -> session -> tenant
+//     member -> manage_content_packs).
+func (s *Server) requireServiceProducer(next http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serviceID := strings.TrimSpace(r.Header.Get(serviceIDHeader))
+		if serviceID == "" {
+			// Dual auth transition: old callers keep the old path byte-for-byte.
+			s.requireSession(next).ServeHTTP(w, r)
+			return
+		}
+		if len(s.Cfg.ServiceTokens) == 0 {
+			s.auditServiceProducer("unavailable", serviceID, "registry_not_configured")
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"error":   "service_producer_unavailable",
+				"message": "trusted service producer registry is not configured; refusing to act (fail-closed)",
+			})
+			return
+		}
+		want, registered := s.Cfg.ServiceTokens[serviceID]
+		got := strings.TrimSpace(r.Header.Get(serviceTokenHeader))
+		if !registered || subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+			// Uniform refusal: never disclose whether the service id exists.
+			s.auditServiceProducer("rejected", serviceID, "bad_service_identity")
+			fail(w, http.StatusUnauthorized, "unauthorized", "missing or wrong service identity")
+			return
+		}
+		if s.Cfg.ServiceProducerRole(serviceID) != serviceProducerRoleQueue {
+			s.auditServiceProducer("rejected", serviceID, "role_not_queue_producer")
+			fail(w, http.StatusForbidden, "forbidden", "service identity lacks the queue_producer role")
+			return
+		}
+		s.auditServiceProducer("accepted", serviceID, "")
+		ctx := context.WithValue(r.Context(), serviceProducerKey, &serviceProducer{ServiceID: serviceID})
+		next(w, r.WithContext(ctx))
+	})
+}
+
+// auditServiceProducer logs the trusted-service auth decision. It never logs
+// the service token or request body; the service id appears only because it is
+// the caller's declared identity (not a secret).
+func (s *Server) auditServiceProducer(result, serviceID, reason string) {
+	if s == nil || s.Log == nil {
+		return
+	}
+	if reason != "" {
+		s.Log.Printf("mx_ops_queue_view_producer_auth service=%s result=%s reason=%s", serviceID, result, reason)
+		return
+	}
+	s.Log.Printf("mx_ops_queue_view_producer_auth service=%s result=%s", serviceID, result)
 }
 
 // requirePrincipal resolves the platform session without a hand-filled tenant.
