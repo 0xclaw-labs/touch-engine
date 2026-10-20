@@ -165,7 +165,29 @@ identity stub 不是 public-ai 生产实现；它只验证本仓 BFF/Go/校验�
 - Go：短码碰撞重试/耗尽、public capabilities、无门店参与 422、内容快照 `version_id` 409、shell launch 合同/拒绝不安全 URL、EcoNav switch 会话/非法 target/无配置。
 - e2e：`12-campaign-creation`、`13-public-content`、`14-eco-nav-switch`。
 
-## 7. NOT_VERIFIED（明确边界）
+## 7. 合并后复验（mb/eco-20261021）
+
+在集成 checkout `/Volumes/MacintoshHD/派诺生态/repos/touch-engine`（分支 `mb/eco-20261021`，
+merge commit `ca71123`，与 feature tree 逐字节相同）重跑：
+
+```text
+$ GOWORK=off go test ./... -count=1
+EXIT:0 / 39 packages ok / 0 FAIL
+
+$ npx vitest run
+Test Files 76 passed (76); Tests 719 passed (719); exit 0
+
+$ npm run build
+exit 0（static/dynamic 路由生成成功）
+
+$ node scripts/contrast-gate.mjs
+checked 138, failed 0
+```
+
+合并方式：`git merge --no-ff eco/hui-2628-touch-shell`；`git diff eco/hui-2628-touch-shell..HEAD` 为空。
+代码复验后集成 checkout 已清掉 node_modules 符号链接与 `.next`，并切回 `main`；本轮 worktree 保留。
+
+## 8. NOT_VERIFIED（明确边界）
 
 1. **public-ai eco-nav 生产端点未挂载/未配置**：本机没有 producer 端点，登录后实测为 blocked（不渲染顶栏）。`EcoTopNav` 真实模型渲染只有契约单测，没有真实 BFF→public-ai 的端到端运行。阻塞步骤：`GET PUBLIC_AI_ECO_NAV_URL`。
 2. **真实 shell/launch 未运行**：应用切换只对 identity stub 验证；真实 public-ai `POST /internal/v1/identity/shell/launch`、一次性 code 消费、目标 app 的 SSO 落地均为 NOT_VERIFIED。
