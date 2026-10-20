@@ -28,6 +28,8 @@ export interface ActivityIntroProps {
   canStart: boolean;
   /** 库存确认用尽(0)→按钮停用并给恢复动作。 */
   stockExhausted: boolean;
+  /** 在线参与未开通时的真实原因;空=不展示。 */
+  closedReason?: string;
   onParticipationStart?: () => void;
 }
 
@@ -37,6 +39,7 @@ export function ActivityIntro({
   benefitReservationState,
   canStart,
   stockExhausted,
+  closedReason,
   onParticipationStart,
 }: ActivityIntroProps) {
   const stock = stockLine(availableQty);
@@ -65,14 +68,14 @@ export function ActivityIntro({
       <p className="tk-note">领取条件:店员确认完成后由门店发放。发放前不会先展示券码。</p>
 
       {stockExhausted ? (
-        <p className="tk-warn" data-testid="activity-stock-exhausted">{exceptionCopy("reward_exhausted")}</p>
+        <p className="tk-warn" data-testid="activity-stock-exhausted" data-state="limit_reached">{exceptionCopy("reward_exhausted")}</p>
       ) : canStart && onParticipationStart ? (
         <button type="button" className="tk-primary" data-testid="activity-start" onClick={onParticipationStart}>
           选择内容并参与
         </button>
       ) : (
         <p className="tk-note" data-testid="activity-start-closed">
-          这家店暂时不能在线开始参与。可以按门店现场说明参与，或请店员协助。
+          {closedReason || "这家店暂时不能在线开始参与。可以按门店现场说明参与，或请店员协助。"}
         </p>
       )}
     </section>

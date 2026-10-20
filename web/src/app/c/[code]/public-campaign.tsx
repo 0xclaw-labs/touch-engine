@@ -56,6 +56,7 @@ import {
   type CustomerParticipation,
 } from "@/lib/customer-journey";
 import { publicVisitorCopy } from "@/lib/account-separation";
+import { formatCampaignWindow } from "@/lib/public-time";
 import { LEAD_REVOKED_COPY, leadOutcomeState } from "@/lib/lead-outcome";
 import {
   authorizedReturnHref,
@@ -71,6 +72,12 @@ import {
 
 interface PublicView {
   state: string;
+  capabilities?: {
+    participation?: boolean;
+    content_packs?: boolean;
+    reward_ops?: boolean;
+    leads_capture?: boolean;
+  };
   title?: string;
   public_content?: string;
   starts_at?: string;
@@ -205,15 +212,17 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
   // 不是错误,不打扰浏览)。网络失败保持静默浏览面,可稍后重试。
   useEffect(() => {
     if (!code || uiState !== "available" || lane !== "activity" || lookupSent.current) return;
+    if (view?.capabilities?.participation !== true) return;
     lookupSent.current = true;
     lookupParticipation(code).then((result) => {
       if (result && !("error" in result)) setParticipation(result);
     });
-  }, [code, lane, uiState]);
+  }, [code, lane, uiState, view?.capabilities?.participation]);
 
   // 1671 公共奖励面:off/不可达 → null(屏1 不显示编造库存,屏3 只留条件说明)。
   useEffect(() => {
     if (!code || uiState !== "available" || lane !== "activity") return;
+    if (view?.capabilities?.reward_ops !== true) return;
     let alive = true;
     fetch(`/api/public/links/${encodeURIComponent(code)}/reward-summary`)
       .then(async (res) => {
@@ -225,7 +234,7 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
     return () => {
       alive = false;
     };
-  }, [code, lane, uiState]);
+  }, [code, lane, uiState, view?.capabilities?.reward_ops]);
 
   useEffect(() => {
     if (!code || uiState !== "available") return;
@@ -279,11 +288,32 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
     }
   }, []);
 
+  const canParticipate = view?.capabilities?.participation === true;
+  const canReadContent = view?.capabilities?.content_packs === true;
+
   const handleParticipationStart = useCallback(async () => {
     if (!code || participationBusy) return;
+    if (view?.capabilities?.participation !== true) {
+      setParticipationNote("这家店还没有开放在线参与。可以按门店现场说明参与，或请店员协助。");
+      return;
+    }
     setParticipationBusy(true);
     setParticipationNote("");
-    const result = await startParticipation(code, participation?.content_pack_version ?? "");
+    // HUI-2628: pin the merchant-adopted version at the moment participation
+    // starts. Without this the participation row carried "", and the content
+    // panel silently fell back to whatever was current later.
+    let version = participation?.content_pack_version ?? "";
+    if (!version && canReadContent) {
+      try {
+        const res = await fetch(`/api/public/links/${encodeURIComponent(code)}/content-choices`);
+        const data = await res.json().catch(() => null);
+        const items = Array.isArray(data?.items) ? data.items : [];
+        version = typeof items[0]?.version_id === "string" ? items[0].version_id : "";
+      } catch {
+        version = "";
+      }
+    }
+    const result = await startParticipation(code, version);
     if (result && !("error" in result)) {
       setParticipation(result);
       await refreshDetail(result.id ?? "");
@@ -293,7 +323,7 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
       setParticipationNote("网络没有给出明确结果。先当作还没开始；稍后重试即可。");
     }
     setParticipationBusy(false);
-  }, [code, participation, participationBusy, refreshDetail]);
+  }, [canReadContent, code, participation, participationBusy, refreshDetail, view?.capabilities?.participation]);
 
   const handleSwitchVersion = useCallback(async (versionId: string) => {
     if (!participation?.id || participationBusy) return;
@@ -504,9 +534,7 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
         <p className="tk-public-value">{view?.public_content || "请按门店现场说明参与这次活动。"}</p>
         <p className="tk-note">碰一下、扫码或看视频只是打开这个活动，不会自动留下联系方式。</p>
         {(view?.starts_at || view?.ends_at) && (
-          <p className="tk-note">
-            活动时间:{view?.starts_at || "即日起"} ~ {view?.ends_at || "长期"}
-          </p>
+          <p className="tk-note">活动时间:{formatCampaignWindow(view?.starts_at, view?.ends_at)}</p>
         )}
         {storeNoticeText(view?.store_notice) && (
           <p className="tk-warn">{storeNoticeText(view?.store_notice)}</p>
@@ -520,22 +548,36 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
           evidenceKinds={evidenceKinds}
           availableQty={stockQty}
           benefitReservationState={participation?.benefit_reservation_state}
-          canStart={!participationOpen}
-          stockExhausted={stockQty === 0}
+          canStart={canParticipate && !participationOpen}
+          stockExhausted={canParticipate && stockQty === 0}
+          closedReason={
+            canParticipate
+              ? participationOpen
+                ? "你已经开始参与。往下看内容与发布。"
+                : undefined
+              : "这家店还没有开放在线参与。可以按门店现场说明参与，或请店员协助。"
+          }
           onParticipationStart={handleParticipationStart}
         />
         {participationNote && <p className="tk-note" data-testid="participation-note">{participationNote}</p>}
         {participationOpen && (
           <div data-testid="customer-journey" className="tk-gap">
-            {/* 屏2:内容与发布 */}
-            <ContentPublish
-              code={code}
-              selectedVersion={participation?.content_pack_version}
-              canSwitch={switchable}
-              onSwitchVersion={handleSwitchVersion}
-            />
+            {/* 屏2:内容与发布(内容包未开通时不请求、不展示死区块) */}
+            {canReadContent ? (
+              <ContentPublish
+                code={code}
+                selectedVersion={participation?.content_pack_version}
+                canSwitch={switchable}
+                onSwitchVersion={handleSwitchVersion}
+              />
+            ) : (
+              <section className="tk-section" data-testid="content-unavailable">
+                <h2 className="tk-section-title">内容与发布</h2>
+                <p className="tk-note">这家店还没有开放在线内容。可以按门店现场说明参与，或请店员协助。</p>
+              </section>
+            )}
             {/* 1670 交接组件(自足;挂载基线保留) */}
-            <PublishHandoff code={code} />
+            {canParticipate ? <PublishHandoff code={code} /> : null}
             {/* 屏3:领取或请店员确认 */}
             <RewardStatus code={code} participation={participation} />
             {stage !== "awaiting_review" && stage !== "publishing" && (
@@ -664,7 +706,7 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
   const visitorNote = publicVisitorCopy({ action: submitted ? "lead" : "browse" });
 
   return (
-    <main data-testid="public-activity" data-columns={columns} data-viewport={width} data-state={state} data-lane={lane} className="tk-public">
+    <main data-testid="public-activity" data-pattern="public_consumer" data-columns={columns} data-viewport={width} data-state={state} data-lane={lane} className="tk-public">
       <div className="tk-public-card">
         {state !== "available" && (
           <div data-testid="degraded-state">

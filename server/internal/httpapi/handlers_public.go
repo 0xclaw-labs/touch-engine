@@ -36,7 +36,7 @@ type publicLinkView struct {
 	BrandShell   *publicBrandShell `json:"brand_shell,omitempty"`
 	// Capabilities are configuration facts the guest page may rely on. They are
 	// booleans only: no endpoint, tenant, or internal flag value is disclosed.
-	Capabilities publicCapabilities `json:"capabilities"`
+	Capabilities *publicCapabilities `json:"capabilities,omitempty"`
 }
 
 // publicCapabilities mirrors the registration gates. A false value means the
@@ -49,8 +49,8 @@ type publicCapabilities struct {
 	LeadsCapture  bool `json:"leads_capture"`
 }
 
-func (s *Server) publicCapabilities() publicCapabilities {
-	return publicCapabilities{
+func (s *Server) publicCapabilities() *publicCapabilities {
+	return &publicCapabilities{
 		Participation: s.Cfg.FeatureParticipation,
 		ContentPacks:  s.Cfg.FeatureContentPacks,
 		RewardOps:     s.Cfg.FeatureRewardOps,
@@ -122,8 +122,12 @@ func (s *Server) handlePublicLink(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	view := publicLinkView{State: string(res.Outcome), Capabilities: s.publicCapabilities()}
+	view := publicLinkView{State: string(res.Outcome)}
 	if res.Outcome == store.OutcomeAvailable {
+		view.Capabilities = s.publicCapabilities()
+		// A store-less campaign cannot create a participation row; do not offer
+		// a primary action that would end in a server error.
+		view.Capabilities.Participation = view.Capabilities.Participation && strings.TrimSpace(res.Campaign.StoreID) != ""
 		view.Title = res.Campaign.Title
 		view.PublicContent = res.Campaign.PublicContent
 		view.StartsAt = res.Campaign.StartsAt

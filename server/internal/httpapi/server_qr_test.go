@@ -302,7 +302,7 @@ func TestForgedParamsStayGuests(t *testing.T) {
 	}
 	for key := range view {
 		switch key {
-		case "state", "title", "public_content", "starts_at", "ends_at", "merchant_name", "store_name", "store_notice":
+		case "state", "title", "public_content", "starts_at", "ends_at", "merchant_name", "store_name", "store_notice", "capabilities":
 		default:
 			t.Fatalf("forged params derived extra field %q: %v", key, view)
 		}

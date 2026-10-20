@@ -154,6 +154,28 @@ const EXCEPTION_COPY: Record<string, string> = {
   bad_code: "这个码无法识别或已过期。请核对二维码/标签，或请店员重新提供活动入口。",
 };
 
+/** HUI-2628: a staff-verification token is displayed as text (the old
+ *  `/p/<token>` URL had no route, i.e. a dead link). The note and the rendered
+ *  token come from the same value, so success and failure cannot contradict. */
+export function credentialIssueNotice(token: string | undefined): string | null {
+  const raw = (token ?? "").trim();
+  if (!raw.startsWith("ptx_") || !raw.includes(".")) {
+    return "核验码暂时签发不出来。直接把参与编号给店员看即可。";
+  }
+  return null;
+}
+
+/** @deprecated kept for the QR-payload unit tests; the guest page no longer
+ *  renders a `/p/<token>` link because this app has no such route. */
+export function codeIssueNotice(payload: string | undefined): string | null {
+  const raw = (payload ?? "").trim();
+  if (!raw) return "参与码暂时签发不出来。直接把下方参与编号给店员看即可。";
+  if (!raw.startsWith("https://") && !raw.startsWith("http://")) return "参与码暂时签发不出来。直接把下方参与编号给店员看即可。";
+  if (raw.includes("?") || raw.includes("#")) return "参与码暂时签发不出来。直接把下方参与编号给店员看即可。";
+  if (!raw.includes("/p/ptx_")) return "参与码暂时签发不出来。直接把下方参与编号给店员看即可。";
+  return null;
+}
+
 export function exceptionCopy(kind: string): string {
   return EXCEPTION_COPY[(kind ?? "").trim()] ?? "";
 }
@@ -275,9 +297,9 @@ export interface ResumeCredential {
 }
 
 /** 参与码/恢复凭据:响应只出现一次,由调用方当次出示;本模块不落盘。 */
-export async function resumeCredential(id: string): Promise<ResumeCredential | null> {
+export async function resumeCredential(id: string, purpose: "staff_verify" | "customer_resume" = "staff_verify"): Promise<ResumeCredential | null> {
   const { status, data } = await postJson(`/api/participations/${encodeURIComponent(id)}/handoff`, {
-    purpose: "customer_resume",
+    purpose,
   });
   if (status !== 201 || !data) return null;
   return data as ResumeCredential;
