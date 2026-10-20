@@ -219,7 +219,14 @@ describe("真实普查上的 6 条", () => {
         stack: "next",
         screenshot: "not_measured",
       },
-      absent,
+      {
+        route: "/work/campaigns/new",
+        file: "src/app/work/campaigns/new/page.tsx",
+        id: "creation",
+        surface: "work",
+        stack: "next",
+        screenshot: "not_measured",
+      },
       // HUI-3562：/work/service 入账后，第 6 槽(media_result ?? review)由它代表。
       {
         route: "/work/service",
@@ -240,12 +247,13 @@ describe("真实普查上的 6 条", () => {
       "/",
       "/work/stores",
       "/work/campaigns/[id]",
-      "not_present",
+      "/work/campaigns/new",
       "/work/service",
     ]);
     expect(census.some((page) => page.id === "portal" || page.id === "login")).toBe(false);
-    // HUI-3562 起复核族(review)有真实页面;creation/media_result 仍空缺。
-    expect(census.some((page) => page.id === "creation" || page.id === "media_result")).toBe(false);
+    // HUI-2628 起创建页(creation)有真实路由;media_result 仍空缺。
+    expect(census.some((page) => page.id === "creation")).toBe(true);
+    expect(census.some((page) => page.id === "media_result")).toBe(false);
     expect(census.some((page) => page.id === "review")).toBe(true);
     expect(census[0]?.id).toBe("workspace");
     expect(census[0]?.route).toBe("/");

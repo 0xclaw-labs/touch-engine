@@ -62,6 +62,9 @@ const recorded: readonly { route: string; id: PatternId; regions: readonly strin
   { route: "/admin/preview", id: "billing", regions: ["primary_action", "status", "empty"] },
   { route: "/work/stores", id: "list", regions: ["primary_action", "status", "empty"] },
   { route: "/work/campaigns", id: "list", regions: ["primary_action", "status", "empty"] },
+  // HUI-2628: the normal creation flow is a real route (creation pattern), not
+  // a form bolted onto the list page.
+  { route: "/work/campaigns/new", id: "creation", regions: ["primary_action", "status", "empty"] },
   { route: "/work/campaigns/[id]", id: "detail", regions: ["primary_action", "status", "empty"] },
   { route: "/work/materials", id: "list", regions: ["primary_action", "status", "empty"] },
   { route: "/work/rewards", id: "billing", regions: ["primary_action", "status", "empty"] },

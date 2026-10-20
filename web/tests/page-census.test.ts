@@ -33,7 +33,7 @@ describe("账上路由恰好一条普查", () => {
   it("和账本同一组路由，一条不多一条不少", () => {
     const ledger = pageLedger().map((page) => page.route);
     const census = pageCensus();
-    expect(ledger).toHaveLength(14); // HUI-3562 店员台 + HUI-1665 /t/[code] 与 /work/touchpoints
+    expect(ledger).toHaveLength(15); // HUI-2628 创建页 + HUI-3562 店员台 + HUI-1665 两页
     expect(census.map((page) => page.route)).toEqual(ledger);
     expect(new Set(census.map((page) => page.route)).size).toBe(census.length);
     expect(census.some((page) => page.route === "/login" || page.route.startsWith("/api"))).toBe(false);
@@ -106,6 +106,7 @@ describe("surface 归类", () => {
       ["/admin/preview", "admin"],
       ["/work/stores", "work"],
       ["/work/campaigns", "work"],
+      ["/work/campaigns/new", "work"],
       ["/work/campaigns/[id]", "work"],
       ["/work/materials", "work"],
       ["/work/rewards", "work"],
@@ -118,7 +119,7 @@ describe("surface 归类", () => {
       // HUI-1665:/t 稳定入口是公开消费者面。
       ["/t/[code]", "public"],
     ]);
-    expect(want.size).toBe(14); // HUI-3562 店员台 + HUI-1665 /t/[code] 与 /work/touchpoints
+    expect(want.size).toBe(15); // HUI-2628 创建页 + HUI-3562 店员台 + HUI-1665 两页
     for (const page of pageCensus()) {
       expect(page.surface).toBe(classifySurface(page.route, page.id));
       expect(page.surface).toBe(want.get(page.route));
@@ -220,7 +221,8 @@ describe("半成品标记", () => {
       ["/admin", ["raw button", "raw input"]],
       ["/admin/preview", []],
       ["/work/stores", ["raw button", "raw input"]],
-      ["/work/campaigns", ["raw button", "raw input"]],
+      ["/work/campaigns", ["raw button"]],
+      ["/work/campaigns/new", []],
       ["/work/campaigns/[id]", ["raw button"]],
       ["/work/materials", ["raw button", "raw input"]],
       // HUI-2628 r3：错误态补「重试」钮后各记 1 个 raw button（与 page-census.ts 账本同步）。
@@ -237,6 +239,7 @@ describe("半成品标记", () => {
       ["/work/touchpoints", []],
     ]);
     const census = pageCensus();
+    expect(want.size).toBe(15);
     expect(census).toHaveLength(want.size);
     for (const page of census) {
       const source = readPage(page.file);
