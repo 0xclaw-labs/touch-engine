@@ -46,18 +46,18 @@ test("disabled：门店停用 → 工作台标已停用、公共活动页标门�
   await login(page);
   const codes = await seedCodes();
 
-  // fixture：建一个关联门店的活动（走产品 UI），启用并生成短码
-  await page.goto("/work/campaigns");
-  await page.getByPlaceholder("活动标题").fill("E2E 门店关联活动");
-  await page.getByLabel("关联门店").selectOption({ label: "旗舰旗舰店" });
-  await page.getByRole("button", { name: "创建活动" }).click();
-  const row = page.locator("li").filter({ hasText: "E2E 门店关联活动" });
-  await expect(row).toBeVisible({ timeout: 15_000 });
-  await row.getByRole("button", { name: "启用" }).click();
-  await row.getByRole("link", { name: "E2E 门店关联活动" }).click();
-  await page.getByRole("button", { name: "生成链接" }).click();
-  const shortCode = await page.locator("ul.tk-list code").first().innerText();
-  expect(shortCode.trim()).not.toBe("");
+  // fixture：建一个关联门店的活动（走当前产品 UI 的三步创建流），发布并取短码
+  const title = `E2E 门店关联活动 ${Date.now()}`;
+  await page.goto("/work/campaigns/new");
+  await page.getByLabel("门店").selectOption({ label: "旗舰旗舰店" });
+  await page.getByLabel("活动标题").fill(title);
+  await page.getByLabel("顾客能看到的内容").fill("门店停用场景的活动内容。");
+  await page.getByRole("button", { name: "保存草稿并继续" }).click();
+  await page.getByRole("button", { name: "继续：链接与发布" }).click();
+  await page.getByRole("button", { name: "生成链接并发布" }).click();
+  await expect(page.getByTestId("share-url")).toBeVisible({ timeout: 15_000 });
+  const shortCode = (await page.getByTestId("share-url").innerText()).trim().split("/c/")[1];
+  expect(shortCode).toBeTruthy();
 
   // 停用门店：工作台标已停用（徽章 span 精确断言——notice 文案也含「已停用」字样）
   await page.goto("/work/stores");
@@ -77,6 +77,16 @@ test("disabled：门店停用 → 工作台标已停用、公共活动页标门�
   await page.getByRole("button", { name: "启用" }).click();
   await expect(disabledBadge).toHaveCount(0);
   await expect(page.locator("ul.tk-list").getByText("启用", { exact: true }).first()).toBeVisible();
+
+  // 结束本 spec 创建的 fixture 活动，避免污染后续“今天”断言。
+  await page.evaluate(async ({ tenantId, title }) => {
+    const headers = { "content-type": "application/json", "x-tenant-id": tenantId };
+    const list = await fetch("/api/campaigns", { headers }).then((res) => res.json());
+    const row = Array.isArray(list.items) ? list.items.find((item: { title?: string }) => item.title === title) : null;
+    if (row?.id) {
+      await fetch(`/api/campaigns/${row.id}/status`, { method: "POST", headers, body: JSON.stringify({ status: "ended" }) });
+    }
+  }, { tenantId: codes.tenantId, title });
 
   writeFileSync(path.join(EVIDENCE, "state-scenarios-disabled.json"), JSON.stringify({
     disabled: {
