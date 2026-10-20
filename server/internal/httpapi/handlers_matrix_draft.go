@@ -100,6 +100,7 @@ func (s *Server) handleMatrixDraft(w http.ResponseWriter, r *http.Request) {
 		Disclosure:          matrixDisclosure,
 		ReturnLocationToken: "return:" + camp.ID,
 	}, surfaces)
+	out.ActivityVersion = version
 	switch {
 	case errors.Is(err, matrixconsume.ErrCrossTenant):
 		writeMatrixOutcome(w, http.StatusForbidden, out)
@@ -126,6 +127,7 @@ func writeMatrixOutcome(w http.ResponseWriter, status int, out matrixconsume.Out
 		"lead_button":       map[string]any{"enabled": out.LeadButton.Enabled, "reason": out.LeadButton.Reason},
 		"ugc_button":        map[string]any{"enabled": out.UGCButton.Enabled, "reason": out.UGCButton.Reason},
 		"outbound_complete": false,
+		"activity_version":  out.ActivityVersion,
 		"copy":              out.Copy,
 		"draft_id":          out.Draft.ID,
 		"draft_status":      out.Draft.Status,

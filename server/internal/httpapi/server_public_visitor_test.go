@@ -331,3 +331,135 @@ func countRows(t *testing.T, f *leadsFixture, table string) int {
 func todayUTC() string {
 	return time.Now().UTC().Format("2006-01-02")
 }
+
+// HUI-2628: the public page must only offer actions the server can actually
+// serve. Capabilities are configuration facts, not client guesses.
+func TestPublicLinkPublishesCapabilityFlags(t *testing.T) {
+	f := newFixtureEnv(t, false, map[string]string{
+		"FEATURE_PARTICIPATION": "on",
+		"FEATURE_CONTENT_PACKS": "on",
+		"FEATURE_REWARD_OPS":    "on",
+	})
+	status, _, sto := f.do(t, "POST", "/api/v1/stores", "sess-owner-a", f.tenA, `{"name":"能力店","address":"x"}`)
+	mustEqual(t, status, http.StatusCreated)
+	storeID := sto["id"].(string)
+	status, _, cmp := f.do(t, "POST", "/api/v1/campaigns", "sess-owner-a", f.tenA,
+		`{"title":"能力活动","public_content":"看活动","store_id":"`+storeID+`","starts_at":"2026-09-01T00:00:00Z","ends_at":"2026-10-31T00:00:00Z"}`)
+	mustEqual(t, status, http.StatusCreated)
+	id := cmp["id"].(string)
+	status, _, _ = f.do(t, "POST", "/api/v1/campaigns/"+id+"/status", "sess-owner-a", f.tenA, `{"status":"active"}`)
+	mustEqual(t, status, http.StatusOK)
+	status, _, link := f.do(t, "POST", "/api/v1/campaigns/"+id+"/links", "sess-owner-a", f.tenA, "")
+	mustEqual(t, status, http.StatusCreated)
+	code := link["code"].(string)
+
+	status, _, view := f.do(t, "GET", "/api/v1/public/links/"+code, "", "", "")
+	mustEqual(t, status, http.StatusOK)
+	caps, ok := view["capabilities"].(map[string]any)
+	if !ok {
+		t.Fatalf("capabilities missing: %v", view)
+	}
+	for _, key := range []string{"participation", "content_packs", "reward_ops"} {
+		if caps[key] != true {
+			t.Fatalf("capability %s = %v, want true", key, caps[key])
+		}
+	}
+	if caps["leads_capture"] != false {
+		t.Fatalf("leads capability must stay false without its own config: %v", caps)
+	}
+
+	off := newFixture(t, false)
+	status, _, sto = off.do(t, "POST", "/api/v1/stores", "sess-owner-a", off.tenA, `{"name":"关闭店","address":"x"}`)
+	mustEqual(t, status, http.StatusCreated)
+	status, _, cmp = off.do(t, "POST", "/api/v1/campaigns", "sess-owner-a", off.tenA,
+		`{"title":"关闭活动","public_content":"看活动","store_id":"`+sto["id"].(string)+`","starts_at":"2026-09-01T00:00:00Z","ends_at":"2026-10-31T00:00:00Z"}`)
+	mustEqual(t, status, http.StatusCreated)
+	id = cmp["id"].(string)
+	status, _, _ = off.do(t, "POST", "/api/v1/campaigns/"+id+"/status", "sess-owner-a", off.tenA, `{"status":"active"}`)
+	mustEqual(t, status, http.StatusOK)
+	status, _, link = off.do(t, "POST", "/api/v1/campaigns/"+id+"/links", "sess-owner-a", off.tenA, "")
+	mustEqual(t, status, http.StatusCreated)
+	status, _, view = off.do(t, "GET", "/api/v1/public/links/"+link["code"].(string), "", "", "")
+	mustEqual(t, status, http.StatusOK)
+	caps, ok = view["capabilities"].(map[string]any)
+	if !ok {
+		t.Fatalf("capabilities missing on off fixture: %v", view)
+	}
+	for _, key := range []string{"participation", "content_packs", "reward_ops", "leads_capture"} {
+		if caps[key] != false {
+			t.Fatalf("capability %s = %v, want false", key, caps[key])
+		}
+	}
+}
+
+// HUI-2628: the app-switch route is an authenticated server-side bridge. It
+// accepts only the two contract ids and returns the platform's launch_url.
+func TestEcoNavSwitchRequiresSessionAndTarget(t *testing.T) {
+	f := newFixture(t, false)
+	status, _, _ := f.do(t, "POST", "/api/v1/eco-nav/switch", "", f.tenA, `{"app_id":"goboost","launch_target_id":"ti-goboost-web"}`)
+	if status != http.StatusUnauthorized && status != http.StatusForbidden {
+		t.Fatalf("anonymous switch = %d, want 401/403", status)
+	}
+	status, _, out := f.do(t, "POST", "/api/v1/eco-nav/switch", "sess-owner-a", f.tenA, `{"app_id":"","launch_target_id":""}`)
+	if status != http.StatusBadRequest {
+		t.Fatalf("empty ids = %d %v", status, out)
+	}
+	status, _, out = f.do(t, "POST", "/api/v1/eco-nav/switch", "sess-owner-a", f.tenA, `{"app_id":"goboost","launch_target_id":"../etc/passwd"}`)
+	if status != http.StatusBadRequest {
+		t.Fatalf("bad target = %d %v", status, out)
+	}
+}
+
+func TestEcoNavSwitchReturnsValidatedLaunchURL(t *testing.T) {
+	f := newFixture(t, false)
+	status, _, out := f.do(t, "POST", "/api/v1/eco-nav/switch", "sess-owner-a", f.tenA,
+		`{"app_id":"goboost","launch_target_id":"ti-goboost-web"}`)
+	if status != http.StatusOK {
+		t.Fatalf("switch = %d %v", status, out)
+	}
+	if out["launch_url"] != "https://goboost.modelxing.com/projects?code=one-time" {
+		t.Fatalf("launch_url = %v", out["launch_url"])
+	}
+	for _, forbidden := range []string{"campaign_id", "asset_ref", "payer", "project_id"} {
+		if _, ok := out[forbidden]; ok {
+			t.Fatalf("switch response leaks %s: %v", forbidden, out)
+		}
+	}
+}
+
+func TestEcoNavSwitchFailsClosedWithoutIdentity(t *testing.T) {
+	f := newFixture(t, false)
+	f.s.Cfg.IdentityBaseURL = ""
+	f.s.Cfg.IdentityToken = ""
+	status, _, out := f.do(t, "POST", "/api/v1/eco-nav/switch", "sess-owner-a", f.tenA,
+		`{"app_id":"goboost","launch_target_id":"ti-goboost-web"}`)
+	if status != http.StatusServiceUnavailable || (out["error"] != "identity_unavailable" && out["error"] != "config_gate") {
+		t.Fatalf("no identity = %d %v", status, out)
+	}
+}
+
+// HUI-2628: a campaign with no store cannot create a participation row. The
+// guest page must not show a start action that would 500, and the direct call
+// returns a product-readable 422 instead of an internal error.
+func TestStorelessCampaignClosesParticipationHonestly(t *testing.T) {
+	f := newFixtureEnv(t, false, map[string]string{"FEATURE_PARTICIPATION": "on"})
+	status, _, cmp := f.do(t, "POST", "/api/v1/campaigns", "sess-owner-a", f.tenA,
+		`{"title":"无门店活动","public_content":"看活动","starts_at":"2026-09-01T00:00:00Z","ends_at":"2026-10-31T00:00:00Z"}`)
+	mustEqual(t, status, http.StatusCreated)
+	id := cmp["id"].(string)
+	status, _, _ = f.do(t, "POST", "/api/v1/campaigns/"+id+"/status", "sess-owner-a", f.tenA, `{"status":"active"}`)
+	mustEqual(t, status, http.StatusOK)
+	status, _, link := f.do(t, "POST", "/api/v1/campaigns/"+id+"/links", "sess-owner-a", f.tenA, "")
+	mustEqual(t, status, http.StatusCreated)
+	code := link["code"].(string)
+	status, _, view := f.do(t, "GET", "/api/v1/public/links/"+code, "", "", "")
+	mustEqual(t, status, http.StatusOK)
+	caps, _ := view["capabilities"].(map[string]any)
+	if caps["participation"] != false {
+		t.Fatalf("store-less campaign must close participation: %v", view)
+	}
+	status, _, out := f.do(t, "POST", "/api/v1/participations", "", "", `{"link_code":"`+code+`","touchpoint_source":"manual","idempotency_key":"storeless-1"}`)
+	if status != http.StatusUnprocessableEntity || out["error"] != "store_required" {
+		t.Fatalf("store-less participation = %d %v", status, out)
+	}
+}

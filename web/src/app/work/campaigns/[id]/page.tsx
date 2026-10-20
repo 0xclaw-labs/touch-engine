@@ -6,11 +6,13 @@ import { ExtraJumpPanel } from "@/components/admin/ExtraJumpPanel";
 import { TaskHandoffActions } from "@/components/admin/TaskHandoffActions";
 import { failureText, useSession } from "@/components/work/merchant-session";
 import { CampaignConfigPanel } from "@/components/work/campaign-config-panel";
+import { CampaignShare } from "@/components/work/campaign-share";
 import { ContentPackPanel } from "@/components/work/content-pack-panel";
 import { MotionHandoffBrief } from "@/components/work/motion-handoff-brief";
 import { ProductionPanel } from "@/components/work/production-panel";
 import { StoreMotionNote } from "@/components/work/store-motion-note";
 import { isPastEnd, surfaceLabel } from "@/lib/product-finish";
+import { formatCampaignWindow } from "@/lib/public-time";
 import { takenList } from "@/lib/campaign-detail";
 
 interface Campaign {
@@ -36,8 +38,6 @@ interface TagRec {
   status: "active" | "disabled";
 }
 
-const QR_SIZES = [128, 256, 512] as const;
-
 export default function CampaignDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id ?? "";
@@ -51,7 +51,9 @@ export default function CampaignDetailPage() {
   const [leads, setLeads] = useState<string>("留资数量未知");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [qrSize, setQrSize] = useState<number>(256);
+  const [busy, setBusy] = useState(false);
+  const [storeName, setStoreName] = useState("");
+  const [created, setCreated] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -62,7 +64,12 @@ export default function CampaignDetailPage() {
       setPhase("error");
       return;
     }
-    setCampaign(campaignRes.data as unknown as Campaign);
+    const loaded = campaignRes.data as unknown as Campaign;
+    setCampaign(loaded);
+    if (loaded.store_id) {
+      const storeRes = await session.api("GET", `stores/${loaded.store_id}`).catch(() => null);
+      setStoreName(storeRes && storeRes.ok && typeof storeRes.data.name === "string" ? storeRes.data.name : "");
+    }
     const [linkRes, tagRes, statRes] = await Promise.all([
       session.api("GET", `campaigns/${id}/links`),
       session.api("GET", `nfc/tags?campaign_id=${encodeURIComponent(id)}`),
@@ -81,6 +88,7 @@ export default function CampaignDetailPage() {
   }, [id, session]);
 
   useEffect(() => {
+    setCreated(new URLSearchParams(window.location.search).get("created") === "1");
     void load().catch(() => setPhase("error"));
   }, [load]);
 
@@ -90,36 +98,44 @@ export default function CampaignDetailPage() {
     await load();
   }
 
-  async function createLink() {
+  async function generateLink() {
     const res = await session.api("POST", `campaigns/${id}/links`, {});
-    if (!res.ok) setError(failureText(res.status, res.data));
+    if (!res.ok) {
+      setError(failureText(res.status, res.data));
+      return;
+    }
+    setError("");
     await load();
   }
 
-  async function downloadQr(link: LinkRec) {
-    const res = await fetch(`/api/campaigns/${id}/links/${link.id}/qrcode?size=${qrSize}`, {
-      headers: { "x-tenant-id": session.tenantId },
-    });
-    if (!res.ok) {
-      const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-      setError(failureText(res.status, data));
-      return;
+  async function publish() {
+    if (!campaign || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      if (!links.some((link) => link.enabled)) {
+        const linkRes = await session.api("POST", `campaigns/${id}/links`, {});
+        if (!linkRes.ok) {
+          setError(failureText(linkRes.status, linkRes.data));
+          return;
+        }
+      }
+      const res = await session.api("POST", `campaigns/${id}/status`, { status: "active" });
+      if (!res.ok) {
+        setError(failureText(res.status, res.data));
+        return;
+      }
+      setCreated(true);
+      await load();
+    } finally {
+      setBusy(false);
     }
-    const blob = await res.blob();
-    const href = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = href;
-    anchor.download = `qr-${link.code}-${qrSize}.png`;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    URL.revokeObjectURL(href);
   }
 
   const expired = isPastEnd(campaign?.ends_at);
 
   return (
-    <main>
+    <main data-pattern="detail">
       {phase === "loading" ? <p className="tk-state" data-state="loading">{surfaceLabel("loading")}</p> : null}
       {phase === "error" ? (
         <p className="tk-state tk-danger" data-state="error">
@@ -132,20 +148,23 @@ export default function CampaignDetailPage() {
           <p className="tk-kicker"><a href="/work/campaigns">全部活动</a></p>
           <h1 className="tk-title">{campaign.title}</h1>
           <p className="tk-lead">{campaign.public_content || "顾客能看到的内容还是空的。"}</p>
-          <p className="tk-note">
-            状态 {campaign.status}
-            {campaign.status === "paused" ? <span data-state="paused"> {surfaceLabel("paused")}</span> : null}
-            {campaign.status === "ended" ? <span data-state="ended"> {surfaceLabel("ended")}</span> : null}
-            {expired ? <span data-state="expired" className="tk-unknown"> {surfaceLabel("expired")}，服务端状态没有被自动改掉</span> : null}
+          {created ? <p className="tk-note" data-state="published" data-testid="publish-notice">活动已发布。把下面的链接或分享文案发给顾客。</p> : null}
+          <p className="tk-note" data-state={campaign.status} data-testid="campaign-status">
+            状态：{statusLabel(campaign.status)}
+            {campaign.status === "paused" ? <span> · {surfaceLabel("paused")}</span> : null}
+            {campaign.status === "ended" ? <span> · {surfaceLabel("ended")}</span> : null}
+            {expired ? <span className="tk-unknown"> · 窗口已过，服务端状态没有被自动改掉</span> : null}
           </p>
-          <p className="tk-note">{campaign.starts_at || "开始未填"} 到 {campaign.ends_at || "结束未填"}</p>
+          <p className="tk-note">活动时间：{formatCampaignWindow(campaign.starts_at, campaign.ends_at)}</p>
           <div className="tk-row">
-            {campaign.status === "draft" ? <button className="tk-button" type="button" onClick={() => void transition("active")}>启用</button> : null}
+            {campaign.status === "draft" ? <button className="tk-primary" type="button" disabled={busy} data-primary-action="true" onClick={() => void publish()}>{busy ? "正在发布…" : "发布活动"}</button> : null}
+            {campaign.status === "paused" ? <button className="tk-primary" type="button" data-primary-action="true" onClick={() => void transition("active")}>恢复活动</button> : null}
+            {campaign.status === "active" ? <a className="tk-quiet" href="#share">去分享给顾客</a> : null}
             {campaign.status === "active" ? <button className="tk-quiet" type="button" onClick={() => void transition("paused")}>暂停</button> : null}
-            {campaign.status === "paused" ? <button className="tk-quiet" type="button" onClick={() => void transition("active")}>恢复</button> : null}
             {campaign.status === "active" || campaign.status === "paused" ? <button className="tk-quiet" type="button" onClick={() => void transition("ended")}>结束</button> : null}
+            {campaign.status === "ended" || expired ? <p className="tk-note">活动已结束，不能继续发布。需要再办一场请新建活动。</p> : null}
           </div>
-          {error ? <p className="tk-danger">{error}</p> : null}
+          {error ? <p className="tk-danger" data-state="error">{error}</p> : null}
           <section id="store-motion" className="tk-section">
             <h2 className="tk-section-title">门店参数</h2>
             <p className="tk-note">还没生成成片</p>
@@ -159,32 +178,23 @@ export default function CampaignDetailPage() {
             campaignTitle={campaign.title}
             campaignStoreId={campaign.store_id}
           />
+          {linkPhase === "error" ? (
+            <p className="tk-state tk-danger" data-list="links" data-state="error">
+              短码没有读到。这不是还没有短码。
+              <button className="tk-quiet" type="button" data-action="retry" onClick={() => void load()}>重试</button>
+            </p>
+          ) : null}
+          {linkPhase === "empty" ? <p className="tk-note" data-list="links" data-state="empty">还没有短码。生成后会在下面给出分享链接。</p> : null}
+          <CampaignShare
+            campaign={{ id, title: campaign.title, status: campaign.status, store_name: storeName, starts_at: campaign.starts_at, ends_at: campaign.ends_at }}
+            links={links}
+            onChanged={() => load()}
+            onGenerate={() => generateLink()}
+            busy={busy}
+          />
           <section id="touch" className="tk-section">
-            <h2 className="tk-section-title">碰一碰和二维码</h2>
+            <h2 className="tk-section-title">碰一碰和留资</h2>
             <p className="tk-note">{leads}。两个数不合成一个转化。</p>
-            <button className="tk-button" type="button" onClick={() => void createLink()}>生成链接</button>
-            <label className="tk-label tk-gap">
-              二维码尺寸
-              <select className="tk-select" value={qrSize} onChange={(event) => setQrSize(Number(event.target.value))}>
-                {QR_SIZES.map((size) => <option key={size} value={size}>{size}px</option>)}
-              </select>
-            </label>
-            {linkPhase === "error" ? (
-              <p className="tk-state tk-danger" data-list="links" data-state="error">
-                短码没有读到。这不是还没有短码。
-                <button className="tk-quiet" type="button" data-action="retry" onClick={() => void load()}>重试</button>
-              </p>
-            ) : null}
-            {linkPhase === "empty" ? <p className="tk-state" data-list="links" data-state="empty">还没有短码。生成之后才能下载二维码。</p> : null}
-            <ul className="tk-list">
-              {links.map((link) => (
-                <li key={link.id}>
-                  <code>{link.code}</code>
-                  {!link.enabled ? <span className="tk-unknown"> 已停用</span> : null}
-                  <button className="tk-quiet" type="button" onClick={() => void downloadQr(link)}>下载二维码</button>
-                </li>
-              ))}
-            </ul>
             <h3 className="tk-section-title">标签</h3>
             {tagPhase === "error" ? (
               <p className="tk-state tk-danger" data-list="tags" data-state="error">
@@ -213,4 +223,12 @@ export default function CampaignDetailPage() {
       ) : null}
     </main>
   );
+}
+
+function statusLabel(status: string): string {
+  if (status === "draft") return "草稿（未发布）";
+  if (status === "active") return "进行中";
+  if (status === "paused") return "暂停";
+  if (status === "ended") return "已结束";
+  return status || "状态未知";
 }

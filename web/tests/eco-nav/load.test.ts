@@ -38,19 +38,20 @@ describe("eco nav env", () => {
 });
 
 describe("loadEcoNavModel", () => {
-  it("没有 URL 时返回预览夹具且不请求网络", async () => {
+  it("没有 URL 时返回 blocked，不渲染也不伪造品牌/租户", async () => {
     const fetchImpl = vi.fn();
     const model = await loadEcoNavModel({ endpoint: null, identityEnabled: false, fetchImpl });
     expect(fetchImpl).not.toHaveBeenCalled();
-    expect(model.provenance).toBe("provisional_fixture");
-    expect(model.renderable).toBe(true);
-    expect(model.current_app.app_id).toBe("touch");
-    expect(model.status.summary).toContain("预览上下文");
-    expect(payerText(model)).toBe("个人付款");
+    expect(model.renderable).toBe(false);
+    expect(model.brand).toBeNull();
+    expect(model.apps).toEqual([]);
+    expect(model.status.state).toBe("unavailable");
+    expect(model.status.reasons).toContain("authority_unavailable");
+    expect(payerText(model)).toBe("付款主体需确认");
     expect(billingBadgeText(model)).toBe("额度需确认");
   });
 
-  it("网络失败或契约不对时仍用预览，不标成公共身份", async () => {
+  it("网络失败或契约不对时返回 blocked，不换成预览夹具", async () => {
     const failed = await loadEcoNavModel({
       endpoint: "https://registry.invalid/eco-nav",
       identityEnabled: true,
@@ -58,17 +59,18 @@ describe("loadEcoNavModel", () => {
         throw new Error("down");
       }),
     });
-    expect(failed.provenance).toBe("provisional_fixture");
-    expect(failed.status.summary).toContain("暂不可用");
+    expect(failed.renderable).toBe(false);
+    expect(failed.brand).toBeNull();
+    expect(failed.status.state).toBe("unavailable");
 
     const bad = await loadEcoNavModel({
       endpoint: "https://registry.invalid/eco-nav",
       identityEnabled: true,
       fetchImpl: vi.fn(async () => jsonResponse({ schema_version: "eco-nav/v1", scopes: [], current_app: {} })),
     });
-    expect(bad.provenance).toBe("provisional_fixture");
-    expect(bad.status.summary).toContain("不兼容");
-    expect(bad.status.summary).toContain("预览上下文");
+    expect(bad.renderable).toBe(false);
+    expect(bad.brand).toBeNull();
+    expect(bad.status.state).toBe("unavailable");
   });
 
   it("读到冻结文档但身份开关关闭时，来源仍是预览，且不生成跳转 URL", async () => {

@@ -135,8 +135,8 @@ describe("顾客页没有生态导航和平台宣传", () => {
     expect(source).toContain("tk-unknown");
     expect(source).not.toMatch(/#065f46|#059669|#16a34a/);
     const css = read("app/touch.css");
-    expect(css).toMatch(/\.tk-unknown\s*\{[^}]*var\(--tk-warning\)/);
-    expect(css).not.toMatch(/\.tk-unknown\s*\{[^}]*var\(--tk-ok\)/);
+    expect(css).toMatch(/\.tk-unknown\s*\{[^}]*var\(--pn-status-warning-fg\)/);
+    expect(css).not.toMatch(/\.tk-unknown\s*\{[^}]*var\(--pn-status-success-fg\)/);
   });
 });
 
@@ -160,6 +160,9 @@ describe("交接动作有唯一实心主行动", () => {
   it("make_campaign_image 实心且带 data-primary-action，其余次级", () => {
     const src = read("components/admin/TaskHandoffActions.tsx");
     expect(src).toMatch(/const primary = kind === "make_campaign_image";/);
+    expect(src).toContain("matrix-draft");
+    expect(src).not.toContain("/api/eco-nav/campaign-image");
+    expect(src).toContain("activity_version");
     expect(src).toMatch(/className=\{primary \? "tk-button" : "tk-quiet"\}/);
     expect(src).toMatch(/data-primary-action=\{primary \? "true" : undefined\}/);
   });

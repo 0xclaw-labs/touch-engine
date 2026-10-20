@@ -17,8 +17,9 @@
 //   - 不发店员/商家会话请求(staff/*、reward-confirm 禁触)。
 
 import { useCallback, useEffect, useState } from "react";
-import { isSafeQrPayload, statusLabel } from "@/lib/participation";
+import { statusLabel } from "@/lib/participation";
 import {
+  credentialIssueNotice,
   exceptionCopy,
   resumeCredential,
   staffFulfilledCopy,
@@ -44,7 +45,7 @@ export interface RewardStatusProps {
 
 export function RewardStatus({ code, participation, benefit, externalPublish }: RewardStatusProps) {
   const [summary, setSummary] = useState<PublicRewardSummary | null>(null);
-  const [qrPayload, setQrPayload] = useState("");
+  const [verifyToken, setVerifyToken] = useState("");
   const [verifyNote, setVerifyNote] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -68,7 +69,7 @@ export function RewardStatus({ code, participation, benefit, externalPublish }: 
 
   // 「我已完成」= 请求核验:重读自身参与(状态以服务端为准)。
   const requestVerify = useCallback(async () => {
-    if (!id) return;
+    if (!id || busy) return;
     setBusy(true);
     try {
       const res = await fetch(`/api/participations/${encodeURIComponent(id)}`);
@@ -91,15 +92,15 @@ export function RewardStatus({ code, participation, benefit, externalPublish }: 
     setBusy(true);
     try {
       const cred = await resumeCredential(id);
-      const payload = cred?.qr_payload ?? "";
-      setQrPayload(isSafeQrPayload(payload) ? payload : "");
-      setVerifyNote(qrPayload ? "" : "参与码暂时签发不出来。直接把下方参与编号给店员看即可。");
+      const token = cred?.token ?? "";
+      setVerifyToken(token);
+      setVerifyNote(credentialIssueNotice(token) ?? "核验码已签发。只显示这一次，请直接给店员在确认与核销台输入。");
     } catch {
-      setVerifyNote("参与码暂时签发不出来。直接把下方参与编号给店员看即可。");
+      setVerifyNote("核验码暂时签发不出来。直接把下方参与编号给店员看即可。");
     } finally {
       setBusy(false);
     }
-  }, [busy, id, qrPayload]);
+  }, [busy, id]);
 
   if (!participation) return null;
 
@@ -132,15 +133,15 @@ export function RewardStatus({ code, participation, benefit, externalPublish }: 
             我已完成
           </button>
           <button type="button" className="tk-quiet" disabled={busy} data-testid="reward-show-code" onClick={showCode}>
-            出示参与码
+            出示核验码
           </button>
         </div>
       )}
-      {qrPayload && (
-        <p className="tk-note" data-testid="reward-qr">
-          恢复入口(只显示这一次,请保存):
+      {verifyToken && (
+        <p className="tk-note" data-testid="reward-token">
+          核验码(只显示这一次，请直接给店员):
           {" "}
-          <a href={qrPayload} target="_blank" rel="noopener,noreferrer">打开参与码</a>
+          <code>{verifyToken}</code>
         </p>
       )}
       {verifyNote && <p className="tk-note" data-testid="reward-verify-note">{verifyNote}</p>}

@@ -61,6 +61,7 @@ const EMPTY_FORM = {
   store_name: "",
   price_note: "",
   valid_note: "",
+  ai_generated: false,
 };
 
 function mediaTypeLabel(mt?: string): string {
@@ -217,6 +218,15 @@ function PackForm({
       <label className="tk-label">
         <input type="checkbox" name="ad_required" checked readOnly /> 内容含优惠推广信息时按平台要求标注广告
       </label>
+      <label className="tk-label">
+        <input
+          type="checkbox"
+          name="ai_generated"
+          checked={form.ai_generated}
+          onChange={(event) => setForm({ ...form, ai_generated: event.target.checked })}
+        />
+        {" "}这条内容含 AI 合成画面或配音（会明确标给顾客）
+      </label>
       <button className="tk-button" type="submit" disabled={busy}>提交候选内容包</button>
     </form>
   );
@@ -243,6 +253,15 @@ export default function MaterialsPage() {
   const [uploadPlatforms, setUploadPlatforms] = useState<string[]>(["douyin"]);
   const [libraryPlatforms, setLibraryPlatforms] = useState<string[]>(["douyin"]);
   const [busy, setBusy] = useState(false);
+  const [returnCampaign, setReturnCampaign] = useState("");
+
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("campaign") ?? "";
+    if (!id) return;
+    setReturnCampaign(id);
+    setUploadForm((form) => ({ ...form, campaign: form.campaign || id }));
+    setLibraryForm((form) => ({ ...form, campaign: form.campaign || id }));
+  }, []);
 
   const load = useCallback(async () => {
     setPhase("loading");
@@ -326,6 +345,7 @@ export default function MaterialsPage() {
         price_note: form.price_note,
         valid_note: form.valid_note,
         platform_versions: platforms.map((platform) => ({ platform, note: "", source_version: form.title })),
+        marking: { ad_required: true, incentive_disclosed: false, ai_generated: form.ai_generated },
         source: entry === "upload" ? "merchant_upload" : "asset_lib",
         status: "candidate",
       });
@@ -360,6 +380,7 @@ export default function MaterialsPage() {
   return (
     <main>
       <h1 className="tk-title">素材与内容包</h1>
+      {returnCampaign ? <p className="tk-note"><a href={`/work/campaigns/${encodeURIComponent(returnCampaign)}`}>返回活动</a> · 也可回到<a href="/work/campaigns/new">活动创建</a></p> : null}
       <p className="tk-lead">把成片、封面和文案组织成一个候选内容包,预览后点「采用」。采用后顾客碰一碰拿到的就是这一版。</p>
       {phase === "loading" ? <p className="tk-state" data-state="loading">{surfaceLabel("loading")}</p> : null}
       {phase === "error" ? <LoadErrorState message={error || surfaceLabel("error")} onRetry={() => void load()} /> : null}

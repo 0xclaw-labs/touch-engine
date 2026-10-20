@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { EcoTopNav } from "@/components/eco-nav/EcoTopNav";
-import { useLaunchResolver } from "@/components/eco-nav/use-launch-resolver";
+import { useLaunchTargets } from "@/components/eco-nav/use-launch-resolver";
 import { TaskHandoffActions } from "@/components/admin/TaskHandoffActions";
 import { PROVISIONAL_DOCUMENT, provisionalEcoNav } from "@/lib/eco-nav/fixture";
 import { parseEcoNavDocument, toViewModel, type EcoNavModel } from "@/lib/eco-nav/model";
@@ -31,7 +31,7 @@ function brandModel(displayName: string, appId: string, appName: string, targetI
 
 export function PreviewShell() {
   const [model, setModel] = useState(() => brandModel("品牌甲", "product-image", "产品图", "ti-product-image-web"));
-  const resolveLaunchTarget = useLaunchResolver();
+  const resolveLaunchTarget = useLaunchTargets();
   const [surface, setSurface] = useState({ campaigns: [{ id: "cmp_preview", title: "活动甲" }], selectedCampaignId: "cmp_preview" });
   const [notice, setNotice] = useState("");
 

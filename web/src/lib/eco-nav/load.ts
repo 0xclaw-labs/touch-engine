@@ -1,4 +1,5 @@
 import {
+  blockedUnavailableEcoNav,
   isRenderable,
   pinTouchApp,
   parseEcoNavDocument,
@@ -16,6 +17,8 @@ export interface LoadEcoNavInput {
   identityEnabled: boolean;
   fetchImpl?: typeof fetch;
   fixture?: EcoNavModel;
+  /** Session cookie + selected tenant, forwarded server-side only. */
+  headers?: HeadersInit;
 }
 
 /**
@@ -26,33 +29,35 @@ export interface LoadEcoNavInput {
  * 才把视图标成 public-ai 身份。
  */
 export async function loadEcoNavModel(input: LoadEcoNavInput): Promise<EcoNavModel> {
-  const fixture = pinTouchApp(input.fixture ?? provisionalEcoNav());
-  if (!input.endpoint) return fixture;
+  // A fixture is still accepted by tests/preview callers, but the production
+  // route never passes one. No config -> no nav, not someone else's context.
+  const fixture = input.fixture ? pinTouchApp(input.fixture) : null;
+  if (!input.endpoint) return fixture ?? blockedUnavailableEcoNav();
 
   const fetchImpl = input.fetchImpl ?? fetch;
   let response: Response;
   try {
     response = await fetchImpl(input.endpoint, {
       method: "GET",
-      headers: { accept: "application/json" },
+      headers: { accept: "application/json", ...(input.headers ?? {}) },
       cache: "no-store",
     });
   } catch {
-    return provisionalEcoNav("导航目录暂不可用，正在使用预览上下文");
+    return fixture ?? blockedUnavailableEcoNav();
   }
   if (!response.ok) {
-    return provisionalEcoNav("导航目录暂不可用，正在使用预览上下文");
+    return fixture ?? blockedUnavailableEcoNav();
   }
 
   let json: unknown;
   try {
     json = await response.json();
   } catch {
-    return provisionalEcoNav("导航契约不兼容，正在使用预览上下文");
+    return fixture ?? blockedUnavailableEcoNav();
   }
   const parsed = parseEcoNavDocument(json);
   if (!parsed.ok) {
-    return provisionalEcoNav("导航契约不兼容，正在使用预览上下文");
+    return fixture ?? blockedUnavailableEcoNav();
   }
 
   const provenance: EcoNavProvenance = input.identityEnabled ? "public_ai_context" : "provisional_fixture";

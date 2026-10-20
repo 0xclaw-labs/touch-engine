@@ -114,3 +114,52 @@ func TestRefreshSendsAppID(t *testing.T) {
 		t.Fatalf("refresh body = %q", body)
 	}
 }
+
+// HUI-2227/2628: app switching mints a one-time shell code through the
+// platform identity. The client sends the fixed shell path and the exact
+// identity body; it never accepts a caller-supplied URL.
+func TestLaunchShellContract(t *testing.T) {
+	var path, token, appID, body string
+	c, _ := stubIdentity(t, func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		token = r.Header.Get("X-PilotSeaView-Internal-Token")
+		appID = r.Header.Get("X-App-ID")
+		b, _ := io.ReadAll(r.Body)
+		body = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"app_id":"goboost","target_id":"ti-goboost-web","launch_url":"https://goboost.example.com/projects?code=one"}`))
+	})
+	url, err := c.LaunchShell(context.Background(), "usr_01", "tnt_01", "goboost", "ti-goboost-web")
+	if err != nil {
+		t.Fatalf("LaunchShell: %v", err)
+	}
+	if url != "https://goboost.example.com/projects?code=one" {
+		t.Fatalf("url = %q", url)
+	}
+	if path != "/internal/v1/identity/shell/launch" {
+		t.Fatalf("path = %q", path)
+	}
+	if token != "app-token" || appID != "touch-engine" {
+		t.Fatalf("headers = %q %q", token, appID)
+	}
+	for _, want := range []string{`"principal_id":"usr_01"`, `"tenant_id":"tnt_01"`, `"app_id":"goboost"`, `"target_id":"ti-goboost-web"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body %q missing %s", body, want)
+		}
+	}
+}
+
+func TestLaunchShellRefusesNonHTTPSAndEmptyURL(t *testing.T) {
+	for _, payload := range []string{
+		`{"ok":true,"launch_url":""}`,
+		`{"ok":true,"launch_url":"http://goboost.example.com/projects"}`,
+		`{"ok":true,"launch_url":"javascript:alert(1)"}`,
+	} {
+		c, _ := stubIdentity(t, func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(payload))
+		})
+		if _, err := c.LaunchShell(context.Background(), "usr_01", "tnt_01", "goboost", "ti-goboost-web"); err == nil {
+			t.Fatalf("accepted unsafe launch_url payload %s", payload)
+		}
+	}
+}

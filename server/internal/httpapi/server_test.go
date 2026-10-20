@@ -61,6 +61,20 @@ func fakeIdentity(t *testing.T, sessions map[string]identitySession) *httptest.S
 			_, _ = w.Write([]byte(`{"access_token":"at-new","refresh_token":"rt-new","expires_in":3600}`))
 		case "/internal/v1/identity/revocations":
 			_, _ = w.Write([]byte(`{}`))
+		case "/internal/v1/identity/shell/launch":
+			var in struct {
+				PrincipalID string `json:"principal_id"`
+				TenantID    string `json:"tenant_id"`
+				AppID       string `json:"app_id"`
+				TargetID    string `json:"target_id"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&in)
+			if in.PrincipalID == "" || in.TenantID == "" || in.AppID != "goboost" || in.TargetID != "ti-goboost-web" {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":"shell_launch_denied"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"app_id":"goboost","target_id":"ti-goboost-web","launch_url":"https://goboost.modelxing.com/projects?code=one-time"}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -481,7 +495,7 @@ func TestPublicRouteFiveStates(t *testing.T) {
 	mustEqual(t, status, 200)
 	for key := range valid {
 		switch key {
-		case "state", "title", "public_content", "starts_at", "ends_at", "merchant_name", "store_name", "store_notice":
+		case "state", "title", "public_content", "starts_at", "ends_at", "merchant_name", "store_name", "store_notice", "capabilities":
 		default:
 			t.Fatalf("public payload has non-whitelist key %q: %v", key, valid)
 		}

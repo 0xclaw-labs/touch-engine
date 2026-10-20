@@ -32,3 +32,4 @@ Thumbs.db
 
 # ---- 2026-10-09 EIG 证据门：审计证据目录豁免全仓忽略规则（B3：三连吞证据事故）----
 !docs/audits/**
+*.tsbuildinfo

@@ -109,6 +109,7 @@ async function seed() {
       public_content: "到店有礼",
       starts_at: startsAt,
       ends_at: endsAt,
+      store_id: store.id,
     });
     const link = await goApi("POST", `/api/v1/campaigns/${c.id}/links`, {});
     return { id: c.id, code: link.code };
@@ -124,6 +125,33 @@ async function seed() {
   await goApi("POST", `/api/v1/campaigns/${paused.id}/status`, { status: "active" });
   await goApi("POST", `/api/v1/campaigns/${paused.id}/status`, { status: "paused" });
   await goApi("POST", `/api/v1/campaigns/${ended.id}/status`, { status: "ended" });
+
+  // HUI-2628：用真实 lib_assets 行 + 真实 content-pack API 种一个已采用版本。
+  // 平台 upload 在本机未开，登记端点不可用；直接写引用行等价于素材库已登记
+  // 的 DB 事实（不是伪造接口结果），后续建包/采用仍走真实 HTTP 路由。
+  const libAssetId = "ast_e2e_seed_0001";
+  const now = new Date().toISOString();
+  const sql = `INSERT INTO lib_assets
+    (id,tenant_id,asset_ref,sha256,media_type,source,purpose,grant_ref,store_id,tags,candidate,created_by,created_at,updated_at)
+    VALUES ('${libAssetId}','${state.tenantId}','e2e-media-1','${"c".repeat(64)}','image','merchant_upload','campaign_publish','grant-e2e','${store.id}','',0,'e2e','${now}','${now}');`;
+  execFileSync("sqlite3", [state.dbPath, sql], { encoding: "utf8" });
+  const pack = await goApi("POST", `/api/v1/campaigns/${active.id}/content-packs`, { title: "E2E 内容包" });
+  const version = await goApi("POST", `/api/v1/content-packs/${pack.id}/versions`, {
+    content_kind: "imagetext",
+    image_text_asset_ids: [libAssetId],
+    title: "E2E 已采用内容",
+    body: "这是一条门店已采用、带 AI 标识的图文内容。",
+    topics: ["e2e"],
+    store_name: "旗舰旗舰店",
+    price_note: "到店有礼",
+    valid_note: "2026-12-31 前",
+    platform_versions: [{ platform: "douyin", note: "竖版", source_version: "src-e2e" }],
+    grant_refs: ["grant-e2e"],
+    marking: { ad_required: true, incentive_disclosed: false, ai_generated: true },
+    source: "merchant_upload",
+    status: "candidate",
+  });
+  await goApi("POST", `/api/v1/content-packs/${pack.id}/versions/${version.id}/adopt`, { platform: "douyin" });
 
   // 留资表单（FEATURE_LEADS_CAPTURE=on 时可配；notice v1 与 leads.CurrentNotice 同源）
   await goApi("POST", `/api/v1/campaigns/${active.id}/lead-form`, { notice_version: "v1", marketing_optin_enabled: true });
@@ -147,6 +175,9 @@ async function seed() {
     multiPassword: MULTI_PASSWORD,
     tenantBId: state.tenantBId ?? "",
     tenantBName: TENANT_B_NAME,
+    contentPackId: pack.id,
+    contentVersionId: version.id,
+    libAssetId,
   };
   writeFileSync(path.join(evidenceDir, "seed.json"), JSON.stringify(state.urls, null, 2));
 }
@@ -205,6 +236,7 @@ async function up() {
 
   state.db = mkdtempSync(path.join(tmpdir(), "touch-e2e-"));
   const dbPath = path.join(state.db, "touch.db");
+  state.dbPath = dbPath;
   const go = "go";
   const goEnv = {
     ...process.env,
@@ -225,6 +257,15 @@ async function up() {
     FEATURE_CAMPAIGN_RULES: "on",
     // HUI-2222：本地测试部署开确认与核销入口（生产默认 off，启用裁决归 HUI-3531）
     FEATURE_SERVICE_DESK: "on",
+    // HUI-2628：公共页能力门的真实开关。开着才跑参与/内容包/奖励摘要；
+    // 关闭态另由单测覆盖，不在同一轮里混用假结果。
+    FEATURE_CONTENT_PACKS: "on",
+    // The content-pack seed needs the lib_assets table to exist. Registration
+    // HTTP still requires platform upload (off here), so this does not fake an
+    // upload result; the seed writes the same reference row the library owns.
+    FEATURE_ASSET_LIB: "on",
+    FEATURE_PARTICIPATION: "on",
+    FEATURE_REWARD_OPS: "on",
   };
 
   execFileSync(go, ["build", "-o", path.join(artDir, "touch-server"), "./cmd/touch-server"], { cwd: serverDir, env: goEnv });

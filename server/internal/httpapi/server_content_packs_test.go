@@ -532,3 +532,35 @@ func TestPublicContentSnapshotServesAdoptedVersion(t *testing.T) {
 		t.Fatalf("unknown pack snapshot: %d", status)
 	}
 }
+
+// HUI-2628: the customer's chosen version must be honoured. A snapshot request
+// that names an older version while the merchant has adopted a newer one is a
+// conflict, never a silent switch to the current version.
+func TestPublicContentSnapshotRejectsStaleVersion(t *testing.T) {
+	f := newContentPackFixture(t, true)
+	video := f.mustLibAsset(t, "up-pin-v", strings.Repeat("a", 64), "video")
+	cover := f.mustLibAsset(t, "up-pin-c", strings.Repeat("b", 64), "image")
+	packID := mustPack(t, f)
+	v1 := mustVersion(t, f, packID, video.ID, cover.ID)
+	status, _ := f.owner(t, "POST", "/api/v1/content-packs/"+packID+"/versions/"+v1+"/adopt", `{"platform":"douyin"}`)
+	mustEqual(t, status, http.StatusOK)
+
+	v2 := mustVersion(t, f, packID, video.ID, cover.ID)
+	status, _ = f.owner(t, "POST", "/api/v1/content-packs/"+packID+"/versions/"+v2+"/adopt", `{"platform":"douyin"}`)
+	mustEqual(t, status, http.StatusOK)
+
+	base := "/api/v1/public/links/" + f.linkCode
+	status, out := f.do(t, "GET", base+"/content-snapshot?pack_id="+packID+"&platform=douyin&version_id="+v1, "", "", "")
+	if status != http.StatusConflict || out["error"] != "version_mismatch" {
+		t.Fatalf("stale version snapshot: %d %v", status, out)
+	}
+	status, out = f.do(t, "GET", base+"/content-snapshot?pack_id="+packID+"&platform=douyin&version_id="+v2, "", "", "")
+	if status != http.StatusOK || out["pack_version_id"] != v2 {
+		t.Fatalf("pinned current snapshot: %d %v", status, out)
+	}
+	// backward-compatible read without version_id still returns the adopted row
+	status, out = f.do(t, "GET", base+"/content-snapshot?pack_id="+packID+"&platform=douyin", "", "", "")
+	if status != http.StatusOK || out["pack_version_id"] != v2 {
+		t.Fatalf("unpinned snapshot: %d %v", status, out)
+	}
+}

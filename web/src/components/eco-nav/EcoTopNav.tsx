@@ -1,20 +1,20 @@
 "use client";
 
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import type { AppSwitchResult } from "./use-app-switch";
 import { agentWorkBanner, commitTenantSwitch, payerLabel } from "@/lib/eco-nav/touch-shell";
 import {
   billingBadgeText,
+  canLaunchManually,
   LAUNCH_UNRESOLVED_RESIDUAL,
   partitionApps,
   payerText,
   pinTouchApp,
-  planManualSwitch,
-  resolveTargetHref,
   selectTenant,
   switchableApps,
   type EcoNavModel,
   type EcoNavViewport,
-  type LaunchResolver,
+  type LaunchAvailability,
   type VisibleApp,
 } from "@/lib/eco-nav/model";
 import styles from "./eco-top-nav.module.css";
@@ -35,58 +35,64 @@ function useNarrow(enabled: boolean): boolean {
 function AppControl({
   app,
   canSwitch,
-  resolve,
+  available,
+  launching,
+  onLaunch,
   inMenu = false,
 }: {
   app: VisibleApp;
   canSwitch: boolean;
-  resolve: LaunchResolver;
+  available: LaunchAvailability;
+  launching: boolean;
+  onLaunch: (app: VisibleApp) => void;
   inMenu?: boolean;
 }) {
-  const plan = planManualSwitch(app, canSwitch, resolve);
+  const enabled = canLaunchManually(app, canSwitch, available);
   const role = inMenu ? "menuitem" : undefined;
-  if (!plan.href) {
+  const common = {
+    "data-testid": `eco-app-${app.app_id}`,
+    "data-nav-intent": "manual_switch",
+    "data-creates-handoff": "false",
+    "data-launch-mode": app.launch_mode,
+    "data-launch-target-id": app.launch_target_id ?? "",
+  } as const;
+  if (!enabled) {
     return (
       <span
         className={styles.quiet}
         role={role}
-        data-testid={`eco-app-${app.app_id}`}
-        data-nav-intent="manual_switch"
-        data-creates-handoff="false"
-        data-launch-mode={app.launch_mode}
-        data-launch-target-id={app.launch_target_id ?? ""}
+        {...common}
         data-launch-residual="unresolved_launch_target"
-        title={plan.residual ?? LAUNCH_UNRESOLVED_RESIDUAL}
+        title={LAUNCH_UNRESOLVED_RESIDUAL}
       >
         {app.display_name}
       </span>
     );
   }
   return (
-    <a
+    <button
+      type="button"
       className={styles.link}
       role={role}
-      href={plan.href}
-      data-testid={`eco-app-${app.app_id}`}
-      data-nav-intent={plan.nav_intent}
-      data-creates-handoff="false"
-      data-launch-mode={app.launch_mode}
-      data-launch-target-id={app.launch_target_id ?? ""}
-      data-icon-ref={app.icon_ref ?? ""}
+      {...common}
+      disabled={launching}
+      aria-busy={launching || undefined}
+      onClick={() => onLaunch(app)}
     >
       {app.display_name}
-    </a>
+    </button>
   );
 }
 
-const noopResolve: LaunchResolver = () => null;
+const notRegistered: LaunchAvailability = () => false;
 
 export function EcoTopNav({
   model,
   nickname,
   sessionRole,
   viewport,
-  resolveLaunchTarget = noopResolve,
+  resolveLaunchTarget = notRegistered,
+  onSwitchApp,
   onTenantChange,
   onLogout,
   honorScopeMerchant = false,
@@ -95,7 +101,10 @@ export function EcoTopNav({
   nickname: string;
   sessionRole: string;
   viewport?: EcoNavViewport;
-  resolveLaunchTarget?: LaunchResolver;
+  /** Availability only; never a URL. */
+  resolveLaunchTarget?: LaunchAvailability;
+  /** The BFF seam. Missing = switching stays disabled (preview/tests). */
+  onSwitchApp?: (appId: string, targetId: string) => Promise<AppSwitchResult>;
   onTenantChange?: (tenantId: string) => void;
   onLogout?: () => void;
   /** 仅预览页打开。商家后台不把夹具租户写进会话。 */
@@ -104,6 +113,8 @@ export function EcoTopNav({
   const [nav, setNav] = useState(() => pinTouchApp(model));
   const [menuOpen, setMenuOpen] = useState(false);
   const [userOpen, setUserOpen] = useState(false);
+  const [launching, setLaunching] = useState<Record<string, boolean>>({});
+  const [launchError, setLaunchError] = useState("");
   const overflowRef = useRef<HTMLButtonElement>(null);
   const userRef = useRef<HTMLButtonElement>(null);
   const autoNarrow = useNarrow(viewport === undefined);
@@ -113,6 +124,7 @@ export function EcoTopNav({
     setNav(pinTouchApp(model));
     setMenuOpen(false);
     setUserOpen(false);
+    setLaunchError("");
   }, [model]);
 
   if (!nav.renderable || !nav.brand) return null;
@@ -120,17 +132,35 @@ export function EcoTopNav({
   const apps = switchableApps(nav.apps, nav.current_app.app_id);
   const parts = partitionApps(apps, narrow ? "narrow" : "wide");
   const canSwitch = nav.capabilities.can_switch_app === true;
-  const returnHref = nav.return_context
-    ? resolveTargetHref(true, nav.return_context.return_target_id, resolveLaunchTarget)
-    : null;
-  const billingHref = resolveTargetHref(nav.capabilities.can_open_billing, nav.billing?.entry ?? null, resolveLaunchTarget);
-  const unresolved = [...parts.pinned, ...parts.overflow].some(
-    (app) => planManualSwitch(app, canSwitch, resolveLaunchTarget).href === null,
-  );
   const scopeTrusted = honorScopeMerchant || nav.provenance === "public_ai_context";
   const payer = scopeTrusted ? payerText(nav) : payerLabel(nav.provenance, payerText(nav));
   const merchant = nav.scopes.find((item) => item.tenant_id === nav.active_tenant_id)?.display_name ?? null;
   const banner = agentWorkBanner(sessionRole, scopeTrusted ? merchant : null);
+  const unresolved = [...parts.pinned, ...parts.overflow].some(
+    (app) => !canLaunchManually(app, canSwitch, resolveLaunchTarget),
+  );
+
+  async function switchTo(appId: string, targetId: string) {
+    if (!onSwitchApp) {
+      setLaunchError("应用切换没有接通，没有跳转。");
+      return;
+    }
+    if (launching[appId]) return;
+    setLaunching((current) => ({ ...current, [appId]: true }));
+    setLaunchError("");
+    try {
+      const result = await onSwitchApp(appId, targetId);
+      if (!result.ok) {
+        setLaunchError(result.message);
+        return;
+      }
+      window.location.assign(result.launchUrl);
+    } catch {
+      setLaunchError("应用切换没有完成，也没有跳转。");
+    } finally {
+      setLaunching((current) => ({ ...current, [appId]: false }));
+    }
+  }
 
   function chooseTenant(tenantId: string) {
     setNav((current) => {
@@ -181,7 +211,16 @@ export function EcoTopNav({
       <div className={styles.apps}>
         <div className={styles.pinned} data-testid="eco-app-pinned">
           {parts.pinned.map((app) => (
-            <AppControl key={app.app_id} app={app} canSwitch={canSwitch} resolve={resolveLaunchTarget} />
+            <AppControl
+              key={app.app_id}
+              app={app}
+              canSwitch={canSwitch}
+              available={resolveLaunchTarget}
+              launching={Boolean(launching[app.app_id])}
+              onLaunch={(next) => {
+                if (next.launch_target_id) void switchTo(next.app_id, next.launch_target_id);
+              }}
+            />
           ))}
         </div>
         {parts.overflow.length > 0 ? (
@@ -199,7 +238,17 @@ export function EcoTopNav({
             {menuOpen ? (
               <div className={`${styles.menu} ${styles.menuLeft}`} role="menu" data-testid="eco-app-menu">
                 {parts.overflow.map((app) => (
-                  <AppControl key={app.app_id} app={app} canSwitch={canSwitch} resolve={resolveLaunchTarget} inMenu />
+                  <AppControl
+                    key={app.app_id}
+                    app={app}
+                    canSwitch={canSwitch}
+                    available={resolveLaunchTarget}
+                    launching={Boolean(launching[app.app_id])}
+                    onLaunch={(next) => {
+                      if (next.launch_target_id) void switchTo(next.app_id, next.launch_target_id);
+                    }}
+                    inMenu
+                  />
                 ))}
               </div>
             ) : null}
@@ -210,33 +259,24 @@ export function EcoTopNav({
             {LAUNCH_UNRESOLVED_RESIDUAL}
           </p>
         ) : null}
+        {launchError ? (
+          <p className={styles.launchError} role="alert" data-testid="eco-launch-error">{launchError}</p>
+        ) : null}
       </div>
 
       {nav.return_context ? (
-        returnHref ? (
-          <a
-            className={styles.link}
-            data-testid="eco-return-chip"
-            href={returnHref}
-            data-nav-intent="return_source"
-            data-creates-handoff="false"
-            data-launch-target-id={nav.return_context.return_target_id}
-          >
-            {nav.return_context.label}
-          </a>
-        ) : (
-          <span
-            className={styles.quiet}
-            data-testid="eco-return-chip"
-            data-nav-intent="return_source"
-            data-creates-handoff="false"
-            data-launch-residual="unresolved_launch_target"
-            data-launch-target-id={nav.return_context.return_target_id}
-            title={LAUNCH_UNRESOLVED_RESIDUAL}
-          >
-            {nav.return_context.label}
-          </span>
-        )
+        <button
+          type="button"
+          className={styles.link}
+          data-testid="eco-return-chip"
+          data-nav-intent="return_source"
+          data-creates-handoff="false"
+          data-launch-target-id={nav.return_context.return_target_id}
+          disabled={!onSwitchApp || launching[nav.return_context.source_app_id]}
+          onClick={() => void switchTo(nav.return_context?.source_app_id ?? "", nav.return_context?.return_target_id ?? "")}
+        >
+          {nav.return_context.label}
+        </button>
       ) : null}
 
       <div className={styles.spacer} />
@@ -292,11 +332,6 @@ export function EcoTopNav({
           {userOpen ? (
             <div className={styles.menu} role="menu">
               <p className={styles.roleLine}>{nav.role_label || "角色需确认"}</p>
-              {billingHref ? (
-                <a className={styles.link} data-testid="eco-billing-link" href={billingHref} data-creates-handoff="false">
-                  账单与额度
-                </a>
-              ) : null}
               {onLogout ? (
                 <button type="button" className={styles.button} onClick={onLogout}>
                   退出

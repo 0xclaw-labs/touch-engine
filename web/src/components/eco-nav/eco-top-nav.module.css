@@ -1,4 +1,4 @@
-/* EcoTopNav：56px sticky。颜色只走 --tk-*，深色跟随 tokens.css。 */
+/* EcoTopNav：56px sticky。颜色/圆角/焦点只走 semantic token 角色。 */
 
 .bar {
   display: flex;
@@ -6,12 +6,12 @@
   gap: 12px;
   height: 56px;
   padding: 0 16px;
-  background: var(--tk-surface);
-  border-bottom: 1px solid var(--tk-border);
+  background: var(--pn-bg-surface);
+  border-bottom: var(--pn-border-width-hairline) solid var(--pn-border-default);
   position: sticky;
   top: 0;
   z-index: 20;
-  color: var(--tk-ink-main);
+  color: var(--pn-text-primary);
 }
 
 .brand,
@@ -34,13 +34,20 @@
 
 .brandName {
   max-width: 140px;
-  color: var(--tk-ink-2);
+  color: var(--pn-text-secondary);
 }
 
 .currentApp {
   max-width: 160px;
   font-weight: 600;
-  box-shadow: inset 0 -2px 0 var(--tk-brand);
+  box-shadow: inset 0 -2px 0 var(--pn-brand-accent);
+}
+
+.launchError {
+  margin: 0;
+  color: var(--pn-status-warning-fg);
+  font-size: 12px;
+  max-width: 220px;
 }
 
 .pinned {
@@ -56,7 +63,7 @@
   height: 36px;
   padding: 0 10px;
   border-radius: 6px;
-  color: var(--tk-ink-2);
+  color: var(--pn-text-secondary);
   background: transparent;
   border: 1px solid transparent;
 }
@@ -68,28 +75,28 @@
 
 .button {
   cursor: pointer;
-  border-color: var(--tk-border);
-  background: var(--tk-surface);
+  border-color: var(--pn-border-default);
+  background: var(--pn-bg-surface);
 }
 
 .link:hover,
 .button:hover {
   background: var(--tk-bg-subtle);
-  color: var(--tk-ink-main);
+  color: var(--pn-text-primary);
 }
 
 .link:focus-visible,
 .button:focus-visible {
-  outline: 2px solid var(--tk-brand);
-  outline-offset: 2px;
+  outline: var(--pn-focus-width) solid var(--pn-focus-color);
+  outline-offset: var(--pn-focus-offset);
 }
 
 .quiet {
-  color: var(--tk-ink-sub);
+  color: var(--pn-text-muted);
 }
 
 .pressed {
-  color: var(--tk-ink-main);
+  color: var(--pn-text-primary);
   background: var(--tk-bg-subtle);
 }
 
@@ -110,7 +117,7 @@
 }
 
 .badge {
-  color: var(--tk-warning);
+  color: var(--pn-status-warning-fg);
   font-size: 12px;
   max-width: 220px;
 }
@@ -157,8 +164,8 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  background: var(--tk-surface);
-  border: 1px solid var(--tk-border);
+  background: var(--pn-bg-surface);
+  border: var(--pn-border-width-hairline) solid var(--pn-border-default);
   z-index: 21;
 }
 
@@ -169,7 +176,7 @@
 
 .roleLine {
   margin: 0;
-  color: var(--tk-ink-sub);
+  color: var(--pn-text-muted);
   font-size: 12px;
 }
 

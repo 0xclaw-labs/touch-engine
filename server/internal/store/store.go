@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -518,23 +519,44 @@ func scanLink(sc interface{ Scan(...any) error }) (CampaignLink, error) {
 
 // CreateLink mints a fresh opaque short code for the campaign. The code is
 // generated here (server-side entropy); callers cannot supply one.
+// newShortcode is the entropy seam. Tests force a collision; production always
+// uses campaign.NewShortcode.
+var newShortcode = campaign.NewShortcode
+
+const shortcodeAttempts = 5
+
+// CreateLink creates a campaign link. The code column is globally UNIQUE, so a
+// (rare) collision is retried a bounded number of times instead of surfacing a
+// 500 for a user who simply pressed "生成链接".
 func (s *Store) CreateLink(tenantID, campaignID, createdBy string) (CampaignLink, error) {
 	if _, err := s.GetCampaign(campaignID, tenantID); err != nil {
 		return CampaignLink{}, err
 	}
-	code, err := campaign.NewShortcode()
-	if err != nil {
-		return CampaignLink{}, err
+	var lastErr error
+	for attempt := 0; attempt < shortcodeAttempts; attempt++ {
+		code, err := newShortcode()
+		if err != nil {
+			return CampaignLink{}, err
+		}
+		l := CampaignLink{ID: newID("lnk_"), TenantID: tenantID, CampaignID: campaignID, Code: code,
+			Enabled: true, CreatedBy: createdBy, CreatedAt: now(), UpdatedAt: now()}
+		_, err = s.DB.Exec(
+			`INSERT INTO campaign_links(`+linkCols+`) VALUES(?,?,?,?,?,?,?,?)`,
+			l.ID, l.TenantID, l.CampaignID, l.Code, boolInt(l.Enabled), l.CreatedBy, l.CreatedAt, l.UpdatedAt)
+		if err == nil {
+			s.bumpEpoch()
+			return l, nil
+		}
+		if !isUniqueConstraint(err) {
+			return CampaignLink{}, err
+		}
+		lastErr = err
 	}
-	l := CampaignLink{ID: newID("lnk_"), TenantID: tenantID, CampaignID: campaignID, Code: code,
-		Enabled: true, CreatedBy: createdBy, CreatedAt: now(), UpdatedAt: now()}
-	_, err = s.DB.Exec(
-		`INSERT INTO campaign_links(`+linkCols+`) VALUES(?,?,?,?,?,?,?,?)`,
-		l.ID, l.TenantID, l.CampaignID, l.Code, boolInt(l.Enabled), l.CreatedBy, l.CreatedAt, l.UpdatedAt)
-	if err == nil {
-		s.bumpEpoch()
-	}
-	return l, err
+	return CampaignLink{}, fmt.Errorf("store: shortcode collision after %d attempts: %w", shortcodeAttempts, lastErr)
+}
+
+func isUniqueConstraint(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "unique constraint failed")
 }
 
 func (s *Store) GetLink(id, tenantID string) (CampaignLink, error) {

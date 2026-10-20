@@ -853,6 +853,13 @@ func (s *Server) handlePublicContentSnapshot(w http.ResponseWriter, r *http.Requ
 		fail(w, http.StatusNotFound, "not_found", "resource not found")
 		return
 	}
+	// HUI-2628: the customer may pin the exact version they participated with.
+	// A pinned version that is not the current adoption is a conflict, never a
+	// silent switch to whatever the merchant adopted later.
+	if pinned := strings.TrimSpace(r.URL.Query().Get("version_id")); pinned != "" && pinned != v.ID {
+		fail(w, http.StatusConflict, "version_mismatch", "the selected content version is no longer the adopted version")
+		return
+	}
 	if err := contentpack.Distributable(v.Status, v.GrantUntil, time.Now()); err != nil {
 		if !invalidPack409(w, err) {
 			fail(w, http.StatusInternalServerError, "internal", "distribution check failed")

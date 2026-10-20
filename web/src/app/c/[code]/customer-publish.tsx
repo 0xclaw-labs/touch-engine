@@ -180,26 +180,35 @@ export function CustomerPublish({ code, defaultCopy }: { code: string; defaultCo
         </select>
       </label>
       {row && (
-        <ul className="tk-list">
-          {(["preview", "export", "open_editor", "authorized_publish", "confirm_publish"] as const).map((kind) => {
-            const cell = row.capabilities[kind];
-            const title =
-              kind === "preview" ? "可预览" : kind === "export" ? "可导出" : kind === "open_editor" ? "可唤起编辑器" : kind === "authorized_publish" ? "可授权发布" : "可确认发布";
-            return (
-              <li key={kind}>
-                {title}：{cell?.enabled ? "可用" : "关闭"}。{cell?.reason}
-                {cell && !cell.enabled && cell.evidence_url ? (
-                  <>
-                    {" "}
-                    <a href={cell.evidence_url} target="_blank" rel="noreferrer">官方说明</a>
-                  </>
-                ) : null}
-              </li>
-            );
-          })}
-        </ul>
+        <p className="tk-note" data-testid="publish-summary">
+          当前平台：预览{actionEnabled(row, "preview") ? "可用" : "关闭"} · 导出{actionEnabled(row, "export") ? "可用" : "关闭"} · 代发{actionEnabled(row, "authorized_publish") ? "可用" : "关闭"} · 唤起编辑器{actionEnabled(row, "open_editor") ? "可用" : "关闭"}。
+          代发和唤起关闭时，仍可以用自己的账号手动发布。
+        </p>
       )}
-      {row?.manual_guide && <p className="tk-note">{row.manual_guide}</p>}
+      {row && (
+        <details className="tk-gap" data-testid="publish-capability-details">
+          <summary className="tk-note">发布能力说明</summary>
+          <ul className="tk-list">
+            {(["preview", "export", "open_editor", "authorized_publish", "confirm_publish"] as const).map((kind) => {
+              const cell = row.capabilities[kind];
+              const title =
+                kind === "preview" ? "可预览" : kind === "export" ? "可导出" : kind === "open_editor" ? "可唤起编辑器" : kind === "authorized_publish" ? "可授权发布" : "可确认发布";
+              return (
+                <li key={kind}>
+                  {title}：{cell?.enabled ? "可用" : "关闭"}。{cell?.reason}
+                  {cell && !cell.enabled && cell.evidence_url ? (
+                    <>
+                      {" "}
+                      <a href={cell.evidence_url} target="_blank" rel="noreferrer">官方说明</a>
+                    </>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+          {row.manual_guide && <p className="tk-note">{row.manual_guide}</p>}
+        </details>
+      )}
       <label className="tk-label">
         文案
         <textarea className="tk-input tk-input-tall" value={copy} onChange={(e) => setCopy(e.target.value)} />
