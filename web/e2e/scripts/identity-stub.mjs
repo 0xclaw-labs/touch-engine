@@ -80,6 +80,28 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify({ revoked: true }));
     return;
   }
+  if (req.method === "POST" && url === "/internal/v1/identity/shell/launch") {
+    const principal = String(body.principal_id || "");
+    const tenant = String(body.tenant_id || "");
+    const appId = String(body.app_id || "");
+    const targetId = String(body.target_id || "");
+    // Contract-shaped local double: the production route is public-ai's shell.
+    // It only mints for a registered-looking target and never invents a domain
+    // outside the vendored registry.
+    const targets = {
+      "ti-goboost-web": "https://goboost.modelxing.com/projects?code=e2e-one-time",
+      "ti-aicut-web": "https://aicut.modelxing.com/?code=e2e-one-time",
+      "ti-dhuman-web": "https://dhuman.modelxing.com/?code=e2e-one-time",
+    };
+    if (!principal.startsWith("usr_") || !tenant.startsWith("tnt_") || !targets[targetId]) {
+      res.writeHead(403, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "shell_launch_denied" }));
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: true, app_id: appId, target_id: targetId, launch_url: targets[targetId] }));
+    return;
+  }
   if (req.method === "POST" && url === "/internal/v1/identity/session/resolve") {
     const token = String(body.session_token || "");
     if (!token.startsWith("sess-")) {

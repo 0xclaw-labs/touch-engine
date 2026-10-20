@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -28,6 +29,9 @@ var (
 	// ErrNoPrincipal means the session resolved but carried no principal id;
 	// we refuse to fabricate an identity (fail-closed).
 	ErrNoPrincipal = errors.New("identity: session resolved without principal_id")
+	// ErrShellInvalidResponse means the shell launch answered without a usable
+	// https launch_url. A URL is never invented locally.
+	ErrShellInvalidResponse = errors.New("identity: shell launch returned no usable https launch_url")
 )
 
 // Principal is the resolved platform identity of a session.
@@ -121,6 +125,33 @@ func (c *Client) ResolveSession(ctx context.Context, sessionToken string) (Princ
 		return Principal{}, ErrNoPrincipal
 	}
 	return p, nil
+}
+
+// LaunchShell asks the platform shell to mint a one-time SSO code and returns
+// the target app's launch_url. The caller passes only the two contract ids;
+// no campaign, asset, payer or project data enters this request.
+func (c *Client) LaunchShell(ctx context.Context, principalID, tenantID, appID, targetID string) (string, error) {
+	var out struct {
+		OK        bool   `json:"ok"`
+		AppID     string `json:"app_id"`
+		TargetID  string `json:"target_id"`
+		LaunchURL string `json:"launch_url"`
+	}
+	err := c.postJSON(ctx, "/internal/v1/identity/shell/launch", map[string]string{
+		"principal_id": principalID,
+		"tenant_id":    tenantID,
+		"app_id":       appID,
+		"target_id":    targetID,
+	}, &out)
+	if err != nil {
+		return "", err
+	}
+	raw := strings.TrimSpace(out.LaunchURL)
+	parsed, perr := url.Parse(raw)
+	if raw == "" || perr != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
+		return "", ErrShellInvalidResponse
+	}
+	return raw, nil
 }
 
 func sessionString(m map[string]any, keys ...string) (string, bool) {

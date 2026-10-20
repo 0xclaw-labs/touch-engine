@@ -331,6 +331,9 @@ func (s *Server) Handler() http.Handler {
 
 	// authenticated admin surface (商家后台)
 	mux.Handle("GET /api/v1/whoami", s.requireSession(s.handleWhoami))
+	// HUI-2628: authenticated app switch. The browser sends only two ids; this
+	// server bridges to public-ai shell launch and never constructs a URL.
+	mux.Handle("POST /api/v1/eco-nav/switch", s.requireSession(s.handleEcoNavSwitch))
 	mux.Handle("GET /api/v1/session/memberships", s.requirePrincipal(s.handleSessionMemberships))
 	mux.Handle("GET /api/v1/workbench", s.requireSession(s.handleWorkbench))
 

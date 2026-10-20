@@ -96,6 +96,36 @@ export function resolveRegisteredLaunch(targetId: string | null | undefined, env
   return raw;
 }
 
+/**
+ * HUI-2628: a shell launch_url must stay on the target registration's exact
+ * origin and path prefix. The one-time code query is allowed; business payload
+ * query keys are not. A URL is never assembled from a caller value here.
+ */
+export function validateLaunchUrl(
+  targetId: string,
+  raw: string,
+  env: AllowlistEnv = process.env as AllowlistEnv,
+): string | null {
+  const registered = resolveRegisteredLaunch(targetId, env);
+  if (!registered) return null;
+  let base: URL;
+  let launch: URL;
+  try {
+    base = new URL(registered);
+    launch = new URL(raw);
+  } catch {
+    return null;
+  }
+  const loopbackTest = base.protocol === "http:" && (base.hostname === "127.0.0.1" || base.hostname === "localhost");
+  if (launch.protocol !== (loopbackTest ? "http:" : "https:")) return null;
+  if (launch.username || launch.password) return null;
+  if (launch.origin !== base.origin) return null;
+  const prefix = base.pathname.endsWith("/") ? base.pathname : `${base.pathname}/`;
+  if (base.pathname !== "/" && launch.pathname !== base.pathname && !launch.pathname.startsWith(prefix)) return null;
+  if (blockedQuery(launch)) return null;
+  return launch.toString();
+}
+
 export function registeredLaunchMap(env: AllowlistEnv = process.env as AllowlistEnv): Record<string, string> {
   const out: Record<string, string> = {};
   for (const targetId of registeredTargets.keys()) {

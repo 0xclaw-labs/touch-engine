@@ -6,6 +6,7 @@ import {
   NAV_INTENT_MANUAL_SWITCH,
   TOUCH_APP_ID,
   billingBadgeText,
+  canLaunchManually,
   isRenderable,
   parseEcoNavDocument,
   partitionApps,
@@ -296,5 +297,16 @@ describe("partitionApps", () => {
       TOUCH_APP_ID,
     );
     expect(listed.map((item) => item.app_id)).toEqual(["goboost"]);
+  });
+});
+
+describe("HUI-2628 launchable resolution", () => {
+  it("requires a registered target and never yields a URL", () => {
+    const app = launchable({ app_id: "goboost", display_name: "GoBoost" });
+    expect(canLaunchManually(app, true, () => false)).toBe(false);
+    expect(canLaunchManually(app, true, () => true)).toBe(true);
+    expect(canLaunchManually(app, false, () => true)).toBe(false);
+    const ent = launchable({ app_id: "x", display_name: "X", state: "entitlement_required" } as never);
+    expect(canLaunchManually(ent, true, () => true)).toBe(false);
   });
 });
