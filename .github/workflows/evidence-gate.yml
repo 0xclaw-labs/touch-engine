@@ -12,7 +12,9 @@ jobs:
   evidence-gate:
     # 2026-10-17 迁 Windows 专机（win-ci）。python3 → python：Windows 无 python3 别名，
     # ubuntu-latest 两者皆有，改动对原宿主无影响。shell 显式 bash（Windows 默认 pwsh）。
-    runs-on: [win-ci]
+    # 2026-10-20：ciwin 故障期 win-ci 专机离线 → 改跨平台标签 [xplat]（fleet 组 mac+win runner 共用，
+    # 脚本纯标准库只调 git，零 OS 绑定）。mac 只有 python3 无 python，下方命令名做兼容。回退=改回 [win-ci]。
+    runs-on: [xplat]
     timeout-minutes: 15
     defaults:
       run:
@@ -24,5 +26,6 @@ jobs:
       - name: 证据引用完整性门（仅新增审计文档）
         run: |
           BASE=$(git merge-base "origin/${{ github.base_ref || 'main' }}" HEAD)
-          python tools/ci/evidence-integrity-check.py . HEAD --only-added "$BASE" \
+          PY=$(command -v python3 || command -v python)
+          "$PY" tools/ci/evidence-integrity-check.py . HEAD --only-added "$BASE" \
             --cross-names public-ai,leads-engine,touch-engine,product-image-engine,shuhai-guanlan,guanlan-order,aicut,GoBoost
