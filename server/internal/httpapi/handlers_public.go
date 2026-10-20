@@ -34,6 +34,28 @@ type publicLinkView struct {
 	MerchantName string            `json:"merchant_name,omitempty"`
 	StoreName    string            `json:"store_name,omitempty"`
 	BrandShell   *publicBrandShell `json:"brand_shell,omitempty"`
+	// Capabilities are configuration facts the guest page may rely on. They are
+	// booleans only: no endpoint, tenant, or internal flag value is disclosed.
+	Capabilities publicCapabilities `json:"capabilities"`
+}
+
+// publicCapabilities mirrors the registration gates. A false value means the
+// action is not available on this deployment; the page must not render a dead
+// primary action for it.
+type publicCapabilities struct {
+	Participation bool `json:"participation"`
+	ContentPacks  bool `json:"content_packs"`
+	RewardOps     bool `json:"reward_ops"`
+	LeadsCapture  bool `json:"leads_capture"`
+}
+
+func (s *Server) publicCapabilities() publicCapabilities {
+	return publicCapabilities{
+		Participation: s.Cfg.FeatureParticipation,
+		ContentPacks:  s.Cfg.FeatureContentPacks,
+		RewardOps:     s.Cfg.FeatureRewardOps,
+		LeadsCapture:  s.Cfg.FeatureLeadsCapture,
+	}
 }
 
 type publicBrandShell struct {
@@ -100,7 +122,7 @@ func (s *Server) handlePublicLink(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	view := publicLinkView{State: string(res.Outcome)}
+	view := publicLinkView{State: string(res.Outcome), Capabilities: s.publicCapabilities()}
 	if res.Outcome == store.OutcomeAvailable {
 		view.Title = res.Campaign.Title
 		view.PublicContent = res.Campaign.PublicContent

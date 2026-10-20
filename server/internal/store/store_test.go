@@ -371,3 +371,51 @@ func TestShortcodeUniquenessAcrossCampaigns(t *testing.T) {
 		seen[l.Code] = true
 	}
 }
+
+// HUI-2628: a short-code collision is a retry, not a 500. The generator seam
+// lets the test force the first candidate to collide with an existing row.
+func TestCreateLinkRetriesShortcodeCollision(t *testing.T) {
+	s := openStore(t)
+	ctx := seedTwoTenants(t, s)
+	c, err := s.CreateCampaign(NewCampaign{TenantID: ctx.tenA.ID, Title: "collision", CreatedBy: ctx.ownA.PrincipalRef})
+	must(t, err)
+	first, err := s.CreateLink(ctx.tenA.ID, c.ID, ctx.ownA.PrincipalRef)
+	must(t, err)
+
+	original := newShortcode
+	t.Cleanup(func() { newShortcode = original })
+	calls := 0
+	newShortcode = func() (string, error) {
+		calls++
+		if calls == 1 {
+			return first.Code, nil
+		}
+		return "ZZZZZZZZZZZZ", nil
+	}
+	second, err := s.CreateLink(ctx.tenA.ID, c.ID, ctx.ownA.PrincipalRef)
+	must(t, err)
+	if calls != 2 {
+		t.Fatalf("shortcode attempts = %d, want 2", calls)
+	}
+	if second.Code != "ZZZZZZZZZZZZ" || second.Code == first.Code {
+		t.Fatalf("collision retry produced %+v", second)
+	}
+}
+
+// HUI-2628: retry is bounded. A generator that only ever collides must return
+// a real error after the cap instead of looping or reporting success.
+func TestCreateLinkCollisionExhaustionReturnsError(t *testing.T) {
+	s := openStore(t)
+	ctx := seedTwoTenants(t, s)
+	c, err := s.CreateCampaign(NewCampaign{TenantID: ctx.tenA.ID, Title: "exhaust", CreatedBy: ctx.ownA.PrincipalRef})
+	must(t, err)
+	first, err := s.CreateLink(ctx.tenA.ID, c.ID, ctx.ownA.PrincipalRef)
+	must(t, err)
+
+	original := newShortcode
+	t.Cleanup(func() { newShortcode = original })
+	newShortcode = func() (string, error) { return first.Code, nil }
+	if _, err := s.CreateLink(ctx.tenA.ID, c.ID, ctx.ownA.PrincipalRef); err == nil {
+		t.Fatal("exhausted collision retries must return an error")
+	}
+}
