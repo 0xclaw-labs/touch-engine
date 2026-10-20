@@ -2,7 +2,7 @@
 .tk-public {
   width: 100%;
   margin: 0 auto;
-  padding: 1rem 1rem 3rem;
+  padding: var(--pn-spacing-4) var(--pn-spacing-4) var(--pn-spacing-12);
 }
 
 .tk-page {
@@ -15,9 +15,10 @@
 
 .tk-public-card,
 .tk-card {
-  background: var(--tk-surface);
-  border: 1px solid var(--tk-border);
-  padding: 1rem;
+  background: var(--pn-bg-surface);
+  border: var(--pn-border-width-hairline) solid var(--pn-border-default);
+  border-radius: var(--pn-radius-card);
+  padding: var(--pn-spacing-4);
 }
 
 .tk-card + .tk-card,
@@ -43,35 +44,65 @@
 }
 
 .tk-public-title {
-  margin: 0 0 0.5rem;
-  font-family: var(--tk-display);
-  font-size: 2rem;
-  font-weight: 600;
-  line-height: 1.25;
+  margin: 0 0 var(--pn-spacing-2);
+  font-family: var(--pn-type-display-family);
+  font-size: var(--pn-type-heading-size);
+  font-weight: var(--pn-type-heading-weight);
+  line-height: var(--pn-type-heading-line-height);
 }
 
 .tk-title {
-  margin: 0 0 0.35rem;
-  font-size: 1.75rem;
-  font-weight: 650;
-  line-height: 1.2;
+  margin: 0 0 var(--pn-spacing-1);
+  font-family: var(--pn-type-heading-family);
+  font-size: var(--pn-type-heading-size);
+  font-weight: var(--pn-type-heading-weight);
+  line-height: var(--pn-type-heading-line-height);
 }
 
 .tk-lead {
-  margin: 0 0 1rem;
-  font-size: 1.05rem;
-  line-height: 1.5;
+  margin: 0 0 var(--pn-spacing-4);
+  font-size: var(--pn-type-body-size);
+  line-height: var(--pn-type-body-line-height);
 }
 
 .tk-public-value {
-  margin: 0.75rem 0 0.5rem;
-  font-size: 1.125rem;
-  line-height: 1.55;
+  margin: var(--pn-spacing-3) 0 var(--pn-spacing-2);
+  font-size: var(--pn-type-label-size);
+  line-height: var(--pn-type-body-line-height);
 }
 
 .tk-section-title {
-  margin: 1.25rem 0 0.5rem;
-  font-size: 1.125rem;
+  margin: var(--pn-spacing-4) 0 var(--pn-spacing-2);
+  font-size: var(--pn-type-label-size);
+  font-weight: var(--pn-type-label-weight);
+  line-height: var(--pn-type-label-line-height);
+}
+
+.tk-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.75rem;
+  margin: 0 0 1rem;
+  padding: 0;
+  list-style: none;
+  font-size: 0.875rem;
+  color: var(--tk-ink-sub);
+}
+
+.tk-steps li {
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--tk-border);
+  border-radius: var(--pn-radius-pill);
+}
+
+.tk-steps .tk-step-current {
+  color: var(--tk-ink-main);
+  border-color: var(--pn-brand-accent);
+  background: var(--pn-bg-sunken);
+}
+
+.tk-steps .tk-step-done {
+  color: var(--tk-ok);
 }
 
 .tk-nav {
@@ -81,17 +112,17 @@
   margin: 0 0 1.25rem;
   padding: 0.75rem 0 0;
   list-style: none;
-  border-top: 3px solid var(--tk-brand);
+  border-top: 3px solid var(--pn-brand-accent);
 }
 
 .tk-nav a {
-  color: var(--tk-ink-2);
+  color: var(--pn-text-secondary);
   text-decoration: none;
 }
 
 .tk-nav a[aria-current="page"] {
-  color: var(--tk-ink-main);
-  box-shadow: inset 0 -2px 0 var(--tk-brand);
+  color: var(--pn-text-primary);
+  box-shadow: inset 0 -2px 0 var(--pn-brand-accent);
 }
 
 .tk-row {
@@ -109,11 +140,11 @@
 }
 
 .tk-gap {
-  margin-top: 0.75rem;
+  margin-top: var(--pn-spacing-3);
 }
 
 .tk-section {
-  margin-top: 1rem;
+  margin-top: var(--pn-spacing-4);
 }
 
 .tk-label,
@@ -134,17 +165,17 @@
   display: block;
   width: 100%;
   margin-top: 0.25rem;
-  padding: 0.7rem 0.75rem;
-  border: 1px solid var(--tk-border);
-  border-radius: 2px;
-  background: var(--tk-surface);
-  color: var(--tk-ink-main);
+  padding: var(--pn-spacing-3);
+  border: var(--pn-border-width-hairline) solid var(--pn-border-default);
+  border-radius: var(--pn-radius-control);
+  background: var(--pn-bg-surface);
+  color: var(--pn-text-primary);
   font: inherit;
-  font-size: 1rem;
+  font-size: var(--pn-type-body-size);
 }
 
 .tk-input-tall {
-  min-height: 4.5rem;
+  min-height: var(--pn-control-height-touch);
 }
 
 .tk-form {
@@ -162,38 +193,38 @@
 .tk-primary {
   display: block;
   width: 100%;
-  margin-top: 0.5rem;
-  padding: 0.85rem 1rem;
+  margin-top: var(--pn-spacing-2);
+  padding: var(--pn-spacing-3) var(--pn-spacing-4);
   border: 0;
-  border-radius: 2px;
-  background: var(--tk-ink-main);
-  color: #fff;
-  font-size: 1rem;
+  border-radius: var(--pn-radius-control);
+  background: var(--pn-brand-accent);
+  color: var(--pn-brand-ink);
+  font-size: var(--pn-type-body-size);
+  font-weight: var(--pn-type-label-weight);
 }
 
 .tk-button,
 .tk-quiet {
-  padding: 0.55rem 0.8rem;
-  border-radius: 2px;
-  border: 1px solid var(--tk-border);
-  background: var(--tk-surface);
-  color: var(--tk-ink-main);
+  padding: var(--pn-spacing-2) var(--pn-spacing-3);
+  border-radius: var(--pn-radius-control);
+  border: var(--pn-border-width-hairline) solid var(--pn-border-default);
+  background: var(--pn-bg-surface);
+  color: var(--pn-text-primary);
 }
 
 .tk-button {
-  border-color: var(--tk-brand);
-  background: var(--tk-brand);
-  /* 品牌底色（painuo token 下是薄荷绿 #6cebdc）配白字对比 1.44:1（axe serious）；
-     墨色文字在品牌底上约 10.7:1。生成 token 不可手改，修在手写层。 */
-  color: var(--tk-ink-main);
+  border-color: var(--pn-brand-accent);
+  background: var(--pn-brand-accent);
+  /* Brand accent with brand ink is a declared, statically checked pair. */
+  color: var(--pn-brand-ink);
 }
 
 .tk-quiet:disabled,
 .tk-button:disabled,
 .tk-primary:disabled {
-  color: var(--tk-ink-sub);
-  background: var(--tk-bg-subtle);
-  border-color: var(--tk-border);
+  color: var(--pn-text-disabled);
+  background: var(--pn-bg-sunken);
+  border-color: var(--pn-border-default);
   cursor: not-allowed;
 }
 
@@ -208,8 +239,8 @@
 
 .tk-warn,
 .tk-unknown {
-  color: var(--tk-warning);
-  background: var(--tk-warning-bg);
+  color: var(--pn-status-warning-fg);
+  background: var(--pn-status-warning-weak);
 }
 
 .tk-unknown,
@@ -220,11 +251,11 @@
 }
 
 .tk-danger {
-  color: var(--tk-danger);
+  color: var(--pn-status-danger-fg);
 }
 
 .tk-ok {
-  color: var(--tk-ok);
+  color: var(--pn-status-success-fg);
 }
 
 .tk-outcome,
@@ -264,8 +295,8 @@
 }
 
 :focus-visible {
-  outline: 2px solid var(--tk-brand);
-  outline-offset: 2px;
+  outline: var(--pn-focus-width) solid var(--pn-focus-color);
+  outline-offset: var(--pn-focus-offset);
 }
 
 @media (prefers-reduced-motion: reduce) {

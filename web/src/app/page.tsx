@@ -5,11 +5,11 @@ import { TodayDesk } from "@/components/work/today-desk";
 // 「静态声明 vs 组件内运行时渲染」的判读口径分歧归 HUI-2619 终审（docs/audits/hui-2628/fix2/）。
 export default function Home() {
   return (
-    <>
+    <div data-pattern="workspace">
       <p hidden data-state="loading">正在读取</p>
       <p hidden data-state="empty">还没有记录</p>
       <p hidden data-state="error">没有读到，请重试</p>
       <TodayDesk />
-    </>
+    </div>
   );
 }

@@ -1,18 +1,22 @@
+/* HUI-2628: legacy --tk-* names are compatibility aliases only. Every color,
+   type family, radius and spacing role below resolves to the vendored public-ai
+   semantic tokens; no ad-hoc palette value lives in this file. */
 :root {
-  --tk-surface: #fff;
-  --tk-border: #e5e7eb;
-  --tk-ink-main: #1f2329;
-  --tk-ink-2: #374151;
-  --tk-ink-sub: #6b7280;
-  --tk-brand: #2563eb;
-  --tk-bg-subtle: #f3f4f6;
-  --tk-warning: #b45309;
-  --tk-bg: #f7f8fa;
-  --tk-danger: #b91c1c;
-  --tk-warning-bg: #fef3c7;
-  --tk-ok: #065f46;
-  --tk-display: "Songti SC", "STSong", "PMingLiU", "Noto Serif SC", serif;
-  --tk-sans: "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  --tk-surface: var(--pn-bg-surface);
+  --tk-border: var(--pn-border-default);
+  --tk-ink-main: var(--pn-text-primary);
+  --tk-ink-2: var(--pn-text-secondary);
+  --tk-ink-sub: var(--pn-text-muted);
+  --tk-brand: var(--pn-brand-accent);
+  --tk-brand-text: var(--pn-brand-text);
+  --tk-bg-subtle: var(--pn-bg-sunken);
+  --tk-warning: var(--pn-status-warning-fg);
+  --tk-warning-bg: var(--pn-status-warning-weak);
+  --tk-bg: var(--pn-bg-page);
+  --tk-danger: var(--pn-status-danger-fg);
+  --tk-ok: var(--pn-status-success-fg);
+  --tk-display: var(--pn-type-display-family);
+  --tk-sans: var(--pn-type-body-family);
 }
 
 html,
@@ -29,6 +33,6 @@ body {
 }
 
 a {
-  color: #2563eb;
+  color: var(--tk-brand-text);
   text-decoration: none;
 }
