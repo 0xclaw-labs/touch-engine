@@ -155,6 +155,8 @@ export function EcoTopNav({
         return;
       }
       window.location.assign(result.launchUrl);
+    } catch {
+      setLaunchError("应用切换没有完成，也没有跳转。");
     } finally {
       setLaunching((current) => ({ ...current, [appId]: false }));
     }

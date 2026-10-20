@@ -14,6 +14,7 @@ describe("HUI-2222 public normal path guards", () => {
     expect(page).toContain("canReadContent");
     expect(page).toContain("content-choices");
     expect(page).toContain("let version = participation?.content_pack_version");
+    expect(page).toContain("门店内容版本没有读到");
   });
 
   it("pins the snapshot to the guest's version and surfaces mismatch", () => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { failureText, useSession } from "@/components/work/merchant-session";
 import { LoadErrorState } from "@/components/work/load-error-state";
@@ -61,6 +61,7 @@ export function CampaignCreateWizard() {
   const [links, setLinks] = useState<ShareLink[]>([]);
   const [linksPhase, setLinksPhase] = useState<"loading" | "error" | "ready">("loading");
   const [origin, setOrigin] = useState("");
+  const hydrated = useRef(false);
 
   const loadStores = useCallback(async () => {
     setStoresPhase("loading");
@@ -92,10 +93,11 @@ export function CampaignCreateWizard() {
       setError("没有连上服务，门店没有读到。");
       setStoresPhase("error");
     });
+    hydrated.current = true;
   }, [loadStores, session.tenantId]);
 
   useEffect(() => {
-    if (!session.tenantId) return;
+    if (!hydrated.current || !session.tenantId) return;
     window.localStorage.setItem(draftStorageKey(session.tenantId), serializeDraft(draft));
   }, [draft, session.tenantId]);
 
@@ -166,6 +168,24 @@ export function CampaignCreateWizard() {
       setStep(2);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function copyShare() {
+    if (!shareUrl) return;
+    const text = campaignShareText({
+      title: draft.title,
+      store_name: stores.find((item) => item.id === draft.store_id)?.name,
+      starts_at: toRFC3339Local(draft.starts_at_local) || null,
+      ends_at: toRFC3339Local(draft.ends_at_local) || null,
+      url: shareUrl,
+    });
+    try {
+      if (!navigator.clipboard) throw new Error("clipboard_unavailable");
+      await navigator.clipboard.writeText(text);
+      setNotice("分享文案已复制。");
+    } catch {
+      setError("浏览器没有允许复制。请手动选中链接。");
     }
   }
 
@@ -308,17 +328,7 @@ export function CampaignCreateWizard() {
               <p className="tk-note">活动链接</p>
               <p><code>{shareUrl}</code></p>
               <p className="tk-note">{availability.note || "链接已启用，可以分享给顾客。"}</p>
-              <button
-                type="button"
-                className="tk-quiet"
-                onClick={() => void navigator.clipboard?.writeText(campaignShareText({
-                  title: draft.title,
-                  store_name: stores.find((item) => item.id === draft.store_id)?.name,
-                  starts_at: toRFC3339Local(draft.starts_at_local) || null,
-                  ends_at: toRFC3339Local(draft.ends_at_local) || null,
-                  url: shareUrl,
-                })).then(() => setNotice("分享文案已复制。")).catch(() => setNotice("浏览器没有允许复制，请手动选中链接。"))}
-              >
+              <button type="button" className="tk-quiet" onClick={() => void copyShare()}>
                 复制分享文案
               </button>
             </div>

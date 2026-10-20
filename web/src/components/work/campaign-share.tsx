@@ -43,6 +43,7 @@ export function CampaignShare({
   const enabled = useMemo(() => pickShareLink(links), [links]);
   const url = enabled && origin ? campaignShareUrl(origin, enabled.code) : "";
   const availability = shareAvailability({ status: campaign.status, ends_at: campaign.ends_at ?? null, link: enabled });
+  const primary = campaign.status === "active";
   const text = enabled && url
     ? campaignShareText({ title: campaign.title, store_name: campaign.store_name, starts_at: campaign.starts_at, ends_at: campaign.ends_at, url })
     : "";
@@ -116,7 +117,7 @@ export function CampaignShare({
             {availability.note || "链接已启用，可以分享给顾客。"}
           </p>
           <div className="tk-row">
-            <button type="button" className="tk-primary" data-primary-action="true" onClick={() => void copy()}>复制分享文案</button>
+            <button type="button" className={primary ? "tk-primary" : "tk-quiet"} data-primary-action={primary ? "true" : undefined} onClick={() => void copy()}>复制分享文案</button>
             <button type="button" className="tk-quiet" onClick={() => void copy()}>复制链接</button>
           </div>
           <p className="tk-note" data-testid="share-text">{text}</p>

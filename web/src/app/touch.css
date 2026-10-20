@@ -322,6 +322,11 @@
     min-height: 44px;
   }
 
+  .tk-input,
+  .tk-select {
+    min-height: var(--pn-control-height-touch);
+  }
+
   /* 勾选行是 checkbox 的有效命中区（label 整行可点）：两行文案 42px → 补足 44 */
   .tk-check {
     min-height: 44px;

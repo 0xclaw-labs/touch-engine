@@ -44,14 +44,4 @@ test("merchant creates, publishes and shares a campaign through one normal path"
   await expect(main).toHaveAttribute("data-state", "available");
   await expect(main).toContainText(title);
   await expect(page.locator('[data-testid="eco-top-nav"]')).toHaveCount(0);
-
-  // Do not leave an extra active campaign for later specs' "today" assertions.
-  await page.evaluate(async ({ tenantId, title }) => {
-    const headers = { "content-type": "application/json", "x-tenant-id": tenantId };
-    const list = await fetch("/api/campaigns", { headers }).then((res) => res.json());
-    const row = Array.isArray(list.items) ? list.items.find((item: { title?: string }) => item.title === title) : null;
-    if (row?.id) {
-      await fetch(`/api/campaigns/${row.id}/status`, { method: "POST", headers, body: JSON.stringify({ status: "ended" }) });
-    }
-  }, { tenantId: seed.tenantId, title });
 });

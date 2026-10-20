@@ -306,11 +306,20 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
     if (!version && canReadContent) {
       try {
         const res = await fetch(`/api/public/links/${encodeURIComponent(code)}/content-choices`);
+        if (!res.ok) {
+          setParticipationNote("门店内容版本没有读到。先不要开始，稍后重试或请店员协助。");
+          return;
+        }
         const data = await res.json().catch(() => null);
         const items = Array.isArray(data?.items) ? data.items : [];
+        if (items.length > 0 && typeof items[0]?.version_id !== "string") {
+          setParticipationNote("门店内容版本不完整。先不要开始，请店员协助。");
+          return;
+        }
         version = typeof items[0]?.version_id === "string" ? items[0].version_id : "";
       } catch {
-        version = "";
+        setParticipationNote("网络异常，门店内容版本没有读到。先不要开始，稍后重试。");
+        return;
       }
     }
     const result = await startParticipation(code, version);

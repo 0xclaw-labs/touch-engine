@@ -32,6 +32,8 @@ describe("HUI-2628 creation route", () => {
     expect(wizard).not.toMatch(/placeholder="[^"]*RFC3339/);
     expect(wizard.match(/data-primary-action="true"/g)?.length).toBe(3);
     expect(wizard).toContain("生成链接并发布");
+    expect(wizard).toContain("hydrated.current");
+    expect(wizard).toContain("async function copyShare()");
     expect(wizard).toContain("保存草稿并继续");
   });
 
@@ -52,5 +54,7 @@ describe("HUI-2628 creation route", () => {
     // draft publish and paused resume are mutually exclusive states; the share
     // panel owns the active-state copy action.
     expect(detail.match(/data-primary-action="true"/g)?.length).toBe(2);
+    const share = read("src/components/work/campaign-share.tsx");
+    expect(share).toContain('const primary = campaign.status === "active"');
   });
 });

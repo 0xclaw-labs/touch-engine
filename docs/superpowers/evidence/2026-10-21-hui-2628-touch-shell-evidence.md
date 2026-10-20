@@ -17,7 +17,7 @@
 | Web 测试 | `76 files / 719 tests` 全绿 |
 | Go 测试 | `39 packages ok / 0 FAIL` |
 | Next build | exit 0 |
-| 本地 e2e | 8 spec / 19 用例全 pass（新增 3 spec 4 用例 + 回归 5 spec 15 用例） |
+| 本地 e2e | 干净环境 8 spec / 19 用例全 pass；review 后 01/12/13/14 复跑 4/4 pass |
 
 ## 2. 缺陷 → 根因 → 修复
 
@@ -95,7 +95,10 @@ $ cd web && npx vitest run
 $ cd server && GOWORK=off go test ./... -count=1
 EXIT:0
 39 packages ok / 0 FAIL
-（完整日志 /tmp/touch-go-full2.log）
+（最终全量 /tmp/touch-go-final2.log）
+注：前一次全量在机器高负载下命中既有 `TestCacheRecomputeConsistencyAndBoundedStaleness`
+的 timing 计数 flake（期望 7 得 8）；该单测单独重跑 PASS，随后全量 39/39 PASS。
+本轮 diff 未触碰 readcache。
 
 $ cd web && npm run build
 EXIT:0
@@ -121,6 +124,10 @@ $ cd web && e2e/node_modules/.bin/playwright test -c e2e/playwright.config.ts \
   ✓ 13 guest starts participation, pinned content + AI marking + text verification code
   ✓ 14 authenticated app switch BFF + no-fixture nav
   19 passed (3.3m)
+
+# review 修复后复跑（hydration/分享 primary/版本读取失败/移动命中高度/switch catch）
+$ ... 01-merchant-first-entry 12-campaign-creation 13-public-content 14-eco-nav-switch
+  4 passed
 ```
 
 应用切换实测（真实 Next + Go + identity stub）：
@@ -139,6 +146,9 @@ renderable=false, state=unavailable, reasons=["authority_unavailable"], brand=nu
 ```
 
 identity stub 不是 public-ai 生产实现；它只验证本仓 BFF/Go/校验链的合同形状。
+
+双轴 review：`docs/superpowers/reviews/2026-10-21-hui-2628-touch-shell-review.md`
+（Standards 9 项：5 修、2 延期、2 通过；Spec 14 项：12 完成、2 部分/边界，附 R1–R5 ruling）。
 
 ## 6. 测试覆盖（新增/修改）
 
