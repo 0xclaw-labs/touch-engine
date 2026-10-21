@@ -105,12 +105,14 @@
 }
 
 .brand {
+  margin: 0; /* 宿主无全局 reset 时压掉 UA 缺省 margin，跨产品像素一致 */
   font-size: var(--lpg-fs-3xl, 32px);
   font-weight: var(--lpg-fw-bold, 600);
   line-height: var(--lpg-lh-tight, 1.3);
 }
 
 .sub {
+  margin: 0; /* 同上 */
   color: var(--lpg-fg-muted, #8b95a3);
   font-size: var(--lpg-fs-sm, 13px);
   line-height: var(--lpg-lh-normal, 1.6);

@@ -1,6 +1,6 @@
 {
   "name": "@painuo/login-page",
-  "version": "0.1.0",
+  "version": "0.2.3",
   "private": true,
   "description": "派诺生态统一登录组件（Claude 式分屏、platform-identity 默认客户端）",
   "type": "module",

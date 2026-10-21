@@ -429,6 +429,85 @@ test("links 缺省：旧版静态提示与封闭 tagline 维持，无注册行",
   );
 });
 
+test("linkNavigate：站内链接走 linkNavigate，登录落点仍走 navigate；缺省回退 navigate", () => {
+  const linked: string[] = [];
+  const landed: string[] = [];
+  const harness = pageHarness({});
+  const props = {
+    ...baseProps,
+    layout: "split",
+    links: { forgotPassword: "/forgot-password", register: "/register" },
+    linkNavigate: (p: string) => linked.push(p),
+    navigate: (p: string) => landed.push(p),
+  } as LoginPageProps;
+
+  // otp 态：注册入口走 linkNavigate，navigate 不被链接借用
+  const t0 = harness.render("LoginPage", props);
+  const registerBtn = elements(t0).find((el) => el.props?.children === "立即注册");
+  assert.ok(registerBtn, "links.register 时应渲染注册入口");
+  registerBtn?.props.onClick();
+  assert.deepEqual(linked, ["/register"], "注册入口点击应走 linkNavigate");
+  assert.deepEqual(landed, [], "链接不应借用 navigate（登录落点闸语义）");
+
+  // 密码 tab：忘记密码链同样走 linkNavigate
+  const seg = elements(t0).find((el) => el.props?.ariaLabel === "登录方式");
+  seg?.props.onChange("password");
+  const t1 = harness.render("LoginPage", props);
+  const forgot = elements(t1).find((el) => el.props?.children === "忘记密码？");
+  assert.ok(forgot, "密码 tab 页脚应有忘记密码链");
+  forgot?.props.onClick();
+  assert.deepEqual(linked, ["/register", "/forgot-password"], "忘记密码链点击应走 linkNavigate");
+  assert.deepEqual(landed, [], "navigate 全程未被链接调用");
+
+  // 缺省（不传 linkNavigate）回退 navigate——既有行为回归保护
+  const fallback: string[] = [];
+  const t2 = harness.render("LoginPage", {
+    ...baseProps,
+    layout: "split",
+    links: { register: "/register" },
+    navigate: (p: string) => fallback.push(p),
+  } as LoginPageProps);
+  const registerBtn2 = elements(t2).find((el) => el.props?.children === "立即注册");
+  registerBtn2?.props.onClick();
+  assert.deepEqual(fallback, ["/register"], "缺省 linkNavigate 时链接回退 navigate");
+});
+
+test("media.kind=image 只渲染静帧 src；reduced-motion 同走 img；缺省行为不变", () => {
+  const harness = pageHarness({});
+  const image = { src: "/media/login.jpg", poster: "/media/login-poster.jpg", kind: "image" as const };
+  const props = {
+    ...baseProps,
+    layout: "split",
+    brand: { name: "X", media: image },
+  } as LoginPageProps;
+
+  const t0 = harness.render("LoginPage", props);
+  assert.ok(!elements(t0).some((el) => el.type === "video"), "kind=image 不渲染 video");
+  const img = elements(t0).find((el) => el.type === "img");
+  assert.ok(img, "kind=image 渲染静帧 img");
+  assert.equal(img?.props.src, image.src, "静帧取 media.src，poster 不用");
+
+  const rm = pageHarness({
+    __globals: { window: { matchMedia: () => ({ matches: true }) } },
+  });
+  const t1 = rm.render("LoginPage", props);
+  const rmImg = elements(t1).find((el) => el.type === "img");
+  assert.ok(rmImg, "reduced-motion 下仍退为 img");
+  assert.equal(rmImg?.props.src, image.src, "reduced-motion 下静帧同样取 media.src");
+
+  // 缺省（不传 kind）= video 行为不变
+  const video = { src: "/media/login.mp4", poster: "/media/login-poster.jpg" };
+  const t2 = harness.render("LoginPage", {
+    ...baseProps,
+    layout: "split",
+    brand: { name: "X", media: video },
+  } as LoginPageProps);
+  const v = elements(t2).find((el) => el.type === "video");
+  assert.ok(v, "缺省 kind 仍渲染 video");
+  assert.equal(v?.props.src, video.src);
+  assert.equal(v?.props.poster, video.poster);
+});
+
 test("brand.accent 注入根元素 --lpg-accent/-hover/-weak/-fg-on-accent", () => {
   const harness = pageHarness({});
   const accent = { base: "#ff8800", hover: "#ffaa33", weak: "rgba(255,136,0,0.14)", onAccent: "#331a00" };

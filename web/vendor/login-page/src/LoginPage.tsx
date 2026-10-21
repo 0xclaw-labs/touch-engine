@@ -153,6 +153,7 @@ export function LoginPage({
   sso,
   onAuthenticated,
   navigate,
+  linkNavigate,
   nextResolver,
   nextOverride,
   layout = "split",
@@ -160,6 +161,11 @@ export function LoginPage({
 }: LoginPageProps) {
   // 覆写口：Partial<AuthAdapter> 叠在内建 platform-identity 客户端之上。
   const client = useMemo(() => ({ ...createBuiltInAuth(), ...auth }) as AuthAdapter, [auth]);
+
+  // 站内链接（忘记密码/立即注册）与登录落点分道：navigate 可能被宿主挂「会话已认证」
+  // 闸门（登录成功落点防护），登录页用户永远未认证，链接复用它就是死链——
+  // 链接跳转走 linkNavigate（宿主注 router.push），缺省回退 navigate。
+  const go = linkNavigate ?? navigate;
 
   // modes 语义（钉死）：modes.otp===false 且 password 未关 → 无分段固定密码态；
   // modes.password===false → 无分段固定 otp 态；双边关与缺省同待（回退双开显分段，缺省 otp 态）。
@@ -459,7 +465,7 @@ export function LoginPage({
               <button
                 type="button"
                 className={styles.linkBtn}
-                onClick={() => navigate(links.forgotPassword!)}
+                onClick={() => go(links.forgotPassword!)}
               >
                 忘记密码？
               </button>
@@ -486,7 +492,7 @@ export function LoginPage({
             <button
               type="button"
               className={styles.linkBtn}
-              onClick={() => navigate(links.register!)}
+              onClick={() => go(links.register!)}
             >
               立即注册
             </button>
@@ -517,7 +523,7 @@ export function LoginPage({
           <div className={styles.card}>{body}</div>
         </div>
         <div className={styles.mediaPanel} aria-hidden="true">
-          {media && !reducedMotion ? (
+          {media && !reducedMotion && media.kind !== "image" ? (
             <video
               className={styles.media}
               src={media.src}
@@ -529,7 +535,7 @@ export function LoginPage({
               preload="auto"
             />
           ) : media ? (
-            <img className={styles.media} src={media.poster} alt="" />
+            <img className={styles.media} src={media.kind === "image" ? media.src : media.poster} alt="" />
           ) : null}
         </div>
       </div>

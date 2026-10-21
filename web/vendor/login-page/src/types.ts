@@ -16,8 +16,10 @@ export type BrandConfig = {
   tagline?: string;
   /** 覆写时四值必须齐全；缺省 mint（#6cebdc 系）。 */
   accent?: AccentConfig;
-  /** 右栏媒体（split 版式）。null/缺省 = 右栏以底色+字标垫。 */
-  media?: { src: string; poster: string } | null;
+  /** 右栏媒体（split 版式）。null/缺省 = 右栏以底色+字标垫。
+   * kind="video"（缺省）播放 src、poster 起播前垫帧；kind="image" 只渲染静帧
+   * src（poster 不用）——高闪烁素材退静帧用，reduced-motion 降级同走 img。 */
+  media?: { src: string; poster: string; kind?: "video" | "image" } | null;
 };
 
 export type ModesConfig = { otp?: boolean; password?: boolean };
@@ -57,6 +59,8 @@ export type LoginPageProps = {
   sso?: SsoConfig;
   onAuthenticated: (result: AuthResult) => void;
   navigate: (path: string) => void;
+  /** 站内链接跳转（links.register/forgotPassword 等落点），不走宿主登录落点闸；缺省用 navigate。 */
+  linkNavigate?: (path: string) => void;
   /** 缺省实现：只接受站内以 / 开头且不以 // 开头的路径，否则回 "/"。 */
   nextResolver?: (search: string) => string;
   /** 嵌入场景（portal loginFold 等）直接给定落点，等价 embedded 语义。 */
