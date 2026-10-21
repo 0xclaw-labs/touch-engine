@@ -1,6 +1,4 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import productionManifest from "./registry/production-manifest.json";
 
 /**
  * 允许列表来自已合并的 HUI-2228；登记真源自 HUI-2227（残差②）改为 public-ai
@@ -22,12 +20,6 @@ export type AllowlistEnv = {
   TOUCH_ECO_NAV_TEST_PRODUCT_IMAGE_URL?: string;
 };
 
-const registryDir = join(dirname(fileURLToPath(import.meta.url)), "registry");
-
-function readRegistry(name: string): RegistryFile {
-  return JSON.parse(readFileSync(join(registryDir, name), "utf8")) as RegistryFile;
-}
-
 function indexLaunchTargets(files: RegistryFile[]): Map<string, string> {
   const out = new Map<string, string>();
   for (const file of files) {
@@ -45,7 +37,7 @@ function indexLaunchTargets(files: RegistryFile[]): Map<string, string> {
   return out;
 }
 
-const registeredTargets = indexLaunchTargets([readRegistry("production-manifest.json")]);
+const registeredTargets = indexLaunchTargets([productionManifest as unknown as RegistryFile]);
 
 export function emittable(raw: string): boolean {
   let url: URL;
