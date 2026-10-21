@@ -14,6 +14,7 @@ import { adminHeaderTenantName } from "@/lib/admin-header-tenant";
 import { copyJobClosed, copyJobKey, copyUsability, handoffHasFormalJump } from "@/lib/copy-draft";
 import { acceptTenantPayload } from "@/lib/eco-nav/touch-shell";
 import { failureText } from "@/lib/failure-copy";
+import { SharedLogin, createBffSignIn } from "@/components/login/SharedLogin";
 import { toJsonBody } from "@/lib/http-json";
 import {
   beginTenantOp,
@@ -102,10 +103,10 @@ const HANDOFF_FIELDS: Array<[string, keyof ProfessionalHandoff]> = [
   ["已证实的说法", "evidenced_claims"],
 ];
 
+const adminSignIn = createBffSignIn();
+
 export default function AdminPage() {
   const [taskNotice, setTaskNotice] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [tenantId, setTenantId] = useState("");
   const [role, setRole] = useState("");
   const [storeScope, setStoreScope] = useState(""); // HUI-1674:""=总部;非空=仅该门店
@@ -425,22 +426,6 @@ export default function AdminPage() {
     void refresh();
   }, [refresh]);
 
-  async function handleLogin(e: React.FormEvent) {
-    e.preventDefault();
-    setError("");
-    const res = await fetch("/api/auth/login", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: toJsonBody({ email, password }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      setError(failureText(res.status, data));
-      return;
-    }
-    await loadMemberships();
-  }
-
   async function transition(id: string, status: string) {
     const res = await api("POST", `campaigns/${id}/status`, { status });
     if (!res.ok) setError(failureText(res.status, res.data));
@@ -759,12 +744,7 @@ export default function AdminPage() {
         <p hidden data-state="empty">还没有记录</p>
         <p hidden data-state="error">没有读到，请重试</p>
         <h1>商家后台登录</h1>
-        <form onSubmit={handleLogin} className="tk-admin-form">
-          <input placeholder="平台账号邮箱" value={email} onChange={(e) => setEmail(e.target.value)} className="tk-admin-input" />
-          <input placeholder="密码" type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="tk-admin-input" />
-          <button type="submit" className="tk-admin-btn">登录</button>
-        </form>
-        {error && <p className="tk-admin-danger">{error}</p>}
+        <SharedLogin signIn={adminSignIn} onAuthenticated={() => void loadMemberships()} />
       </main>
     );
   }

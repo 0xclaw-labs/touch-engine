@@ -8,9 +8,9 @@ import { login, screenshot, seedCodes } from "../support/helpers";
 
 async function loginAtRoot(page: Page, email: string, password: string): Promise<void> {
   await page.goto("/");
-  await page.getByLabel("邮箱").fill(email);
+  await page.getByLabel("用户名").fill(email);
   await page.getByLabel("密码", { exact: true }).fill(password);
-  await page.getByRole("button", { name: "登录并查看今天" }).click();
+  await page.getByRole("button", { name: "登录" }).click();
 }
 
 async function campaignCount(page: Page): Promise<number> {
@@ -26,7 +26,7 @@ async function campaignCount(page: Page): Promise<number> {
 test("anonymous visitor at / sees the login page, not the today desk", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "今天要做的事" })).toBeVisible();
-  await expect(page.getByLabel("邮箱")).toBeVisible();
+  await expect(page.getByLabel("用户名")).toBeVisible();
   await expect(page.getByRole("heading", { name: "今天", exact: true })).toHaveCount(0);
   await screenshot(page, "hui-2222-anonymous-root");
 });
@@ -83,9 +83,9 @@ test("switching org clears the previous org's campaigns and responses", async ({
 
 test("principal without memberships gets a clear no-org message, never a tenant id field", async ({ page }) => {
   await page.goto("/");
-  await page.getByLabel("邮箱").fill("nobody@e2e.test");
+  await page.getByLabel("用户名").fill("nobody@e2e.test");
   await page.getByLabel("密码", { exact: true }).fill("e2e-pass-nobody");
-  await page.getByRole("button", { name: "登录并查看今天" }).click();
+  await page.getByRole("button", { name: "登录" }).click();
   await expect(page.getByText("当前账号没有可进入的组织。")).toBeVisible({ timeout: 15_000 });
   await expect(page.locator('input[placeholder*="租户"], input[name="tenant"]')).toHaveCount(0);
   await screenshot(page, "hui-2222-no-membership");
@@ -97,9 +97,9 @@ test("expired/lost session returns to login; signing in again recovers", async (
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "今天要做的事" })).toBeVisible();
   const seed = await seedCodes();
-  await page.getByLabel("邮箱").fill(seed.email);
+  await page.getByLabel("用户名").fill(seed.email);
   await page.getByLabel("密码", { exact: true }).fill(seed.password);
-  await page.getByRole("button", { name: "登录并查看今天" }).click();
+  await page.getByRole("button", { name: "登录" }).click();
   await expect(page.getByRole("heading", { name: "今天", exact: true })).toBeVisible();
 });
 

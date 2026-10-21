@@ -12,15 +12,15 @@ export async function seedCodes(): Promise<Record<string, string>> {
 
 /**
  * 走 /admin 登录表单建立商家会话。
- * 表单只有邮箱和密码。单一成员关系由服务端自动选中，不手填租户编号。
+ * 表单只有邮箱和密码（统一组件 @painuo/login-page，label 同名）。单一成员关系由服务端自动选中，不手填租户编号。
  * 凭据只来自 seed.json（env.mjs seed 写入），本文件不硬编码第二份。
  */
 export async function login(page: Page): Promise<void> {
   const seed = await seedCodes();
   if (!seed.email || !seed.password) throw new Error("[helpers] seed.json 缺 owner 凭据（env.mjs seed 未写入？）");
   await page.goto("/admin");
-  await page.getByPlaceholder("平台账号邮箱").fill(seed.email);
-  await page.getByPlaceholder("密码", { exact: true }).fill(seed.password);
+  await page.getByLabel("用户名").fill(seed.email);
+  await page.getByLabel("密码", { exact: true }).fill(seed.password);
   await page.getByRole("button", { name: "登录" }).click();
   // 登录视图是 main.tk-admin-narrow；单一成员关系选中后渲染 main.tk-admin-shell
   await expect(page.locator("main.tk-admin-shell")).toBeVisible({ timeout: 15_000 });

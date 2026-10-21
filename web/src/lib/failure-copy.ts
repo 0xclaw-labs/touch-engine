@@ -16,3 +16,12 @@ export function failureText(status: number, data: Record<string, unknown>): stri
   }
   return "这次操作没有完成。请检查填写的内容，再试一次。";
 }
+
+// 登录面专用口径：wrong-password 401 是登录语境的主剧本（API 面的 401 是
+// 「会话过期」语境，两句不能混）。其余状态一律回落 failureText 收口。
+export function loginFailureText(status: number, data: Record<string, unknown>): string {
+  if (status === 401) {
+    return "邮箱或密码不对。请再试一次；忘记密码请联系为你开通账号的平台管理员。";
+  }
+  return failureText(status, data);
+}

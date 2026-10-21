@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { failureText } from "../src/lib/failure-copy";
+import { failureText, loginFailureText } from "@/lib/failure-copy";
 
 // HUI-2628 fix2（gate-r2 盲评 fail 项）：错误面不泄漏机器码——
 // 状态码、机器错误 token、后端原文不得出现在产品文案里，每条都带下一步动作。
@@ -36,5 +36,19 @@ describe("failureText 产品语句", () => {
     expect(failureText(404, {})).toMatch(/删除|不存在/);
     expect(failureText(500, {})).toMatch(/稍(等|后)/);
     expect(failureText(422, {})).toMatch(/再试/);
+  });
+});
+
+describe("loginFailureText（登录面专用口径）", () => {
+  it("401 wrong-password 说邮箱或密码不对，不冒充会话过期", () => {
+    const text = loginFailureText(401, { error: "login_rejected" });
+    expect(text).toMatch(/邮箱或密码/);
+    expect(text).toMatch(/管理员/);
+    expect(text).not.toMatch(/过期/);
+  });
+  it("其余状态回落 failureText 收口，不开第二套映射", () => {
+    expect(loginFailureText(401, { error: "user_disabled" })).toMatch(/邮箱或密码/);
+    expect(loginFailureText(500, {})).toMatch(/稍(等|后)/);
+    expect(loginFailureText(403, {})).toMatch(/权限|重新登录/);
   });
 });

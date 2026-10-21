@@ -1,7 +1,9 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { failureText } from "@/lib/failure-copy";
+import { failureText, loginFailureText } from "@/lib/failure-copy";
+import { ApiFailure } from "@painuo/login-page";
+import { SharedLogin, type SignInBridge } from "@/components/login/SharedLogin";
 import { surfaceLabel } from "@/lib/product-finish";
 import {
   beginTenantOp,
@@ -90,36 +92,15 @@ export function MerchantGate({ children }: { children: ReactNode }) {
 }
 
 function Login({ session }: { session: MerchantSession }) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
+  const signIn: SignInBridge = (email, password) =>
+    session.login(email, password).then(() => ({}));
 
   return (
     <main className="tk-page">
-      <p className="tk-kicker">碰一碰</p>
+      {/* 产品声音保留（页题+导语）；表单本体是统一组件（卡内自带品牌头，不再重复 kicker）。 */}
       <h1 className="tk-title">今天要做的事</h1>
       <p className="tk-lead">登录后看今天的活动、门店、素材、触达、留资和还不能当成完成的奖励。</p>
-      <form
-        className="tk-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          setError("");
-          void session.login(email, password).catch((err: unknown) => {
-            setError(err instanceof Error ? err.message : "没有登录");
-          });
-        }}
-      >
-        <label className="tk-label">
-          邮箱
-          <input className="tk-input" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" required />
-        </label>
-        <label className="tk-label">
-          密码
-          <input className="tk-input" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required />
-        </label>
-        <button className="tk-button" type="submit">登录并查看今天</button>
-      </form>
-      {error ? <p className="tk-danger" data-state="error">{error}</p> : null}
+      <SharedLogin signIn={signIn} />
     </main>
   );
 }
@@ -259,7 +240,7 @@ function useMerchantSession(): MerchantSession {
       body: JSON.stringify({ email: nextEmail, password }),
     });
     const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-    if (!res.ok) throw new Error(failureText(res.status, data));
+    if (!res.ok) throw new ApiFailure(loginFailureText(res.status, data), res.status, "login_rejected");
     const seq = beginTenantOp();
     const items = await readScopes();
     if (seq !== currentTenantOp()) return;

@@ -1,0 +1,18 @@
+/* 碰一碰登录面对齐生态统一组件 @painuo/login-page 的亮色皮肤。
+   包内全部颜色走 var(--lpg-*, 缺省暗色)，只在挂载点祖先覆写变量即可换肤，
+   版式是包契约（「禁改版式」），所以这里只给色值、不给布局规则。
+   色值全部对齐 globals.css 的 tk 亮色 token；品牌 accent 不覆写——
+   包缺省 mint #6cebdc 与 tk 品牌底色同源。 */
+.light {
+  color-scheme: light;
+  --lpg-bg-base: var(--tk-bg);
+  --lpg-bg-panel: var(--tk-surface);
+  --lpg-bg-raised: var(--tk-surface);
+  --lpg-bg-sunken: var(--tk-bg-subtle);
+  --lpg-line: var(--tk-border);
+  --lpg-fg: var(--tk-ink-main);
+  --lpg-fg-muted: var(--tk-ink-2);
+  --lpg-fg-faint: var(--tk-ink-sub);
+  --lpg-danger: var(--tk-danger);
+  --lpg-danger-weak: #fee2e2;
+}

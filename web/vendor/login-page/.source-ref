@@ -1,0 +1,24 @@
+commit: f66dc9cecd082cd5d05d59b628d7bcc66fd1991b
+tree: 31175c4e7d48800d775c2bcacce50de042de089d
+manifest-sha256: badfa73803389c9979508bc655a000a8954f9427397aff2e886ba5f01ca0da97
+manifest:
+README.md
+package.json
+src/LoginPage.tsx
+src/apiError.ts
+src/builtInAuth.ts
+src/css-modules.d.ts
+src/index.ts
+src/internal/Button.tsx
+src/internal/Segmented.tsx
+src/internal/TextField.tsx
+src/internal/ui.module.css
+src/login.module.css
+src/types.ts
+test/builtInAuth.test.ts
+test/cssParse.test.ts
+test/harness.ts
+test/loginPage.test.ts
+test/types.test.ts
+test/ui.test.ts
+tsconfig.json
