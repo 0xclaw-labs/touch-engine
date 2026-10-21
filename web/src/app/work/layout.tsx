@@ -22,6 +22,7 @@ function WorkShell({ children }: { children: ReactNode }) {
     <AdminShell
       nickname={session.email || "商家"}
       sessionRole={session.role}
+      tenantId={session.tenantId}
       onLogout={() => void session.logout()}
       onTenantChange={session.switchTenant}
     >

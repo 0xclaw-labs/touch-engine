@@ -1,0 +1,7 @@
+upstream: bianjiefilm/public-ai
+path: docs/contracts/page-patterns/v1/catalog.json
+sha256: fb8a96d19c348aed3ea3e0bd5a7d69fabce5ad37787cb23bb715df158c89bca6
+date: 2026-10-21
+status: VENDORED (byte-identical public mirror)
+scope: consumer declaration/mapping only; a definition does not authorize a
+route, task, account or charge. Actual DOM/browser evidence stays NOT_VERIFIED.

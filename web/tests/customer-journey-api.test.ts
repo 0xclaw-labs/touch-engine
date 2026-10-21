@@ -119,7 +119,7 @@ describe("resumeCredential 参与码出示", () => {
     expect(cred?.qr_payload).toBe("https://example.com/p/ptx_x");
     const [url, init] = fetchMock.mock.calls[0] as unknown[];
     expect(String(url)).toBe("/api/participations/pt_1/handoff");
-    expect(JSON.parse(String((init as RequestInit).body))).toEqual({ purpose: "customer_resume" });
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({ purpose: "staff_verify" });
   });
 
   it("凭据与参与码不写 localStorage/sessionStorage(源码级断言)", async () => {

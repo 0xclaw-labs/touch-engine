@@ -2,8 +2,8 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { EcoTopNav } from "@/components/eco-nav/EcoTopNav";
-import { useLaunchResolver } from "@/components/eco-nav/use-launch-resolver";
-import { provisionalEcoNav } from "@/lib/eco-nav/fixture";
+import { useLaunchTargets } from "@/components/eco-nav/use-launch-resolver";
+import { useAppSwitch } from "@/components/eco-nav/use-app-switch";
 import type { EcoNavModel } from "@/lib/eco-nav/model";
 import { commitTenantSwitch } from "@/lib/eco-nav/touch-shell";
 
@@ -11,17 +11,20 @@ export function AdminShell({
   children,
   nickname,
   sessionRole,
+  tenantId = "",
   onLogout,
   onTenantChange,
 }: {
   children: ReactNode;
   nickname: string;
   sessionRole: string;
+  tenantId?: string;
   onLogout: () => void;
   onTenantChange: (tenantId: string) => void;
 }) {
   const [model, setModel] = useState<EcoNavModel | null>(null);
-  const resolveLaunchTarget = useLaunchResolver();
+  const resolveLaunchTarget = useLaunchTargets();
+  const { switchApp } = useAppSwitch(tenantId);
 
   useEffect(() => {
     let alive = true;
@@ -34,7 +37,8 @@ export function AdminShell({
         if (alive) setModel(next);
       })
       .catch(() => {
-        if (alive) setModel(provisionalEcoNav());
+        // HUI-2628: a failed nav authority must not invent a brand/tenant.
+        if (alive) setModel(null);
       });
     return () => {
       alive = false;
@@ -49,6 +53,7 @@ export function AdminShell({
           nickname={nickname}
           sessionRole={sessionRole}
           resolveLaunchTarget={resolveLaunchTarget}
+          onSwitchApp={switchApp}
           onLogout={onLogout}
           onTenantChange={(tenantId) => {
             const committed = commitTenantSwitch(model?.provenance ?? "", tenantId);

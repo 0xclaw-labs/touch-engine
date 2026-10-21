@@ -188,6 +188,8 @@ describe("已有用户页面账本", () => {
     expect(byRoute.get("/work/stores")).toBe("list");
     expect(byRoute.get("/work/campaigns")).toBe("list");
     expect(byRoute.get("/work/materials")).toBe("list");
+    expect(byRoute.get("/work/campaigns/new")).toBe("creation");
+    expect(byRoute.get("/work/campaigns/new")).not.toBe("list");
     expect(byRoute.get("/work/campaigns/[id]")).toBe("detail");
     expect(byRoute.get("/work/campaigns/[id]")).not.toBe("list");
     expect(byRoute.get("/work/campaigns/[id]")).not.toBe("workspace");

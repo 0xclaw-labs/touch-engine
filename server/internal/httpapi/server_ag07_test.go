@@ -160,6 +160,9 @@ func TestMatrixDraftRecordsDraftNotOutbound(t *testing.T) {
 	if body["draft_status"] != matrixhandoff.StatusDraft || body["draft_id"] == "" || sink.puts != 1 {
 		t.Fatalf("draft record = %v puts %d", body, sink.puts)
 	}
+	if body["activity_version"] != float64(3) {
+		t.Fatalf("matrix draft must name the exact source version: %v", body)
+	}
 	if strings.Contains(copy, "发布成功") || strings.Contains(copy, "外发完成") || effects.LeadWrites != 0 || effects.UGCWrites != 0 || effects.RewardWrites != 0 {
 		t.Fatalf("copy %q effects %+v", copy, effects)
 	}

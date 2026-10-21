@@ -254,6 +254,7 @@ export interface ManualSwitchPlan {
 }
 
 export type LaunchResolver = (launchTargetId: string) => string | null;
+export type LaunchAvailability = (launchTargetId: string) => boolean;
 
 export type ParseEcoNavResult =
   | { ok: true; document: EcoNavDocument }
@@ -752,6 +753,36 @@ export function toViewModel(document: EcoNavDocument, options: ViewModelOptions)
   };
 }
 
+/**
+ * HUI-2628: the only fallback when the nav authority is missing/unreachable is
+ * a contract-valid blocked model. It renders nothing and never invents a brand,
+ * tenant, payer or app list. Preview fixtures are reserved for /admin/preview.
+ */
+export function blockedUnavailableEcoNav(): EcoNavModel {
+  const parsed = parseEcoNavDocument({
+    schema_version: ECO_NAV_SCHEMA_VERSION,
+    status: { state: "unavailable", reasons: ["authority_unavailable"] },
+    brand: null,
+    app: null,
+    visible_apps: [],
+    work_context: null,
+    role: null,
+    billing: null,
+    return_context: null,
+    capabilities: {
+      can_switch_app: false,
+      can_switch_tenant: false,
+      can_manage_members: false,
+      can_open_billing: false,
+    },
+  });
+  if (!parsed.ok) throw new Error("blocked eco-nav document is not eco-nav/v1");
+  return toViewModel(parsed.document, {
+    provenance: "public_ai_context",
+    statusSummary: "生态导航暂不可用；页面其余部分可用。",
+  });
+}
+
 export function pinTouchApp(model: EcoNavModel): EcoNavModel {
   const displayName = model.current_app.display_name.trim() || "碰一碰";
   return {
@@ -790,6 +821,20 @@ export function safeAllowListedUrl(raw: string | null | undefined): string | nul
     if (url.searchParams.has(key)) return null;
   }
   return url.toString();
+}
+
+/**
+ * HUI-2628: the renderer may only enable an app when the target is registered
+ * and the model says launchable. The actual switch always goes through the BFF
+ * (SSO code minting); no URL is constructed in the browser.
+ */
+export function canLaunchManually(
+  app: VisibleApp,
+  canSwitch: boolean,
+  available: LaunchAvailability,
+): boolean {
+  if (!canSwitch || app.state !== "launchable" || app.launch_mode !== "sso_launch" || !app.launch_target_id) return false;
+  return available(app.launch_target_id) === true;
 }
 
 export function planManualSwitch(

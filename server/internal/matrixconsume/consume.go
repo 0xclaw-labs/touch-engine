@@ -131,6 +131,9 @@ type Outcome struct {
 	Draft            matrixhandoff.Draft
 	Copy             string
 	OutboundComplete bool
+	// ActivityVersion is the exact Touch campaign version handed off. The
+	// browser displays it so a returned candidate can be tied to its source.
+	ActivityVersion int
 }
 
 // Consumer schedules a merchant matrix draft.

@@ -187,6 +187,12 @@ func (s *Server) handleParticipationStart(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	// A participation row is store-bound at birth (NOT NULL store FK). A
+	// campaign without a store cannot silently fail inside the insert; say so.
+	if strings.TrimSpace(res.Campaign.StoreID) == "" {
+		fail(w, http.StatusUnprocessableEntity, "store_required", "this activity has no store yet, so online participation is not open")
+		return
+	}
 	visitor := s.ensureVisitor(w, r)
 	if visitor == "" {
 		fail(w, http.StatusInternalServerError, "internal", "visitor key unavailable")
@@ -231,6 +237,12 @@ func (s *Server) handleParticipationLookup(w http.ResponseWriter, r *http.Reques
 	}
 	res, ok := s.resolveAvailableLink(w, body.LinkCode)
 	if !ok {
+		return
+	}
+	// A participation row is store-bound at birth (NOT NULL store FK). A
+	// campaign without a store cannot silently fail inside the insert; say so.
+	if strings.TrimSpace(res.Campaign.StoreID) == "" {
+		fail(w, http.StatusUnprocessableEntity, "store_required", "this activity has no store yet, so online participation is not open")
 		return
 	}
 	visitor := s.ensureVisitor(w, r)

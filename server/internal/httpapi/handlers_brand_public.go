@@ -121,6 +121,10 @@ func (s *Server) writeBrandedPublic(w http.ResponseWriter, r *http.Request, code
 		return false
 	}
 	view := publicLinkView{State: d.State, MerchantName: d.MerchantName, BrandShell: d.Shell}
+	if d.State == "available" {
+		view.Capabilities = s.publicCapabilities()
+		view.Capabilities.Participation = view.Capabilities.Participation && strings.TrimSpace(res.Campaign.StoreID) != ""
+	}
 	if d.IncludeContent && res.Campaign.ID != "" && d.State != "brand_suspended" && d.State != "brand_retiring" && d.State != "domain_mismatch" && d.State != "unknown_brand" && d.State != "domain_error" && d.State != "brand_unavailable" {
 		if res.Outcome == store.OutcomeAvailable || d.State == "tenant_suspended" || d.State == "security_freeze" || d.State == "offboarding" || d.State == "tenant_retired" {
 			view.Title = res.Campaign.Title

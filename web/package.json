@@ -6,7 +6,8 @@
     "dev": "next dev -p 18340",
     "build": "next build",
     "start": "next start -p 18340",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:contrast": "node scripts/contrast-gate.mjs"
   },
   "dependencies": {
     "next": "^15.5.25",

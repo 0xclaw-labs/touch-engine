@@ -32,10 +32,14 @@ describe("屏3 渲染门:无参与不渲染", () => {
 });
 
 describe("屏3 人工路径:参与码与请店员确认", () => {
-  it("展示参与编号;出示参与码走 resumeCredential 且经 isSafeQrPayload 形状校验", () => {
+  it("展示参与编号;核验码以文本出示，不再渲染不存在的 /p 链接", () => {
     expect(component.includes("参与编号")).toBe(true);
     expect(component.includes("resumeCredential")).toBe(true);
-    expect(component.includes("isSafeQrPayload")).toBe(true);
+    expect(component.includes("credentialIssueNotice")).toBe(true);
+    expect(component).not.toContain("reward-qr");
+    expect(component).not.toContain("/p/ptx_");
+    expect(component.includes("reward-token")).toBe(true);
+    expect(component.includes("核验码")).toBe(true);
   });
 
   it("「请店员确认」人工路径文案存在", () => {

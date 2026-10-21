@@ -32,6 +32,7 @@ interface PackVersion {
   valid_note: string;
   cover?: AssetSnapshot | null;
   platform_versions?: PlatformVersion[];
+  marking?: { ad_required?: boolean; ai_generated?: boolean; incentive_disclosed?: boolean };
   blocked_reason?: string;
 }
 
@@ -187,6 +188,9 @@ export function ContentPackPanel({ campaignId }: { campaignId: string }) {
                         <p className="tk-note" data-field="preview-title">{version.title}</p>
                         <p className="tk-note">{version.body}</p>
                         <p className="tk-note">门店 {version.store_name} · 价格 {version.price_note} · 有效期 {version.valid_note}</p>
+                        {version.marking?.ai_generated ? (
+                          <p className="tk-unknown" data-field="ai-marking">含 AI 合成画面或配音。采用后会明确标给顾客，不隐藏。</p>
+                        ) : null}
                         {isBlocked ? (
                           <p className="tk-note tk-unknown" data-field="blocked-reason">
                             已停止分发:{version.blocked_reason || "素材或授权有问题"}。已发出去的内容保留原版本。

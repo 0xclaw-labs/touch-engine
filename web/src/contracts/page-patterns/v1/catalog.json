@@ -1,0 +1,1764 @@
+{
+  "schema": "page-pattern/v1",
+  "definitions": [
+    {
+      "id": "portal",
+      "regions": [
+        {
+          "id": "header",
+          "purpose": "Identify the page with one meaningful h1 and scoped actions.",
+          "required": true
+        },
+        {
+          "id": "body",
+          "purpose": "Contain the page-specific content and named bounded regions.",
+          "required": true
+        },
+        {
+          "id": "primary_action",
+          "purpose": "Locate at most one executable primary action, or an accessible reason.",
+          "required": true
+        },
+        {
+          "id": "status",
+          "purpose": "Explain progress, selected, active and locked projections without changing owner state.",
+          "required": true
+        },
+        {
+          "id": "empty",
+          "purpose": "Explain absence and the next permitted explicit step.",
+          "required": true
+        },
+        {
+          "id": "loading",
+          "purpose": "Show independent meaningful loading context rather than queued or success.",
+          "required": true
+        },
+        {
+          "id": "error",
+          "purpose": "Present safe error context and explicit recovery without automatic paid retry.",
+          "required": true
+        },
+        {
+          "id": "goal_intro",
+          "purpose": "Explain the customer goal before capabilities.",
+          "required": true
+        },
+        {
+          "id": "capability_choices",
+          "purpose": "Offer a closed choice of relevant capabilities.",
+          "required": true
+        },
+        {
+          "id": "supporting_context",
+          "purpose": "Present supporting context after the goal.",
+          "required": true
+        }
+      ],
+      "header": {
+        "page_level": 1,
+        "section_level": 2,
+        "detail_levels": [
+          3,
+          4
+        ]
+      },
+      "actions": {
+        "max_executable_primary": 1,
+        "zero_primary_reason_required": true,
+        "destructive_confirmation": true,
+        "unknown_cost_disabled": true,
+        "stages": [
+          "preview",
+          "adopt",
+          "commit",
+          "publish",
+          "create",
+          "recover",
+          "navigate",
+          "inspect"
+        ]
+      },
+      "states": {
+        "content_modes": [
+          "ready",
+          "loading",
+          "empty",
+          "error"
+        ],
+        "progress_states": [
+          "queued",
+          "running",
+          "waiting_for_user",
+          "result_ready",
+          "needs_attention",
+          "reconciling",
+          "failed",
+          "offline",
+          "unknown"
+        ],
+        "loading_independent": true,
+        "selection_independent": true
+      },
+      "responsive": {
+        "mobile_below": 768,
+        "desktop_density": "default",
+        "mobile_density": "touch",
+        "mobile_rules": [
+          "Stack capability choices and keep the goal action reachable.",
+          "Use wrapping headers and one-column content; preserve a reachable permitted primary action."
+        ],
+        "bounded_scroll_regions": []
+      },
+      "navigation_audiences": [
+        "customer",
+        "workspace",
+        "admin"
+      ],
+      "do": [
+        "Show purpose before features.",
+        "Keep stages, safe disclosures and unknown provenance explicit."
+      ],
+      "dont": [
+        "Do not mount an editor or imply login success.",
+        "Do not infer authorization, verified fees, product finish or adoption from this definition."
+      ],
+      "reference_id": "reference/portal/v1"
+    },
+    {
+      "id": "login",
+      "regions": [
+        {
+          "id": "header",
+          "purpose": "Identify the page with one meaningful h1 and scoped actions.",
+          "required": true
+        },
+        {
+          "id": "body",
+          "purpose": "Contain the page-specific content and named bounded regions.",
+          "required": true
+        },
+        {
+          "id": "primary_action",
+          "purpose": "Locate at most one executable primary action, or an accessible reason.",
+          "required": true
+        },
+        {
+          "id": "status",
+          "purpose": "Explain progress, selected, active and locked projections without changing owner state.",
+          "required": true
+        },
+        {
+          "id": "empty",
+          "purpose": "Explain absence and the next permitted explicit step.",
+          "required": true
+        },
+        {
+          "id": "loading",
+          "purpose": "Show independent meaningful loading context rather than queued or success.",
+          "required": true
+        },
+        {
+          "id": "error",
+          "purpose": "Present safe error context and explicit recovery without automatic paid retry.",
+          "required": true
+        },
+        {
+          "id": "continuation_context",
+          "purpose": "Show the explicit user-visible continuation target.",
+          "required": true
+        },
+        {
+          "id": "entry_fields",
+          "purpose": "Group entry fields and safe validation context.",
+          "required": true
+        },
+        {
+          "id": "entry_help",
+          "purpose": "Provide permitted entry help without exposing secrets.",
+          "required": true
+        }
+      ],
+      "header": {
+        "page_level": 1,
+        "section_level": 2,
+        "detail_levels": [
+          3,
+          4
+        ]
+      },
+      "actions": {
+        "max_executable_primary": 1,
+        "zero_primary_reason_required": true,
+        "destructive_confirmation": true,
+        "unknown_cost_disabled": true,
+        "stages": [
+          "preview",
+          "adopt",
+          "commit",
+          "publish",
+          "create",
+          "recover",
+          "navigate",
+          "inspect"
+        ]
+      },
+      "states": {
+        "content_modes": [
+          "ready",
+          "loading",
+          "empty",
+          "error"
+        ],
+        "progress_states": [
+          "queued",
+          "running",
+          "waiting_for_user",
+          "result_ready",
+          "needs_attention",
+          "reconciling",
+          "failed",
+          "offline",
+          "unknown"
+        ],
+        "loading_independent": true,
+        "selection_independent": true
+      },
+      "responsive": {
+        "mobile_below": 768,
+        "desktop_density": "default",
+        "mobile_density": "touch",
+        "mobile_rules": [
+          "Keep entry fields readable, with an accessible admission reason.",
+          "Use wrapping headers and one-column content; preserve a reachable permitted primary action."
+        ],
+        "bounded_scroll_regions": []
+      },
+      "navigation_audiences": [
+        "customer",
+        "workspace",
+        "admin"
+      ],
+      "do": [
+        "Preserve explicit return context.",
+        "Keep stages, safe disclosures and unknown provenance explicit."
+      ],
+      "dont": [
+        "Do not expose secrets or claim an account exists.",
+        "Do not infer authorization, verified fees, product finish or adoption from this definition."
+      ],
+      "reference_id": "reference/login/v1"
+    },
+    {
+      "id": "workspace",
+      "regions": [
+        {
+          "id": "header",
+          "purpose": "Identify the page with one meaningful h1 and scoped actions.",
+          "required": true
+        },
+        {
+          "id": "body",
+          "purpose": "Contain the page-specific content and named bounded regions.",
+          "required": true
+        },
+        {
+          "id": "primary_action",
+          "purpose": "Locate at most one executable primary action, or an accessible reason.",
+          "required": true
+        },
+        {
+          "id": "status",
+          "purpose": "Explain progress, selected, active and locked projections without changing owner state.",
+          "required": true
+        },
+        {
+          "id": "empty",
+          "purpose": "Explain absence and the next permitted explicit step.",
+          "required": true
+        },
+        {
+          "id": "loading",
+          "purpose": "Show independent meaningful loading context rather than queued or success.",
+          "required": true
+        },
+        {
+          "id": "error",
+          "purpose": "Present safe error context and explicit recovery without automatic paid retry.",
+          "required": true
+        },
+        {
+          "id": "current_work",
+          "purpose": "Lead with current work to continue.",
+          "required": true
+        },
+        {
+          "id": "next_steps",
+          "purpose": "Show the next explicit permitted work step.",
+          "required": true
+        },
+        {
+          "id": "recent_context",
+          "purpose": "Separate recent context from currently active work.",
+          "required": true
+        }
+      ],
+      "header": {
+        "page_level": 1,
+        "section_level": 2,
+        "detail_levels": [
+          3,
+          4
+        ]
+      },
+      "actions": {
+        "max_executable_primary": 1,
+        "zero_primary_reason_required": true,
+        "destructive_confirmation": true,
+        "unknown_cost_disabled": true,
+        "stages": [
+          "preview",
+          "adopt",
+          "commit",
+          "publish",
+          "create",
+          "recover",
+          "navigate",
+          "inspect"
+        ]
+      },
+      "states": {
+        "content_modes": [
+          "ready",
+          "loading",
+          "empty",
+          "error"
+        ],
+        "progress_states": [
+          "queued",
+          "running",
+          "waiting_for_user",
+          "result_ready",
+          "needs_attention",
+          "reconciling",
+          "failed",
+          "offline",
+          "unknown"
+        ],
+        "loading_independent": true,
+        "selection_independent": true
+      },
+      "responsive": {
+        "mobile_below": 768,
+        "desktop_density": "default",
+        "mobile_density": "touch",
+        "mobile_rules": [
+          "Stack work regions while distinguishing selected, active and waiting for user.",
+          "Use wrapping headers and one-column content; preserve a reachable permitted primary action."
+        ],
+        "bounded_scroll_regions": []
+      },
+      "navigation_audiences": [
+        "customer",
+        "workspace",
+        "admin"
+      ],
+      "do": [
+        "Lead with work to continue.",
+        "Keep stages, safe disclosures and unknown provenance explicit."
+      ],
+      "dont": [
+        "Do not use editor density or automatically start jobs.",
+        "Do not infer authorization, verified fees, product finish or adoption from this definition."
+      ],
+      "reference_id": "reference/workspace/v1"
+    },
+    {
+      "id": "list",
+      "regions": [
+        {
+          "id": "header",
+          "purpose": "Identify the page with one meaningful h1 and scoped actions.",
+          "required": true
+        },
+        {
+          "id": "body",
+          "purpose": "Contain the page-specific content and named bounded regions.",
+          "required": true
+        },
+        {
+          "id": "primary_action",
+          "purpose": "Locate at most one executable primary action, or an accessible reason.",
+          "required": true
+        },
+        {
+          "id": "status",
+          "purpose": "Explain progress, selected, active and locked projections without changing owner state.",
+          "required": true
+        },
+        {
+          "id": "empty",
+          "purpose": "Explain absence and the next permitted explicit step.",
+          "required": true
+        },
+        {
+          "id": "loading",
+          "purpose": "Show independent meaningful loading context rather than queued or success.",
+          "required": true
+        },
+        {
+          "id": "error",
+          "purpose": "Present safe error context and explicit recovery without automatic paid retry.",
+          "required": true
+        },
+        {
+          "id": "filter_context",
+          "purpose": "Show filters and the current result context together.",
+          "required": true
+        },
+        {
+          "id": "collection",
+          "purpose": "Present the bounded collection and item context.",
+          "required": true
+        },
+        {
+          "id": "pagination",
+          "purpose": "Expose pagination and the visible result range.",
+          "required": true
+        }
+      ],
+      "header": {
+        "page_level": 1,
+        "section_level": 2,
+        "detail_levels": [
+          3,
+          4
+        ]
+      },
+      "actions": {
+        "max_executable_primary": 1,
+        "zero_primary_reason_required": true,
+        "destructive_confirmation": true,
+        "unknown_cost_disabled": true,
+        "stages": [
+          "preview",
+          "adopt",
+          "commit",
+          "publish",
+          "create",
+          "recover",
+          "navigate",
+          "inspect"
+        ]
+      },
+      "states": {
+        "content_modes": [
+          "ready",
+          "loading",
+          "empty",
+          "error"
+        ],
+        "progress_states": [
+          "queued",
+          "running",
+          "waiting_for_user",
+          "result_ready",
+          "needs_attention",
+          "reconciling",
+          "failed",
+          "offline",
+          "unknown"
+        ],
+        "loading_independent": true,
+        "selection_independent": true
+      },
+      "responsive": {
+        "mobile_below": 768,
+        "desktop_density": "default",
+        "mobile_density": "touch",
+        "mobile_rules": [
+          "Disclose filters accessibly and preserve readable collection context.",
+          "Use wrapping headers and one-column content; preserve a reachable permitted primary action."
+        ],
+        "bounded_scroll_regions": [
+          "collection"
+        ]
+      },
+      "navigation_audiences": [
+        "customer",
+        "workspace",
+        "admin"
+      ],
+      "do": [
+        "Keep filters and result context together.",
+        "Keep stages, safe disclosures and unknown provenance explicit."
+      ],
+      "dont": [
+        "Do not hide absence or filtered-out explanations.",
+        "Do not infer authorization, verified fees, product finish or adoption from this definition."
+      ],
+      "reference_id": "reference/list/v1"
+    },
+    {
+      "id": "detail",
+      "regions": [
+        {
+          "id": "header",
+          "purpose": "Identify the page with one meaningful h1 and scoped actions.",
+          "required": true
+        },
+        {
+          "id": "body",
+          "purpose": "Contain the page-specific content and named bounded regions.",
+          "required": true
+        },
+        {
+          "id": "primary_action",
+          "purpose": "Locate at most one executable primary action, or an accessible reason.",
+          "required": true
+        },
+        {
+          "id": "status",
+          "purpose": "Explain progress, selected, active and locked projections without changing owner state.",
+          "required": true
+        },
+        {
+          "id": "empty",
+          "purpose": "Explain absence and the next permitted explicit step.",
+          "required": true
+        },
+        {
+          "id": "loading",
+          "purpose": "Show independent meaningful loading context rather than queued or success.",
+          "required": true
+        },
+        {
+          "id": "error",
+          "purpose": "Present safe error context and explicit recovery without automatic paid retry.",
+          "required": true
+        },
+        {
+          "id": "identity_context",
+          "purpose": "Identify the current subject, scope and version.",
+          "required": true
+        },
+        {
+          "id": "main_content",
+          "purpose": "Show the main detail content and permitted next step.",
+          "required": true
+        },
+        {
+          "id": "inspector",
+          "purpose": "Expose supporting version and inspection context.",
+          "required": true
+        }
+      ],
+      "header": {
+        "page_level": 1,
+        "section_level": 2,
+        "detail_levels": [
+          3,
+          4
+        ]
+      },
+      "actions": {
+        "max_executable_primary": 1,
+        "zero_primary_reason_required": true,
+        "destructive_confirmation": true,
+        "unknown_cost_disabled": true,
+        "stages": [
+          "preview",
+          "adopt",
+          "commit",
+          "publish",
+          "create",
+          "recover",
+          "navigate",
+          "inspect"
+        ]
+      },
+      "states": {
+        "content_modes": [
+          "ready",
+          "loading",
+          "empty",
+          "error"
+        ],
+        "progress_states": [
+          "queued",
+          "running",
+          "waiting_for_user",
+          "result_ready",
+          "needs_attention",
+          "reconciling",
+          "failed",
+          "offline",
+          "unknown"
+        ],
+        "loading_independent": true,
+        "selection_independent": true
+      },
+      "responsive": {
+        "mobile_below": 768,
+        "desktop_density": "default",
+        "mobile_density": "touch",
+        "mobile_rules": [
+          "Collapse the inspector without hiding version or status.",
+          "Use wrapping headers and one-column content; preserve a reachable permitted primary action."
+        ],
+        "bounded_scroll_regions": []
+      },
+      "navigation_audiences": [
+        "customer",
+        "workspace",
+        "admin"
+      ],
+      "do": [
+        "Preserve current scope and provenance.",
+        "Keep stages, safe disclosures and unknown provenance explicit."
+      ],
+      "dont": [
+        "Do not imply selection commits changes.",
+        "Do not infer authorization, verified fees, product finish or adoption from this definition."
+      ],
+      "reference_id": "reference/detail/v1"
+    },
+    {
+      "id": "creation",
+      "regions": [
+        {
+          "id": "header",
+          "purpose": "Identify the page with one meaningful h1 and scoped actions.",
+          "required": true
+        },
+        {
+          "id": "body",
+          "purpose": "Contain the page-specific content and named bounded regions.",
+          "required": true
+        },
+        {
+          "id": "primary_action",
+          "purpose": "Locate at most one executable primary action, or an accessible reason.",
+          "required": true
+        },
+        {
+          "id": "status",
+          "purpose": "Explain progress, selected, active and locked projections without changing owner state.",
+          "required": true
+        },
+        {
+          "id": "empty",
+          "purpose": "Explain absence and the next permitted explicit step.",
+          "required": true
+        },
+        {
+          "id": "loading",
+          "purpose": "Show independent meaningful loading context rather than queued or success.",
+          "required": true
+        },
+        {
+          "id": "error",
+          "purpose": "Present safe error context and explicit recovery without automatic paid retry.",
+          "required": true
+        },
+        {
+          "id": "progress_context",
+          "purpose": "Identify the current explicit creation step.",
+          "required": true
+        },
+        {
+          "id": "input_sections",
+          "purpose": "Group inputs and reachable validation errors.",
+          "required": true
+        },
+        {
+          "id": "review_summary",
+          "purpose": "Review consequence, affected version and cost before submission.",
+          "required": true
+        }
+      ],
+      "header": {
+        "page_level": 1,
+        "section_level": 2,
+        "detail_levels": [
+          3,
+          4
+        ]
+      },
+      "actions": {
+        "max_executable_primary": 1,
+        "zero_primary_reason_required": true,
+        "destructive_confirmation": true,
+        "unknown_cost_disabled": true,
+        "stages": [
+          "preview",
+          "adopt",
+          "commit",
+          "publish",
+          "create",
+          "recover",
+          "navigate",
+          "inspect"
+        ]
+      },
+      "states": {
+        "content_modes": [
+          "ready",
+          "loading",
+          "empty",
+          "error"
+        ],
+        "progress_states": [
+          "queued",
+          "running",
+          "waiting_for_user",
+          "result_ready",
+          "needs_attention",
+          "reconciling",
+          "failed",
+          "offline",
+          "unknown"
+        ],
+        "loading_independent": true,
+        "selection_independent": true
+      },
+      "responsive": {
+        "mobile_below": 768,
+        "desktop_density": "default",
+        "mobile_density": "touch",
+        "mobile_rules": [
+          "Show one explicit step at a time with reachable errors and primary action.",
+          "Use wrapping headers and one-column content; preserve a reachable permitted primary action."
+        ],
+        "bounded_scroll_regions": []
+      },
+      "navigation_audiences": [
+        "customer",
+        "workspace",
+        "admin"
+      ],
+      "do": [
+        "Review impact and cost before submitting.",
+        "Keep stages, safe disclosures and unknown provenance explicit."
+      ],
+      "dont": [
+        "Do not automatically commit or publish.",
+        "Do not infer authorization, verified fees, product finish or adoption from this definition."
+      ],
+      "reference_id": "reference/creation/v1"
+    },
+    {
+      "id": "media_result",
+      "regions": [
+        {
+          "id": "header",
+          "purpose": "Identify the page with one meaningful h1 and scoped actions.",
+          "required": true
+        },
+        {
+          "id": "body",
+          "purpose": "Contain the page-specific content and named bounded regions.",
+          "required": true
+        },
+        {
+          "id": "primary_action",
+          "purpose": "Locate at most one executable primary action, or an accessible reason.",
+          "required": true
+        },
+        {
+          "id": "status",
+          "purpose": "Explain progress, selected, active and locked projections without changing owner state.",
+          "required": true
+        },
+        {
+          "id": "empty",
+          "purpose": "Explain absence and the next permitted explicit step.",
+          "required": true
+        },
+        {
+          "id": "loading",
+          "purpose": "Show independent meaningful loading context rather than queued or success.",
+          "required": true
+        },
+        {
+          "id": "error",
+          "purpose": "Present safe error context and explicit recovery without automatic paid retry.",
+          "required": true
+        },
+        {
+          "id": "media_preview",
+          "purpose": "Present a bounded preview of the current media candidate.",
+          "required": true
+        },
+        {
+          "id": "candidate_context",
+          "purpose": "Identify candidate version, source and unresolved coverage.",
+          "required": true
+        },
+        {
+          "id": "result_actions",
+          "purpose": "Separate explicit preview, adoption, commit and publication.",
+          "required": true
+        }
+      ],
+      "header": {
+        "page_level": 1,
+        "section_level": 2,
+        "detail_levels": [
+          3,
+          4
+        ]
+      },
+      "actions": {
+        "max_executable_primary": 1,
+        "zero_primary_reason_required": true,
+        "destructive_confirmation": true,
+        "unknown_cost_disabled": true,
+        "stages": [
+          "preview",
+          "adopt",
+          "commit",
+          "publish",
+          "create",
+          "recover",
+          "navigate",
+          "inspect"
+        ]
+      },
+      "states": {
+        "content_modes": [
+          "ready",
+          "loading",
+          "empty",
+          "error"
+        ],
+        "progress_states": [
+          "queued",
+          "running",
+          "waiting_for_user",
+          "result_ready",
+          "needs_attention",
+          "reconciling",
+          "failed",
+          "offline",
+          "unknown"
+        ],
+        "loading_independent": true,
+        "selection_independent": true
+      },
+      "responsive": {
+        "mobile_below": 768,
+        "desktop_density": "default",
+        "mobile_density": "touch",
+        "mobile_rules": [
+          "Preserve media preview and distinguish each explicit candidate stage.",
+          "Use wrapping headers and one-column content; preserve a reachable permitted primary action."
+        ],
+        "bounded_scroll_regions": [
+          "media_preview"
+        ]
+      },
+      "navigation_audiences": [
+        "customer",
+        "workspace",
+        "admin"
+      ],
+      "do": [
+        "Show version and unknown coverage.",
+        "Keep stages, safe disclosures and unknown provenance explicit."
+      ],
+      "dont": [
+        "Do not equate preview with adoption or publication.",
+        "Do not infer authorization, verified fees, product finish or adoption from this definition."
+      ],
+      "reference_id": "reference/media_result/v1"
+    },
+    {
+      "id": "compare",
+      "regions": [
+        {
+          "id": "header",
+          "purpose": "Identify the page with one meaningful h1 and scoped actions.",
+          "required": true
+        },
+        {
+          "id": "body",
+          "purpose": "Contain the page-specific content and named bounded regions.",
+          "required": true
+        },
+        {
+          "id": "primary_action",
+          "purpose": "Locate at most one executable primary action, or an accessible reason.",
+          "required": true
+        },
+        {
+          "id": "status",
+          "purpose": "Explain progress, selected, active and locked projections without changing owner state.",
+          "required": true
+        },
+        {
+          "id": "empty",
+          "purpose": "Explain absence and the next permitted explicit step.",
+          "required": true
+        },
+        {
+          "id": "loading",
+          "purpose": "Show independent meaningful loading context rather than queued or success.",
+          "required": true
+        },
+        {
+          "id": "error",
+          "purpose": "Present safe error context and explicit recovery without automatic paid retry.",
+          "required": true
+        },
+        {
+          "id": "version_context",
+          "purpose": "Identify both compared versions and their scope.",
+          "required": true
+        },
+        {
+          "id": "comparison_views",
+          "purpose": "Present bounded comparisons with persistent version labels.",
+          "required": true
+        },
+        {
+          "id": "change_summary",
+          "purpose": "Explain changed scope and potential incremental cost.",
+          "required": true
+        }
+      ],
+      "header": {
+        "page_level": 1,
+        "section_level": 2,
+        "detail_levels": [
+          3,
+          4
+        ]
+      },
+      "actions": {
+        "max_executable_primary": 1,
+        "zero_primary_reason_required": true,
+        "destructive_confirmation": true,
+        "unknown_cost_disabled": true,
+        "stages": [
+          "preview",
+          "adopt",
+          "commit",
+          "publish",
+          "create",
+          "recover",
+          "navigate",
+          "inspect"
+        ]
+      },
+      "states": {
+        "content_modes": [
+          "ready",
+          "loading",
+          "empty",
+          "error"
+        ],
+        "progress_states": [
+          "queued",
+          "running",
+          "waiting_for_user",
+          "result_ready",
+          "needs_attention",
+          "reconciling",
+          "failed",
+          "offline",
+          "unknown"
+        ],
+        "loading_independent": true,
+        "selection_independent": true
+      },
+      "responsive": {
+        "mobile_below": 768,
+        "desktop_density": "default",
+        "mobile_density": "touch",
+        "mobile_rules": [
+          "Switch accessible comparison views while retaining labels and untouched context.",
+          "Use wrapping headers and one-column content; preserve a reachable permitted primary action."
+        ],
+        "bounded_scroll_regions": [
+          "comparison_views"
+        ]
+      },
+      "navigation_audiences": [
+        "customer",
+        "workspace",
+        "admin"
+      ],
+      "do": [
+        "Make changed scope clear.",
+        "Keep stages, safe disclosures and unknown provenance explicit."
+      ],
+      "dont": [
+        "Do not call selection active or hide incremental cost.",
+        "Do not infer authorization, verified fees, product finish or adoption from this definition."
+      ],
+      "reference_id": "reference/compare/v1"
+    },
+    {
+      "id": "review",
+      "regions": [
+        {
+          "id": "header",
+          "purpose": "Identify the page with one meaningful h1 and scoped actions.",
+          "required": true
+        },
+        {
+          "id": "body",
+          "purpose": "Contain the page-specific content and named bounded regions.",
+          "required": true
+        },
+        {
+          "id": "primary_action",
+          "purpose": "Locate at most one executable primary action, or an accessible reason.",
+          "required": true
+        },
+        {
+          "id": "status",
+          "purpose": "Explain progress, selected, active and locked projections without changing owner state.",
+          "required": true
+        },
+        {
+          "id": "empty",
+          "purpose": "Explain absence and the next permitted explicit step.",
+          "required": true
+        },
+        {
+          "id": "loading",
+          "purpose": "Show independent meaningful loading context rather than queued or success.",
+          "required": true
+        },
+        {
+          "id": "error",
+          "purpose": "Present safe error context and explicit recovery without automatic paid retry.",
+          "required": true
+        },
+        {
+          "id": "subject_preview",
+          "purpose": "Present the bounded subject/version under review.",
+          "required": true
+        },
+        {
+          "id": "evidence_context",
+          "purpose": "Keep missing or unknown evidence unresolved.",
+          "required": true
+        },
+        {
+          "id": "decision_controls",
+          "purpose": "Bind an explicit decision to the shown version.",
+          "required": true
+        }
+      ],
+      "header": {
+        "page_level": 1,
+        "section_level": 2,
+        "detail_levels": [
+          3,
+          4
+        ]
+      },
+      "actions": {
+        "max_executable_primary": 1,
+        "zero_primary_reason_required": true,
+        "destructive_confirmation": true,
+        "unknown_cost_disabled": true,
+        "stages": [
+          "preview",
+          "adopt",
+          "commit",
+          "publish",
+          "create",
+          "recover",
+          "navigate",
+          "inspect"
+        ]
+      },
+      "states": {
+        "content_modes": [
+          "ready",
+          "loading",
+          "empty",
+          "error"
+        ],
+        "progress_states": [
+          "queued",
+          "running",
+          "waiting_for_user",
+          "result_ready",
+          "needs_attention",
+          "reconciling",
+          "failed",
+          "offline",
+          "unknown"
+        ],
+        "loading_independent": true,
+        "selection_independent": true
+      },
+      "responsive": {
+        "mobile_below": 768,
+        "desktop_density": "default",
+        "mobile_density": "touch",
+        "mobile_rules": [
+          "Retain evidence and version context alongside the decision controls.",
+          "Use wrapping headers and one-column content; preserve a reachable permitted primary action."
+        ],
+        "bounded_scroll_regions": [
+          "subject_preview"
+        ]
+      },
+      "navigation_audiences": [
+        "customer",
+        "workspace",
+        "admin"
+      ],
+      "do": [
+        "Bind the decision to the shown version.",
+        "Keep stages, safe disclosures and unknown provenance explicit."
+      ],
+      "dont": [
+        "Do not turn technical PASS into full quality.",
+        "Do not infer authorization, verified fees, product finish or adoption from this definition."
+      ],
+      "reference_id": "reference/review/v1"
+    },
+    {
+      "id": "billing",
+      "regions": [
+        {
+          "id": "header",
+          "purpose": "Identify the page with one meaningful h1 and scoped actions.",
+          "required": true
+        },
+        {
+          "id": "body",
+          "purpose": "Contain the page-specific content and named bounded regions.",
+          "required": true
+        },
+        {
+          "id": "primary_action",
+          "purpose": "Locate at most one executable primary action, or an accessible reason.",
+          "required": true
+        },
+        {
+          "id": "status",
+          "purpose": "Explain progress, selected, active and locked projections without changing owner state.",
+          "required": true
+        },
+        {
+          "id": "empty",
+          "purpose": "Explain absence and the next permitted explicit step.",
+          "required": true
+        },
+        {
+          "id": "loading",
+          "purpose": "Show independent meaningful loading context rather than queued or success.",
+          "required": true
+        },
+        {
+          "id": "error",
+          "purpose": "Present safe error context and explicit recovery without automatic paid retry.",
+          "required": true
+        },
+        {
+          "id": "account_context",
+          "purpose": "Identify unavailable or synthetic account context clearly.",
+          "required": true
+        },
+        {
+          "id": "usage_context",
+          "purpose": "Separate declared usage, holds and settlement context.",
+          "required": true
+        },
+        {
+          "id": "entitlement_context",
+          "purpose": "Explain known or unknown entitlement context.",
+          "required": true
+        },
+        {
+          "id": "history_context",
+          "purpose": "Present financial history context without implying cash authority.",
+          "required": true
+        }
+      ],
+      "header": {
+        "page_level": 1,
+        "section_level": 2,
+        "detail_levels": [
+          3,
+          4
+        ]
+      },
+      "actions": {
+        "max_executable_primary": 1,
+        "zero_primary_reason_required": true,
+        "destructive_confirmation": true,
+        "unknown_cost_disabled": true,
+        "stages": [
+          "preview",
+          "adopt",
+          "commit",
+          "publish",
+          "create",
+          "recover",
+          "navigate",
+          "inspect"
+        ]
+      },
+      "states": {
+        "content_modes": [
+          "ready",
+          "loading",
+          "empty",
+          "error"
+        ],
+        "progress_states": [
+          "queued",
+          "running",
+          "waiting_for_user",
+          "result_ready",
+          "needs_attention",
+          "reconciling",
+          "failed",
+          "offline",
+          "unknown"
+        ],
+        "loading_independent": true,
+        "selection_independent": true
+      },
+      "responsive": {
+        "mobile_below": 768,
+        "desktop_density": "default",
+        "mobile_density": "touch",
+        "mobile_rules": [
+          "Keep billing sections readable and show missing facts as unknown, never zero.",
+          "Use wrapping headers and one-column content; preserve a reachable permitted primary action."
+        ],
+        "bounded_scroll_regions": []
+      },
+      "navigation_audiences": [
+        "customer",
+        "workspace",
+        "admin"
+      ],
+      "do": [
+        "Separate usage, hold and settlement facts.",
+        "Keep stages, safe disclosures and unknown provenance explicit."
+      ],
+      "dont": [
+        "Do not issue a charge or infer cash from interface counts.",
+        "Do not infer authorization, verified fees, product finish or adoption from this definition."
+      ],
+      "reference_id": "reference/billing/v1"
+    },
+    {
+      "id": "settings",
+      "regions": [
+        {
+          "id": "header",
+          "purpose": "Identify the page with one meaningful h1 and scoped actions.",
+          "required": true
+        },
+        {
+          "id": "body",
+          "purpose": "Contain the page-specific content and named bounded regions.",
+          "required": true
+        },
+        {
+          "id": "primary_action",
+          "purpose": "Locate at most one executable primary action, or an accessible reason.",
+          "required": true
+        },
+        {
+          "id": "status",
+          "purpose": "Explain progress, selected, active and locked projections without changing owner state.",
+          "required": true
+        },
+        {
+          "id": "empty",
+          "purpose": "Explain absence and the next permitted explicit step.",
+          "required": true
+        },
+        {
+          "id": "loading",
+          "purpose": "Show independent meaningful loading context rather than queued or success.",
+          "required": true
+        },
+        {
+          "id": "error",
+          "purpose": "Present safe error context and explicit recovery without automatic paid retry.",
+          "required": true
+        },
+        {
+          "id": "scope_context",
+          "purpose": "Identify the exact current setting scope.",
+          "required": true
+        },
+        {
+          "id": "setting_sections",
+          "purpose": "Group scoped setting updates and consequences.",
+          "required": true
+        },
+        {
+          "id": "membership_context",
+          "purpose": "Explain membership context without granting permission.",
+          "required": true
+        }
+      ],
+      "header": {
+        "page_level": 1,
+        "section_level": 2,
+        "detail_levels": [
+          3,
+          4
+        ]
+      },
+      "actions": {
+        "max_executable_primary": 1,
+        "zero_primary_reason_required": true,
+        "destructive_confirmation": true,
+        "unknown_cost_disabled": true,
+        "stages": [
+          "preview",
+          "adopt",
+          "commit",
+          "publish",
+          "create",
+          "recover",
+          "navigate",
+          "inspect"
+        ]
+      },
+      "states": {
+        "content_modes": [
+          "ready",
+          "loading",
+          "empty",
+          "error"
+        ],
+        "progress_states": [
+          "queued",
+          "running",
+          "waiting_for_user",
+          "result_ready",
+          "needs_attention",
+          "reconciling",
+          "failed",
+          "offline",
+          "unknown"
+        ],
+        "loading_independent": true,
+        "selection_independent": true
+      },
+      "responsive": {
+        "mobile_below": 768,
+        "desktop_density": "default",
+        "mobile_density": "touch",
+        "mobile_rules": [
+          "Disclose sections accessibly while preserving locked scope and its reason.",
+          "Use wrapping headers and one-column content; preserve a reachable permitted primary action."
+        ],
+        "bounded_scroll_regions": []
+      },
+      "navigation_audiences": [
+        "customer",
+        "workspace",
+        "admin"
+      ],
+      "do": [
+        "Show scope and consequence.",
+        "Keep stages, safe disclosures and unknown provenance explicit."
+      ],
+      "dont": [
+        "Do not imply membership or permission grants.",
+        "Do not infer authorization, verified fees, product finish or adoption from this definition."
+      ],
+      "reference_id": "reference/settings/v1"
+    },
+    {
+      "id": "recovery",
+      "regions": [
+        {
+          "id": "header",
+          "purpose": "Identify the page with one meaningful h1 and scoped actions.",
+          "required": true
+        },
+        {
+          "id": "body",
+          "purpose": "Contain the page-specific content and named bounded regions.",
+          "required": true
+        },
+        {
+          "id": "primary_action",
+          "purpose": "Locate at most one executable primary action, or an accessible reason.",
+          "required": true
+        },
+        {
+          "id": "status",
+          "purpose": "Explain progress, selected, active and locked projections without changing owner state.",
+          "required": true
+        },
+        {
+          "id": "empty",
+          "purpose": "Explain absence and the next permitted explicit step.",
+          "required": true
+        },
+        {
+          "id": "loading",
+          "purpose": "Show independent meaningful loading context rather than queued or success.",
+          "required": true
+        },
+        {
+          "id": "error",
+          "purpose": "Present safe error context and explicit recovery without automatic paid retry.",
+          "required": true
+        },
+        {
+          "id": "known_context",
+          "purpose": "State the limited facts currently known.",
+          "required": true
+        },
+        {
+          "id": "safe_reason",
+          "purpose": "Present safe recovery context without private provider detail.",
+          "required": true
+        },
+        {
+          "id": "recovery_options",
+          "purpose": "Offer only explicit permitted recovery or return actions.",
+          "required": true
+        }
+      ],
+      "header": {
+        "page_level": 1,
+        "section_level": 2,
+        "detail_levels": [
+          3,
+          4
+        ]
+      },
+      "actions": {
+        "max_executable_primary": 1,
+        "zero_primary_reason_required": true,
+        "destructive_confirmation": true,
+        "unknown_cost_disabled": true,
+        "stages": [
+          "preview",
+          "adopt",
+          "commit",
+          "publish",
+          "create",
+          "recover",
+          "navigate",
+          "inspect"
+        ]
+      },
+      "states": {
+        "content_modes": [
+          "ready",
+          "loading",
+          "empty",
+          "error"
+        ],
+        "progress_states": [
+          "queued",
+          "running",
+          "waiting_for_user",
+          "result_ready",
+          "needs_attention",
+          "reconciling",
+          "failed",
+          "offline",
+          "unknown"
+        ],
+        "loading_independent": true,
+        "selection_independent": true
+      },
+      "responsive": {
+        "mobile_below": 768,
+        "desktop_density": "default",
+        "mobile_density": "touch",
+        "mobile_rules": [
+          "Keep recovery reachable and distinguish error, offline and reconciling.",
+          "Use wrapping headers and one-column content; preserve a reachable permitted primary action."
+        ],
+        "bounded_scroll_regions": []
+      },
+      "navigation_audiences": [
+        "customer",
+        "workspace",
+        "admin"
+      ],
+      "do": [
+        "State what is known.",
+        "Keep stages, safe disclosures and unknown provenance explicit."
+      ],
+      "dont": [
+        "Do not automatically recreate paid work or fabricate a refund.",
+        "Do not infer authorization, verified fees, product finish or adoption from this definition."
+      ],
+      "reference_id": "reference/recovery/v1"
+    },
+    {
+      "id": "public_consumer",
+      "regions": [
+        {
+          "id": "header",
+          "purpose": "Identify the page with one meaningful h1 and scoped actions.",
+          "required": true
+        },
+        {
+          "id": "body",
+          "purpose": "Contain the page-specific content and named bounded regions.",
+          "required": true
+        },
+        {
+          "id": "primary_action",
+          "purpose": "Locate at most one executable primary action, or an accessible reason.",
+          "required": true
+        },
+        {
+          "id": "status",
+          "purpose": "Explain progress, selected, active and locked projections without changing owner state.",
+          "required": true
+        },
+        {
+          "id": "empty",
+          "purpose": "Explain absence and the next permitted explicit step.",
+          "required": true
+        },
+        {
+          "id": "loading",
+          "purpose": "Show independent meaningful loading context rather than queued or success.",
+          "required": true
+        },
+        {
+          "id": "error",
+          "purpose": "Present safe error context and explicit recovery without automatic paid retry.",
+          "required": true
+        },
+        {
+          "id": "customer_context",
+          "purpose": "Frame the current customer task and return context.",
+          "required": true
+        },
+        {
+          "id": "public_content",
+          "purpose": "Present customer-facing public content.",
+          "required": true
+        },
+        {
+          "id": "customer_action",
+          "purpose": "Offer the customer next step without management controls.",
+          "required": true
+        },
+        {
+          "id": "public_footer",
+          "purpose": "Keep customer help and public legal links in the footer.",
+          "required": true
+        }
+      ],
+      "header": {
+        "page_level": 1,
+        "section_level": 2,
+        "detail_levels": [
+          3,
+          4
+        ]
+      },
+      "actions": {
+        "max_executable_primary": 1,
+        "zero_primary_reason_required": true,
+        "destructive_confirmation": true,
+        "unknown_cost_disabled": true,
+        "stages": [
+          "preview",
+          "adopt",
+          "commit",
+          "publish",
+          "create",
+          "recover",
+          "navigate",
+          "inspect"
+        ]
+      },
+      "states": {
+        "content_modes": [
+          "ready",
+          "loading",
+          "empty",
+          "error"
+        ],
+        "progress_states": [
+          "queued",
+          "running",
+          "waiting_for_user",
+          "result_ready",
+          "needs_attention",
+          "reconciling",
+          "failed",
+          "offline",
+          "unknown"
+        ],
+        "loading_independent": true,
+        "selection_independent": true
+      },
+      "responsive": {
+        "mobile_below": 768,
+        "desktop_density": "default",
+        "mobile_density": "touch",
+        "mobile_rules": [
+          "Use touch density and customer-only navigation with no administrative sidebar.",
+          "Use wrapping headers and one-column content; preserve a reachable permitted primary action."
+        ],
+        "bounded_scroll_regions": []
+      },
+      "navigation_audiences": [
+        "customer"
+      ],
+      "do": [
+        "Keep task context customer-facing.",
+        "Keep stages, safe disclosures and unknown provenance explicit."
+      ],
+      "dont": [
+        "Do not inject management, member or workspace navigation.",
+        "Do not infer authorization, verified fees, product finish or adoption from this definition."
+      ],
+      "reference_id": "reference/public_consumer/v1"
+    },
+    {
+      "id": "editor_shell",
+      "regions": [
+        {
+          "id": "header",
+          "purpose": "Identify the page with one meaningful h1 and scoped actions.",
+          "required": true
+        },
+        {
+          "id": "body",
+          "purpose": "Contain the page-specific content and named bounded regions.",
+          "required": true
+        },
+        {
+          "id": "primary_action",
+          "purpose": "Locate at most one executable primary action, or an accessible reason.",
+          "required": true
+        },
+        {
+          "id": "status",
+          "purpose": "Explain progress, selected, active and locked projections without changing owner state.",
+          "required": true
+        },
+        {
+          "id": "empty",
+          "purpose": "Explain absence and the next permitted explicit step.",
+          "required": true
+        },
+        {
+          "id": "loading",
+          "purpose": "Show independent meaningful loading context rather than queued or success.",
+          "required": true
+        },
+        {
+          "id": "error",
+          "purpose": "Present safe error context and explicit recovery without automatic paid retry.",
+          "required": true
+        },
+        {
+          "id": "tool_context",
+          "purpose": "Expose professional tools for the current editing scope.",
+          "required": true
+        },
+        {
+          "id": "work_viewport",
+          "purpose": "Preserve a bounded central professional work area.",
+          "required": true
+        },
+        {
+          "id": "inspector",
+          "purpose": "Present scoped inspection context separately from the work area.",
+          "required": true
+        },
+        {
+          "id": "work_status",
+          "purpose": "Show current work status without inventing timeline or task semantics.",
+          "required": true
+        }
+      ],
+      "header": {
+        "page_level": 1,
+        "section_level": 2,
+        "detail_levels": [
+          3,
+          4
+        ]
+      },
+      "actions": {
+        "max_executable_primary": 1,
+        "zero_primary_reason_required": true,
+        "destructive_confirmation": true,
+        "unknown_cost_disabled": true,
+        "stages": [
+          "preview",
+          "adopt",
+          "commit",
+          "publish",
+          "create",
+          "recover",
+          "navigate",
+          "inspect"
+        ]
+      },
+      "states": {
+        "content_modes": [
+          "ready",
+          "loading",
+          "empty",
+          "error"
+        ],
+        "progress_states": [
+          "queued",
+          "running",
+          "waiting_for_user",
+          "result_ready",
+          "needs_attention",
+          "reconciling",
+          "failed",
+          "offline",
+          "unknown"
+        ],
+        "loading_independent": true,
+        "selection_independent": true
+      },
+      "responsive": {
+        "mobile_below": 768,
+        "desktop_density": "compact",
+        "mobile_density": "touch",
+        "mobile_rules": [
+          "Collapse the inspector accessibly while preserving the work area and explicit stages.",
+          "Use wrapping headers and one-column content; preserve a reachable permitted primary action."
+        ],
+        "bounded_scroll_regions": [
+          "work_viewport"
+        ]
+      },
+      "navigation_audiences": [
+        "customer",
+        "workspace",
+        "admin"
+      ],
+      "do": [
+        "Preserve the professional work area.",
+        "Keep stages, safe disclosures and unknown provenance explicit."
+      ],
+      "dont": [
+        "Do not replace timeline semantics or use workspace density on desktop.",
+        "Do not infer authorization, verified fees, product finish or adoption from this definition."
+      ],
+      "reference_id": "reference/editor_shell/v1"
+    }
+  ]
+}
