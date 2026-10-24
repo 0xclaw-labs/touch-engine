@@ -120,6 +120,6 @@ describe("制作活动图交给产品图", () => {
   });
 
   it("没有测试配置时拒绝，不假装已经创建工程", async () => {
-    await expect(acceptCampaignImage("cmp_preview", {}, fetch)).rejects.toThrow(/不会向产品图提交交接/);
+    await expect(acceptCampaignImage("cmp_preview", {}, fetch)).rejects.toThrow(/跨应用交接暂未开放/);
   });
 });

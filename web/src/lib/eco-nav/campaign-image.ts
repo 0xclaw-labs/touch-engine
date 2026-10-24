@@ -90,31 +90,31 @@ export async function acceptCampaignImage(
   fetchImpl: FetchLike = fetch,
 ): Promise<CampaignImageResult> {
   if (env.TOUCH_ECO_NAV_PREVIEW !== "1" || env.TOUCH_ECO_NAV_TEST_BRAND !== "1") {
-    throw new Error("测试品牌未打开，不会向产品图提交交接");
+    throw new Error("跨应用交接暂未开放");
   }
   const origin = loopbackOrigin(env.TOUCH_ECO_NAV_TEST_PRODUCT_IMAGE_URL);
   const token = env.PRODUCT_INTERNAL_TOKEN?.trim() ?? "";
   const mintUrl = env.TEST_IDENTITY_MINT_URL?.trim() ?? "";
   if (!origin || !token || !mintUrl) {
-    throw new Error("产品图测试地址未配齐，不会伪造工程");
+    throw new Error("跨应用交接暂未开放，请稍后再试");
   }
   let mint: URL;
   try {
     mint = new URL(mintUrl);
   } catch {
-    throw new Error("测试身份地址无效");
+    throw new Error("跨应用交接暂未开放，请稍后再试");
   }
   if (mint.hostname !== "127.0.0.1" && mint.hostname !== "localhost") {
-    throw new Error("测试身份只能在本机");
+    throw new Error("跨应用交接暂未开放，请稍后再试");
   }
   const minted = await fetchImpl(mint.toString(), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ aud: "product-image-engine", tenant_id: TENANT }),
   });
-  if (!minted.ok) throw new Error("测试身份没有签发访问令牌");
+  if (!minted.ok) throw new Error("跨应用交接没有完成，请稍后再试");
   const mintedBody = (await minted.json()) as { access_token?: string };
-  if (!mintedBody.access_token) throw new Error("测试身份没有签发访问令牌");
+  if (!mintedBody.access_token) throw new Error("跨应用交接没有完成，请稍后再试");
 
   const accepted = await fetchImpl(`${origin}/api/v1/handoffs/accept`, {
     method: "POST",
