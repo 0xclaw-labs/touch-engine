@@ -14,6 +14,7 @@
 import { Suspense, useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import { classifyEntry, failureState, STATE_ACTION, STATE_TEXT, storeNoticeText, type PublicUiState } from "@/lib/public-state";
+import { failureText } from "@/lib/failure-copy";
 import { inSiteTargetFromParams } from "@/lib/safe-redirect";
 import {
   actionClickRecord,
@@ -327,7 +328,9 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
       setParticipation(result);
       await refreshDetail(result.id ?? "");
     } else if (result && "error" in result && result.error === "start_failed") {
-      setParticipationNote(result.message);
+      // T2(ui-copy-audit-20261024)：服务端英文 message 不透传给游客，只有中文产品语句才原样展示。
+      const startMessage = typeof result.message === "string" ? result.message : "";
+      setParticipationNote(/[\u4e00-\u9fff]/.test(startMessage) ? startMessage : "参与没有开始成功，请稍后再试");
     } else if (result) {
       setParticipationNote("网络没有给出明确结果。先当作还没开始；稍后重试即可。");
     }
@@ -398,7 +401,7 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
         if (res.ok && data?.submission_ref) {
           setSubmitted(data);
         } else {
-          setSubmitError(errorMessage(data) ?? "提交失败,请稍后再试");
+          setSubmitError(publicLeadFailure(res.status, data, "提交没有完成，请稍后再试"));
         }
       })
       .catch(() => setSubmitError("网络异常,请稍后再试"))
@@ -417,7 +420,7 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
       .then(async (res) => {
         const data = await res.json().catch(() => null);
         if (res.ok && data?.state === "revoked") setRevokeDone(true);
-        else setRevokeError(errorMessage(data) ?? "撤销失败,请核对手机号后重试");
+        else setRevokeError(publicLeadFailure(res.status, data, "撤销没有完成，请核对手机号后重试"));
       })
       .catch(() => setRevokeError("网络异常,请稍后再试"))
       .finally(() => setRevoking(false));
@@ -772,4 +775,16 @@ function errorMessage(data: unknown): string | null {
     if (typeof message === "string") return message;
   }
   return null;
+}
+
+// T1(ui-copy-audit-20261024)：游客公开页不再直出服务端英文 message。
+// 限流（"too many submissions"）单独给友好句；可按状态映射的走 failureText；
+// 其余一律用调用方给的固定中文 fallback。
+function publicLeadFailure(status: number, data: unknown, fallback: string): string {
+  const raw = errorMessage(data) ?? "";
+  if (/too many submissions/i.test(raw)) return "今天提交次数有点多，请稍后再试";
+  if (status === 401 || status === 403 || status === 404 || status >= 500) {
+    return failureText(status, data && typeof data === "object" ? (data as Record<string, unknown>) : {});
+  }
+  return fallback;
 }

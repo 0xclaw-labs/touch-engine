@@ -105,6 +105,30 @@ const HANDOFF_FIELDS: Array<[string, keyof ProfessionalHandoff]> = [
 
 const adminSignIn = createBffSignIn();
 
+// ui-copy-audit-20261024 T5：状态/布尔/分单位金额不直出英文枚举和原始数值。
+// state 与 server/internal/copyjob 的状态常量一一对应；real_generation 只有
+// incomplete/completed；amount_minor 是分，主视图换算成元。
+const COPY_JOB_STATE_TEXT: Record<string, string> = {
+  quoted: "已报价",
+  confirmed: "已确认",
+  generating: "生成中",
+  generation_incomplete: "生成未完成",
+  generated: "已生成",
+  selected: "已选定",
+  saved: "已保存",
+  revoked: "已撤销",
+  timed_out: "已超时",
+  quota_exceeded: "超出额度",
+  input_changed: "输入已变更",
+  late_discarded: "迟到结果已丢弃",
+};
+const REAL_GENERATION_TEXT: Record<string, string> = { incomplete: "未完成", completed: "已完成" };
+function yuanFromMinor(amountMinor: unknown): string {
+  const value = Number(amountMinor);
+  if (!Number.isFinite(value)) return "待核实";
+  return `${(value / 100).toFixed(2)} 元`;
+}
+
 export default function AdminPage() {
   const [taskNotice, setTaskNotice] = useState("");
   const [tenantId, setTenantId] = useState("");
@@ -972,8 +996,8 @@ export default function AdminPage() {
         {copyError && <p className="tk-admin-danger">{copyError}</p>}
         {shownJob && (
           <div className="tk-admin-card">
-            <p data-testid="copy-job-state">状态：{String(shownJob.state ?? "")}</p>
-            <p data-testid="copy-real-generation">真实生成：{String(shownJob.real_generation ?? "incomplete")}</p>
+            <p data-testid="copy-job-state">状态：{COPY_JOB_STATE_TEXT[String(shownJob.state ?? "")] ?? "待核实"}</p>
+            <p data-testid="copy-real-generation">真实生成：{REAL_GENERATION_TEXT[String(shownJob.real_generation ?? "")] ?? "未完成"}</p>
             <p data-testid="copy-notice">{copyJobClosed({
               real_generation: String(shownJob.real_generation ?? ""),
               success: shownJob.success === true,
@@ -996,7 +1020,7 @@ export default function AdminPage() {
               挂载状态：{shownJob.poi_mounted === true ? "可挂载" : "未绑定"}。文案中的地点名不等于渠道已挂载 POI。
             </p>
             <p className="tk-admin-muted-sm">
-              活动仍是「{String(shownJob.campaign_status ?? "")} / {String(shownJob.campaign_title ?? "")}」。扣费：{String(shownJob.billed)}。奖励：{String(shownJob.rewards_triggered)}。费用记录：{String(shownJob.charge_count ?? 0)} 次提交，金额 {shownJob.amount_minor == null ? "无" : String(shownJob.amount_minor)}。
+              活动仍是「{String(shownJob.campaign_status ?? "")} / {String(shownJob.campaign_title ?? "")}」。扣费：{shownJob.billed === true ? "是" : "否"}。奖励：{shownJob.rewards_triggered === true ? "是" : "否"}。费用记录：{String(shownJob.charge_count ?? 0)} 次提交，金额 {shownJob.amount_minor == null ? "无" : yuanFromMinor(shownJob.amount_minor)}。
             </p>
             {/* fix2：交接资料按字段呈现（server/internal/copydraft Handoff 八字段），不再把原始 JSON 塞给用户 */}
             <div className="tk-admin-card" data-testid="professional-handoff">
