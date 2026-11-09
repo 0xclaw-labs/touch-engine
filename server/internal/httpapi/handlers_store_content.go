@@ -30,6 +30,64 @@ import (
 // Range/续签解决;上传侧直接限流).
 const maxMediaUploadBytes = 200 << 20
 
+// storeContentPackRead authorizes reading the store-root content surface
+// (packs/versions/adoptions/media list). Existing business-role semantics via
+// ActionReadList with the STORE in scope: org_owner/legacy-staff keep tenant
+// reads; a store_manager of THIS store now reads its packs (M5 是门店经营面,
+// 同 M2/M4 读语义) — 之前用租户级 scope 把经理挡在外面(Walk A F 根因之一).
+func (s *Server) storeContentPackRead(c *caller, storeID string, w http.ResponseWriter) bool {
+	tenantID := ""
+	if c != nil && c.Member != nil {
+		tenantID = c.Member.TenantID
+	}
+	return s.requireAction(c, authz.ActionReadList, authz.RecordScope{TenantID: tenantID, StoreID: storeID}, w)
+}
+
+// storeContentPackManage authorizes WRITES on the store-root content surface
+// (上传媒体/建包/建版本/明确采用/停止分发). Two legitimate operators:
+//   - org_owner 租户级(既有 manage_content_packs 语义,字节不变);
+//   - 本店门店经理(role=store_manager + store_scope=本店 + enabled)——门店
+//     内容是门店资产,M1→M5 的经营旅程由门店经理操作;4593 的有效权限投影
+//     (PermActionConfigure)也把本店配置归经理。刻意不新增 authz 动作(动作
+//     目录归 HUI-4593 唯一维护):这里只组合既有模型事实,4593 收编
+//     manage_store_content 时本组合整体下沉。
+//
+// Walk A F: 之前整面 org_owner-only,非 owner 的第二次上传一律 403,商家语言
+// 只剩「没有权限」——与本票产品面(门店根资产)错位。
+func (s *Server) storeContentPackManage(c *caller, storeID string, w http.ResponseWriter) bool {
+	if c != nil && c.Member != nil {
+		am := s.authzMember(c)
+		rec := authz.RecordScope{TenantID: c.Member.TenantID}
+		d := authz.Authorize(am, authz.ActionManageContentPacks, rec)
+		if d.Allowed {
+			return true
+		}
+		if c.Member.Enabled && authz.Role(c.Member.Role) == authz.RoleStoreManager && c.Member.StoreScope == storeID {
+			return true
+		}
+		fail(w, http.StatusForbidden, d.Reason, "action not allowed for this member")
+		return false
+	}
+	fail(w, http.StatusForbidden, authz.ReasonForbidden, "action not allowed for this member")
+	return false
+}
+
+// storePackInTenantStore verifies the URL pack belongs to the URL store
+// (manager paths grant per-store; a foreign-store pack answers uniform 404,
+// no existence leak — owners were tenant-wide before and are unaffected).
+func (s *Server) storePackInTenantStore(w http.ResponseWriter, tenantID, storeID, packID string) bool {
+	p, err := s.St.GetStoreContentPack(packID, tenantID)
+	if err != nil {
+		packStoreFail(w, err)
+		return false
+	}
+	if p.StoreID != storeID {
+		fail(w, http.StatusNotFound, "not_found", "resource not found")
+		return false
+	}
+	return true
+}
+
 // ---- media upload (真实字节;服务器以实测定类型) ---------------------------------------
 
 // storeMediaView is the verified metadata the upload/registry returns.
@@ -46,7 +104,7 @@ func storeMediaView(m store.ContentMedia, replayed bool) map[string]any {
 // POST /api/v1/stores/{id}/content-media — multipart field "file".
 func (s *Server) handleStoreContentMediaUpload(w http.ResponseWriter, r *http.Request) {
 	c := callerFrom(r)
-	if !s.packTenantAction(c, authz.ActionManageContentPacks, w) {
+	if !s.storeContentPackManage(c, r.PathValue("id"), w) {
 		return
 	}
 	storeID := r.PathValue("id")
@@ -88,7 +146,7 @@ func (s *Server) handleStoreContentMediaUpload(w http.ResponseWriter, r *http.Re
 // GET /api/v1/stores/{id}/content-media — the store's verified media list.
 func (s *Server) handleStoreContentMediaList(w http.ResponseWriter, r *http.Request) {
 	c := callerFrom(r)
-	if !s.packTenantAction(c, authz.ActionReadList, w) {
+	if !s.storeContentPackRead(c, r.PathValue("id"), w) {
 		return
 	}
 	media, err := s.St.ListContentMedia(c.Member.TenantID, r.PathValue("id"))
@@ -109,7 +167,7 @@ func (s *Server) handleStoreContentMediaList(w http.ResponseWriter, r *http.Requ
 // campaign 可空(不为无活动门店强建活动)。
 func (s *Server) handleStoreContentPackCreate(w http.ResponseWriter, r *http.Request) {
 	c := callerFrom(r)
-	if !s.packTenantAction(c, authz.ActionManageContentPacks, w) {
+	if !s.storeContentPackManage(c, r.PathValue("id"), w) {
 		return
 	}
 	var in struct {
@@ -177,7 +235,7 @@ func storeMediaSnapshotsView(list []store.StoreMediaSnapshot) []map[string]any {
 // legacy campaign adapter), their versions and current adoption pointers.
 func (s *Server) handleStoreContentPackList(w http.ResponseWriter, r *http.Request) {
 	c := callerFrom(r)
-	if !s.packTenantAction(c, authz.ActionReadList, w) {
+	if !s.storeContentPackRead(c, r.PathValue("id"), w) {
 		return
 	}
 	tenantID := c.Member.TenantID
@@ -286,7 +344,10 @@ func (b storeVersionSpecBody) spec() store.StoreVersionSpec {
 // copy / swaps media = a NEW immutable version; nothing overwrites one.
 func (s *Server) handleStoreContentPackVersionCreate(w http.ResponseWriter, r *http.Request) {
 	c := callerFrom(r)
-	if !s.packTenantAction(c, authz.ActionManageContentPacks, w) {
+	if !s.storeContentPackManage(c, r.PathValue("id"), w) {
+		return
+	}
+	if !s.storePackInTenantStore(w, c.Member.TenantID, r.PathValue("id"), r.PathValue("packId")) {
 		return
 	}
 	var in storeVersionSpecBody
@@ -314,7 +375,10 @@ func (s *Server) handleStoreContentPackVersionCreate(w http.ResponseWriter, r *h
 // operator and time are recorded.
 func (s *Server) handleStoreContentPackVersionAdopt(w http.ResponseWriter, r *http.Request) {
 	c := callerFrom(r)
-	if !s.packTenantAction(c, authz.ActionManageContentPacks, w) {
+	if !s.storeContentPackManage(c, r.PathValue("id"), w) {
+		return
+	}
+	if !s.storePackInTenantStore(w, c.Member.TenantID, r.PathValue("id"), r.PathValue("packId")) {
 		return
 	}
 	var in struct {
@@ -341,7 +405,10 @@ func (s *Server) handleStoreContentPackVersionAdopt(w http.ResponseWriter, r *ht
 // 撤权/重大内容问题:指针保留(旧引用不动),新分发被拒,处理记录落事件表。
 func (s *Server) handleStoreContentPackVersionBlock(w http.ResponseWriter, r *http.Request) {
 	c := callerFrom(r)
-	if !s.packTenantAction(c, authz.ActionManageContentPacks, w) {
+	if !s.storeContentPackManage(c, r.PathValue("id"), w) {
+		return
+	}
+	if !s.storePackInTenantStore(w, c.Member.TenantID, r.PathValue("id"), r.PathValue("packId")) {
 		return
 	}
 	var in struct {

@@ -39,6 +39,7 @@ type storeContentFixture struct {
 	tenB    string
 	storeA  string
 	storeB  string
+	storeA2 string
 	campA   string
 	testDir string
 }
@@ -78,6 +79,10 @@ func newStoreContentFixture(t *testing.T) *storeContentFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	stA2, err := st.CreateStore(tenA.ID, "同租户二店", "地址三", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
 	stB, err := st.CreateStore(tenB.ID, "别家门店", "地址二", "test")
 	if err != nil {
 		t.Fatal(err)
@@ -95,17 +100,22 @@ func newStoreContentFixture(t *testing.T) *storeContentFixture {
 			t.Fatalf("seed: %v", err)
 		}
 	}
+	// HUI-4593 角色:门店经理(仅本店)与带 scope 店员。
+	if _, err := st.CreateMemberScoped(tenA.ID, "usr_manager_a", "store_manager", "经理A", "test", true, stA.ID); err != nil {
+		t.Fatalf("seed manager: %v", err)
+	}
 	idsrv := fakeIdentity(t, map[string]identitySession{
-		"sess-owner-a": {"usr_owner_a", "owner@example.com"},
-		"sess-staff-a": {"usr_staff_a", "staff@example.com"},
-		"sess-owner-b": {"usr_owner_b", "ownerb@example.com"},
+		"sess-owner-a":  {"usr_owner_a", "owner@example.com"},
+		"sess-staff-a":  {"usr_staff_a", "staff@example.com"},
+		"sess-owner-b":  {"usr_owner_b", "ownerb@example.com"},
+		"sess-manager-a": {"usr_manager_a", "manager@example.com"},
 	})
 	idc := &identity.Client{BaseURL: idsrv.URL, Token: "identity-token", AppID: "touch-engine", HTTP: idsrv.Client()}
 
 	s := New(cfg, d, idc, &upload.Client{}, log.New(io.Discard, "", 0))
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
-	return &storeContentFixture{s: s, ts: ts, tenA: tenA.ID, tenB: tenB.ID, storeA: stA.ID, storeB: stB.ID, campA: cA.ID, testDir: mediaDir}
+	return &storeContentFixture{s: s, ts: ts, tenA: tenA.ID, tenB: tenB.ID, storeA: stA.ID, storeB: stB.ID, storeA2: stA2.ID, campA: cA.ID, testDir: mediaDir}
 }
 
 func (f *storeContentFixture) do(t *testing.T, method, path, session, tenant, body string) (int, map[string]any) {
@@ -406,5 +416,89 @@ func TestStoreContentPackTenantIsolation(t *testing.T) {
 	status, out = f.do(t, "POST", "/api/v1/stores/"+f.storeB+"/content-packs/"+packID+"/versions", "sess-owner-b", f.tenB, storeVersionBody("cmd_x", "cmd_y"))
 	if status != http.StatusNotFound {
 		t.Fatalf("cross-tenant version = %d %v, want 404", status, out)
+	}
+}
+
+// ---- Walk A F 修复轮:门店经理可完整经营本店内容包;越店一律拒绝 ----------
+
+func TestStoreManagerOperatesOwnStoreContent(t *testing.T) {
+	f := newStoreContentFixture(t)
+	mgr := func(method, path, body string) (int, map[string]any) {
+		return f.do(t, method, path, "sess-manager-a", f.tenA, body)
+	}
+
+	// 同表单连续上传视频+封面(走查场景:第一件成功,第二件不再 403)。
+	status, out := f.uploadFile(t, "sess-manager-a", f.tenA, f.storeA, "tiny.mp4", "tiny.mp4")
+	if status != http.StatusCreated {
+		t.Fatalf("manager upload mp4 = %d: %v", status, out)
+	}
+	videoID, _ := out["id"].(string)
+	status, out = f.uploadFile(t, "sess-manager-a", f.tenA, f.storeA, "pixel.jpg", "pixel.jpg")
+	if status != http.StatusCreated {
+		t.Fatalf("manager upload cover = %d: %v (同表单第二件必须同样成功)", status, out)
+	}
+	coverID, _ := out["id"].(string)
+
+	// 建包(活动可空)→ 建候选 → 明确采用 → 列表可读:4584 R2 依赖链。
+	status, out = mgr("POST", "/api/v1/stores/"+f.storeA+"/content-packs", `{"title":"经理的主题包"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("manager create pack = %d: %v", status, out)
+	}
+	packID, _ := out["id"].(string)
+	status, out = mgr("POST", "/api/v1/stores/"+f.storeA+"/content-packs/"+packID+"/versions", storeVersionBody(videoID, coverID))
+	if status != http.StatusCreated {
+		t.Fatalf("manager create version = %d: %v", status, out)
+	}
+	versionID, _ := out["id"].(string)
+	status, out = mgr("POST", "/api/v1/stores/"+f.storeA+"/content-packs/"+packID+"/versions/"+versionID+"/adopt", `{"platform":"douyin"}`)
+	if status != http.StatusOK {
+		t.Fatalf("manager adopt = %d: %v", status, out)
+	}
+	status, out = mgr("GET", "/api/v1/stores/"+f.storeA+"/content-packs", "")
+	if status != http.StatusOK {
+		t.Fatalf("manager list = %d: %v", status, out)
+	}
+	mediaStatus, _ := mgr("GET", "/api/v1/stores/"+f.storeA+"/content-media", "")
+	if mediaStatus != http.StatusOK {
+		t.Fatalf("manager media list = %d", mediaStatus)
+	}
+
+	// 越店拒绝:经理只对本店有管理权。
+	status, _ = f.uploadFile(t, "sess-manager-a", f.tenA, f.storeA2, "tiny.mp4", "tiny.mp4")
+	if status != http.StatusForbidden {
+		t.Fatalf("manager cross-store upload = %d, want 403", status)
+	}
+	status, _ = mgr("POST", "/api/v1/stores/"+f.storeA2+"/content-packs", `{"title":"越店包"}`)
+	if status != http.StatusForbidden {
+		t.Fatalf("manager cross-store pack = %d, want 403", status)
+	}
+	// 本店 URL + 本店包:继续可建版本。
+	status, _ = mgr("POST", "/api/v1/stores/"+f.storeA+"/content-packs/"+packID+"/versions", storeVersionBody(videoID, coverID))
+	if status != http.StatusCreated {
+		t.Fatalf("own-store pack version = %d", status)
+	}
+	// 别店包造一个:owner 在 storeA2 下建包。
+	status, out = f.owner(t, "POST", "/api/v1/stores/"+f.storeA2+"/content-packs", `{"title":"二店的包"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("owner create storeA2 pack = %d: %v", status, out)
+	}
+	foreignPack, _ := out["id"].(string)
+	status, _ = mgr("POST", "/api/v1/stores/"+f.storeA+"/content-packs/"+foreignPack+"/versions", storeVersionBody(videoID, coverID))
+	if status != http.StatusNotFound {
+		t.Fatalf("manager foreign-pack via own-store URL = %d, want 404", status)
+	}
+	status, _ = mgr("POST", "/api/v1/stores/"+f.storeA+"/content-packs/"+foreignPack+"/versions/"+versionID+"/adopt", `{"platform":"douyin"}`)
+	if status != http.StatusNotFound {
+		t.Fatalf("manager foreign-pack adopt = %d, want 404", status)
+	}
+
+	// 无 scope 店员:管理面维持 403(fail-closed 不变),读面保持租户级。
+	status, _ = f.do(t, "POST", "/api/v1/stores/"+f.storeA+"/content-packs", "sess-staff-a", f.tenA, `{"title":"店员的包"}`)
+	if status != http.StatusForbidden {
+		t.Fatalf("staff manage = %d, want 403", status)
+	}
+	status, _ = f.do(t, "GET", "/api/v1/stores/"+f.storeA+"/content-packs", "sess-staff-a", f.tenA, "")
+	if status != http.StatusOK {
+		t.Fatalf("legacy staff read = %d, want 200 (T0 语义保留)", status)
 	}
 }
