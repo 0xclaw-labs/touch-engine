@@ -345,8 +345,8 @@ func TestUpsertAuditIdempotent(t *testing.T) {
 		t.Fatalf("audit after create = %d, want 1", n)
 	}
 	created, updated, err := s.UpsertActionCapability(r, ControlAudit{Actor: "ops-a", Reason: "重复", Action: "create"})
-	if err != nil || created {
-		t.Fatalf("identical re-load: created=%v err=%v, want false/nil", created, err)
+	if err != nil || created || updated {
+		t.Fatalf("identical re-load: created=%v updated=%v err=%v, want false/false/nil", created, updated, err)
 	}
 	if n := countAudit(t, s, "A99"); n != 1 {
 		t.Fatalf("audit after no-op = %d, want 1 (unchanged re-load writes nothing)", n)
