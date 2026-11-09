@@ -104,6 +104,17 @@ const (
 	// 成员/代理既有面(/admin/members、/agency/*)不加开关,审计为 additive 常开。
 	// on = B11 公共权限契约面可用(GET /api/v1/access/effective 等)。
 	EnvFeatureAuthz = "FEATURE_AUTHZ"
+	// EnvFeatureWecomCallback (HUI-4589 B07 门店连接域): 企微客户事件回调端点
+	// /api/v1/public/wecom/callback 的登记制开关,默认 off。off = 路由不注册且
+	// handler gate 再答统一 404(双保险)。on = 端点可用;凭据
+	// (TOUCH_WECOM_CALLBACK_TOKEN/AES_KEY/CORP_ID)缺失时端点仍诚实回答
+	// 「待资质」(pending_qualification),绝不伪造 URL 验证应答。
+	EnvFeatureWecomCallback = "FEATURE_WECOM_CALLBACK"
+	// EnvWecomCallbackToken/AESKey/CorpID (HUI-4589): 企微回调验签凭据。
+	// 由部署侧(env 文件)持有,绝不入 Git/日志;缺失 = 待资质诚实态。
+	EnvWecomCallbackToken  = "TOUCH_WECOM_CALLBACK_TOKEN"
+	EnvWecomCallbackAESKey = "TOUCH_WECOM_CALLBACK_AES_KEY"
+	EnvWecomCallbackCorpID = "TOUCH_WECOM_CALLBACK_CORP_ID"
 )
 
 // Config is the resolved server configuration.
@@ -222,6 +233,12 @@ type Config struct {
 	FeatureTouchpointEntry  bool
 	FeatureStorefront       bool
 	FeatureAuthz            bool
+	// FeatureWecomCallback (HUI-4589 B07): 企微客户事件回调端点开关,默认 off。
+	FeatureWecomCallback bool
+	// WecomCallbackToken/AESKey/CorpID (HUI-4589): 验签凭据;缺失=待资质诚实态。
+	WecomCallbackToken  string
+	WecomCallbackAESKey string
+	WecomCallbackCorpID string
 
 	// Brand registry read client (HUI-2049). Touch never writes this registry
 	// and never treats a brand host as a tenant or a payer.
@@ -303,6 +320,10 @@ func Load(get func(string) string) Config {
 		FeatureTouchpointEntry:         isTruthy(get(EnvFeatureTouchpointEntry)),
 		FeatureStorefront:              isTruthy(get(EnvFeatureStorefront)),
 		FeatureAuthz:                   isTruthy(get(EnvFeatureAuthz)),
+		FeatureWecomCallback:           isTruthy(get(EnvFeatureWecomCallback)),
+		WecomCallbackToken:             strings.TrimSpace(get(EnvWecomCallbackToken)),
+		WecomCallbackAESKey:            strings.TrimSpace(get(EnvWecomCallbackAESKey)),
+		WecomCallbackCorpID:            strings.TrimSpace(get(EnvWecomCallbackCorpID)),
 		BrandBaseURL:                   strings.TrimSpace(get("PLATFORM_BRAND_BASE_URL")),
 		BrandToken:                     get("PLATFORM_BRAND_TOKEN"),
 		SubscriptionStatus:             firstNonEmpty(get("TOUCH_SUBSCRIPTION_STATUS"), "unconfirmed"),

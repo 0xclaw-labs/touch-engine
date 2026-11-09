@@ -83,6 +83,11 @@ type Server struct {
 	// (single-process sliding window; not distributed by design for T1).
 	LeadsLimiter *leads.RateLimiter
 
+	// ServiceEventsLimiter (HUI-4589 B07) gates the public service-event
+	// surface per client IP (same single-process window): 事件面只证明「有人点了」，
+	// 不得变成探测渠道。
+	ServiceEventsLimiter *leads.RateLimiter
+
 	// StaffTokenLimiter (HUI-3562) gates the staff token-entry surface
 	// (staff/peek + staff/redeem) per member principal: manual entry of a
 	// handoff token must not become a probing channel. Same single-process
@@ -157,6 +162,11 @@ type dashboardEntry struct {
 // anyway); strict enough to stop bulk form spam. Single-process scope by design.
 const leadsRatePerMinute = 30
 
+// serviceEventsRatePerMinute (HUI-4589 B07) bounds the public service-event
+// surface per client IP: events only prove "someone clicked" and must never
+// become a probing channel.
+const serviceEventsRatePerMinute = 30
+
 // staffTokenRatePerMinute (HUI-3562) bounds staff token-entry attempts per
 // member across staff/peek + staff/redeem. A handoff token already carries
 // 128-bit entropy + a checksum prefilter; the limiter is the second lock so
@@ -171,10 +181,11 @@ func New(cfg config.Config, database *sql.DB, idc *identity.Client, upc *upload.
 	st := store.New(database)
 	srv := &Server{
 		Cfg: cfg, St: st, ID: idc, Upload: upc, Log: logger,
-		Media:             upload.NewMediaStore(cfg.MediaDir, maxMediaUploadBytes),
-		LeadsLimiter:      leads.NewRateLimiter(leadsRatePerMinute, time.Minute),
-		StaffTokenLimiter: leads.NewRateLimiter(staffTokenRatePerMinute, time.Minute),
-		Matrix:            matrixFromConfig(cfg),
+		Media:                upload.NewMediaStore(cfg.MediaDir, maxMediaUploadBytes),
+		LeadsLimiter:         leads.NewRateLimiter(leadsRatePerMinute, time.Minute),
+		StaffTokenLimiter:    leads.NewRateLimiter(staffTokenRatePerMinute, time.Minute),
+		ServiceEventsLimiter: leads.NewRateLimiter(serviceEventsRatePerMinute, time.Minute),
+		Matrix:               matrixFromConfig(cfg),
 		// HUI-3535 Walk C 修复中央接线：sa_* 实例 id 经 4584 store 解析（租户
 		// 服务端反查，绝不取客户端参数）。内部错误按 unknown 同形 404 fail-closed
 		// （无存在性泄漏）；disabled 区分登记但停用。
@@ -386,6 +397,10 @@ func (s *Server) Handler() http.Handler {
 	// 乐观锁;validate 按 action 粒度只读校验(不执行发布/关注/加群/收费)。
 	mux.Handle("GET /api/v1/stores/{id}/actions", s.requireSession(s.handleStoreActionsGet))
 	mux.Handle("PUT /api/v1/stores/{id}/actions", s.requireSession(s.handleStoreActionsPut))
+	// HUI-4589 B07 门店连接域（4584 actions 同风格，管理面不加开关，仓内惯例）：
+	// Wi-Fi/加微信/社群服务配置 CRUD。鉴权同款（GET=ReadRecord、PUT=Update）。
+	mux.Handle("GET /api/v1/stores/{id}/services", s.requireSession(s.handleStoreServicesGet))
+	mux.Handle("PUT /api/v1/stores/{id}/services", s.requireSession(s.handleStoreServicesPut))
 	mux.Handle("POST /api/v1/actions/{actionId}/validate", s.requireSession(s.handleStoreActionValidate))
 	// HUI-1674 连锁多门店:org_owner 治理面(改店/停用店)。停用不级联:
 	// 存量活动逐个显式处理,公共页附「门店暂不可用」标注。
@@ -513,6 +528,18 @@ func (s *Server) Handler() http.Handler {
 	// payload 白名单无 tenant/target_ref/legacy 字段。
 	if s.Cfg.FeatureStorefront {
 		mux.Handle("GET /api/v1/public/storefronts/{storeCode}", http.HandlerFunc(s.handlePublicStorefront))
+		// HUI-4589 B07 门店连接域（同一公共门店读面）：services 顾客投影 + 行为
+		// 事件（只存 open/jump_attempt/copy 证据，无成功语义）。同款双保险 gate。
+		mux.Handle("GET /api/v1/public/storefronts/{storeCode}/services", http.HandlerFunc(s.handlePublicStoreServices))
+		mux.Handle("POST /api/v1/public/storefronts/{storeCode}/services/events", http.HandlerFunc(s.handlePublicStoreServiceEvents))
+	}
+
+	// HUI-4589 企微客户事件回调（FEATURE_WECOM_CALLBACK 默认 off；off = 路由不
+	// 注册且 handler gate 再答统一 404 双保险）。凭据缺失 = 待资质诚实态，
+	// 绝不伪造 URL 验证应答；日志 digest-only，无任何「已添加」成功语义。
+	if s.Cfg.FeatureWecomCallback {
+		mux.Handle("GET /api/v1/public/wecom/callback", http.HandlerFunc(s.handleWecomCallback))
+		mux.Handle("POST /api/v1/public/wecom/callback", http.HandlerFunc(s.handleWecomCallback))
 	}
 
 	mux.Handle("GET /api/v1/admin/members", s.requireSession(s.handleMemberList))

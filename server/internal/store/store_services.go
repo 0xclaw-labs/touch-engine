@@ -501,6 +501,38 @@ func (s *Store) RecordServiceEvent(tenantID, storeID, serviceID, eventKind, envi
 	return err
 }
 
+// RecordActionEvent stores one customer behavior evidence row for a store
+// action instance (sa_*，点评/关注/加群面板). Same enum discipline as
+// RecordServiceEvent: only behavior evidence, no success semantics anywhere.
+func (s *Store) RecordActionEvent(tenantID, storeID, actionID, eventKind, environment string) error {
+	switch eventKind {
+	case ServiceEventOpen:
+	case ServiceEventJumpAttempt:
+	case ServiceEventCopy:
+	default:
+		return fmt.Errorf("%w: event kind %q has no evidence tier", ErrBadServiceConfig, eventKind)
+	}
+	var n int
+	if err := s.DB.QueryRow(`SELECT COUNT(1) FROM store_actions WHERE id=? AND tenant_id=? AND store_id=? AND enabled=1`,
+		actionID, tenantID, storeID).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrUnknownService
+	}
+	tier := "click"
+	if eventKind == ServiceEventJumpAttempt {
+		tier = "jump_attempt"
+	}
+	_, err := s.DB.Exec(`INSERT INTO store_service_events(id,tenant_id,store_id,service_id,event_kind,environment,evidence_tier,occurred_at)
+		VALUES(?,?,?,?,?,?,?,?)`, "sse_"+randHex(12), tenantID, storeID, actionID, eventKind,
+		strings.TrimSpace(environment), tier, now())
+	if err == nil {
+		s.bumpEpoch()
+	}
+	return err
+}
+
 // CountServiceEvents is a small readback used by tests and merchant health.
 func (s *Store) CountServiceEvents(tenantID, storeID, serviceID string) (int, error) {
 	var n int
