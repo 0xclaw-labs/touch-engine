@@ -443,8 +443,10 @@ func TestEcoNavSwitchFailsClosedWithoutIdentity(t *testing.T) {
 // returns a product-readable 422 instead of an internal error.
 func TestStorelessCampaignClosesParticipationHonestly(t *testing.T) {
 	f := newFixtureEnv(t, false, map[string]string{"FEATURE_PARTICIPATION": "on"})
+	// HUI-1671 根因修复: 硬编码 2026-10-31 已是过去时(诚实 expired),改相对 now。
+	now := time.Now().UTC()
 	status, _, cmp := f.do(t, "POST", "/api/v1/campaigns", "sess-owner-a", f.tenA,
-		`{"title":"无门店活动","public_content":"看活动","starts_at":"2026-09-01T00:00:00Z","ends_at":"2026-10-31T00:00:00Z"}`)
+		`{"title":"无门店活动","public_content":"看活动","starts_at":"`+now.Add(-24*time.Hour).Format(time.RFC3339)+`","ends_at":"`+now.Add(48*time.Hour).Format(time.RFC3339)+`"}`)
 	mustEqual(t, status, http.StatusCreated)
 	id := cmp["id"].(string)
 	status, _, _ = f.do(t, "POST", "/api/v1/campaigns/"+id+"/status", "sess-owner-a", f.tenA, `{"status":"active"}`)
