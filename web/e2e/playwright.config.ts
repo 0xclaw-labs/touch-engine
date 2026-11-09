@@ -16,7 +16,15 @@ function resolveBrowser(): { launchOptions: { executablePath: string } } | { cha
   return { channel: process.env.HARNESS_BROWSER_CHANNEL || "chromium" };
 }
 
-export const PORTS = { go: 18460, identity: 18461, web: 18462 };
+// HUI-2222: honor the same E2E_*_PORT variables env.mjs already reads, so a
+// harness on per-ticket ports (E2E_GO_PORT/E2E_WEB_PORT/E2E_IDENTITY_PORT)
+// points the runner at the matching instance. Defaults keep the original
+// 18460-18462 behavior byte-for-byte.
+export const PORTS = {
+  go: Number(process.env.E2E_GO_PORT) || 18460,
+  identity: Number(process.env.E2E_IDENTITY_PORT) || 18461,
+  web: Number(process.env.E2E_WEB_PORT) || 18462,
+};
 
 export default defineConfig({
   testDir: "./specs",

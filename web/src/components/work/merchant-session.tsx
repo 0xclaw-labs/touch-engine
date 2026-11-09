@@ -1,10 +1,13 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
 import { failureText, loginFailureText } from "@/lib/failure-copy";
 import { ApiFailure } from "@painuo/login-page";
 import { SharedLogin, type SignInBridge } from "@/components/login/SharedLogin";
+import { loginReturnTargetFromSearch } from "@/lib/login-return";
 import { surfaceLabel } from "@/lib/product-finish";
+import { createScopeReader } from "@/lib/session-continuity";
 import {
   beginTenantOp,
   currentTenantOp,
@@ -124,15 +127,24 @@ function OrgChoices({ session }: { session: MerchantSession }) {
   );
 }
 
+// HUI-2222 平台身份复用(免重复登录):memberships 401 时先用 refresh cookie
+// 静默续期一次再重试;权威仍是 public-ai Identity(经 BFF→Go→identity),
+// 本层零新身份路径。模块级单例:同一浏览器会话共享单飞,不放大续期流量。
+// null = 匿名;throw = 网络/服务故障(登录状态未知,不当已登录)。
+const readScopesWithRefresh = createScopeReader();
+
 async function readScopes(): Promise<MembershipScope[] | null> {
-  const res = await fetch("/api/session/memberships");
-  if (res.status === 401) return null;
-  if (!res.ok) throw new Error("没有读到组织");
-  const data = (await res.json().catch(() => ({}))) as { items?: MembershipScope[] };
-  return data.items ?? [];
+  const items = await readScopesWithRefresh();
+  return (items ?? null) as MembershipScope[] | null;
 }
 
 function useMerchantSession(): MerchantSession {
+  const router = useRouter();
+  // HUI-2222 受控回跳:进入门闸那一刻的 ?return= 白名单目标(只认本应用
+  // 路由;外域/编码/查询串已由 lib 层拒绝)。会话就绪(含组织选择后)replace
+  // 过去一次;无合法目标时行为逐字节不变(留在当前页=原工作页上下文保持)。
+  const returnTargetRef = useRef<string | null>(null);
+  const returnTargetRead = useRef(false);
   const [tenantId, setTenantId] = useState("");
   const [role, setRole] = useState("");
   const [email, setEmail] = useState("");
@@ -201,6 +213,23 @@ function useMerchantSession(): MerchantSession {
     setFeatures(NO_FEATURES);
     setPhase(resolved.status === "choose" ? "choose" : "none");
   }, [confirmTenant]);
+
+  useEffect(() => {
+    if (returnTargetRead.current) return;
+    returnTargetRead.current = true;
+    returnTargetRef.current = loginReturnTargetFromSearch(
+      typeof window === "undefined" ? "" : window.location.search,
+    );
+  }, []);
+
+  useEffect(() => {
+    if (phase !== "ready") return;
+    const target = returnTargetRef.current;
+    if (!target) return;
+    returnTargetRef.current = null;
+    if (typeof window !== "undefined" && target === window.location.pathname) return;
+    router.replace(target);
+  }, [phase, router]);
 
   useEffect(() => {
     const seq = beginTenantOp();

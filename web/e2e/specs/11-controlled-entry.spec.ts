@@ -147,3 +147,59 @@ test("confirm-and-redeem entry stays findable at 390 and 1440 widths", async ({ 
   await page.setViewportSize({ width: 1440, height: 900 });
   await expect(entry).toBeVisible();
 });
+
+// ---- HUI-2222 受控回跳与免重复登录 ----------------------------------------------
+
+test("unauthenticated visit to a protected page logs in and stays on that page", async ({ page }) => {
+  const seed = await seedCodes();
+  await page.goto("/work/stores");
+  // 门闸登录面(统一组件),不是组织数据。
+  await expect(page.getByRole("heading", { name: "今天要做的事" })).toBeVisible();
+  await page.getByLabel("用户名").fill(seed.email);
+  await page.getByLabel("密码", { exact: true }).fill(seed.password);
+  await page.getByRole("button", { name: "登录" }).click();
+  // 登录后回原工作页:URL 不变、上下文保持(同一路由被门闸放行)。
+  await expect(page).toHaveURL(/\/work\/stores$/);
+  await expect(page.locator("p.tk-kicker")).toHaveText(seed.tenantName, { timeout: 15_000 });
+  await screenshot(page, "hui-2222-return-to-original-page");
+});
+
+test("a whitelisted ?return= target takes the merchant back in-app after login", async ({ page }) => {
+  const seed = await seedCodes();
+  await page.goto("/?return=/work/campaigns");
+  await expect(page.getByRole("heading", { name: "今天要做的事" })).toBeVisible();
+  await page.getByLabel("用户名").fill(seed.email);
+  await page.getByLabel("密码", { exact: true }).fill(seed.password);
+  await page.getByRole("button", { name: "登录" }).click();
+  await expect(page).toHaveURL(/\/work\/campaigns$/);
+  await expect(page.getByRole("heading", { name: "活动" })).toBeVisible({ timeout: 15_000 });
+  await screenshot(page, "hui-2222-whitelisted-return-target");
+});
+
+test("external, protocol-relative and encoded ?return= targets are dropped", async ({ page }) => {
+  const seed = await seedCodes();
+  for (const evil of ["https://evil.example/x", "//evil.example", "%2F%2Fevil.example", "/work/stores?store_id=smuggled"]) {
+    await page.context().clearCookies();
+    await page.goto(`/?return=${encodeURIComponent(evil)}`);
+    await page.getByLabel("用户名").fill(seed.email);
+    await page.getByLabel("密码", { exact: true }).fill(seed.password);
+    await page.getByRole("button", { name: "登录" }).click();
+    // 不离站:白名单拒绝后留在本应用根路径(今日台),永不导航到外域或走私参数路径。
+    await expect(page.getByRole("heading", { name: "今天", exact: true })).toBeVisible({ timeout: 15_000 });
+    const here = new URL(page.url());
+    expect(here.host).not.toContain("evil.example");
+    expect(here.pathname).toBe("/");
+  }
+  await screenshot(page, "hui-2222-return-whitelist-rejections");
+});
+
+test("expired access token recovers silently via refresh cookie (no repeated login)", async ({ page }) => {
+  const seed = await seedCodes();
+  await login(page); // /admin 登录 → 建立 touch_session + touch_session_refresh
+  await page.context().clearCookies({ name: "touch_session" }); // 只烧 access,refresh 仍在
+  await page.goto("/");
+  // 不见登录表单:refresh 静默续期后直达今日台(免重复登录)。
+  await expect(page.getByRole("heading", { name: "今天要做的事" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "今天", exact: true })).toBeVisible({ timeout: 15_000 });
+  await screenshot(page, "hui-2222-silent-refresh-recovery");
+});

@@ -7,9 +7,28 @@ export type AppSwitchResult = { ok: true; launchUrl: string } | { ok: false; mes
 /**
  * HUI-2628: the one client seam that calls the app-switch BFF. The renderer
  * stays presentational; the browser sends only the two contract ids.
+ * HUI-2222: the hand-off is two-phase — mint a short-lived single-use jump
+ * token, then redeem it for the launch URL. The URL exists in browser
+ * traffic only after a successful redemption, exactly once per grant.
  */
 export function useAppSwitch(tenantId: string, enabled = true) {
   const [launching, setLaunching] = useState<Record<string, boolean>>({});
+
+  const redeem = useCallback(async (jumpToken: string): Promise<AppSwitchResult> => {
+    const res = await fetch("/api/eco-nav/switch/redeem", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(tenantId ? { "x-tenant-id": tenantId } : {}),
+      },
+      body: JSON.stringify({ jump_token: jumpToken }),
+    });
+    const data = (await res.json().catch(() => ({}))) as { launch_url?: unknown; message?: unknown };
+    if (!res.ok || typeof data.launch_url !== "string") {
+      return { ok: false, message: typeof data.message === "string" ? data.message : "应用切换没有完成，也没有跳转。" };
+    }
+    return { ok: true, launchUrl: data.launch_url };
+  }, [tenantId]);
 
   const switchApp = useCallback(async (appId: string, targetId: string): Promise<AppSwitchResult> => {
     if (!enabled) return { ok: false, message: "预览页不发起应用切换。" };
@@ -23,17 +42,17 @@ export function useAppSwitch(tenantId: string, enabled = true) {
         },
         body: JSON.stringify({ app_id: appId, launch_target_id: targetId }),
       });
-      const data = (await res.json().catch(() => ({}))) as { launch_url?: unknown; message?: unknown };
-      if (!res.ok || typeof data.launch_url !== "string") {
+      const data = (await res.json().catch(() => ({}))) as { jump_token?: unknown; message?: unknown };
+      if (!res.ok || typeof data.jump_token !== "string") {
         return { ok: false, message: typeof data.message === "string" ? data.message : "应用切换没有完成，也没有跳转。" };
       }
-      return { ok: true, launchUrl: data.launch_url };
+      return await redeem(data.jump_token);
     } catch {
       return { ok: false, message: "网络异常。应用切换没有完成，也没有跳转。" };
     } finally {
       setLaunching((current) => ({ ...current, [appId]: false }));
     }
-  }, [enabled, tenantId]);
+  }, [enabled, redeem, tenantId]);
 
   return { switchApp, launching };
 }
