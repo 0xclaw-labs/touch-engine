@@ -214,7 +214,14 @@ type leadsFixture struct {
 func newLeadsFixture(t *testing.T) *leadsFixture {
 	t.Helper()
 	stub := newNotifyStub(t)
-	cfg := leadsTestConfig(stub.srv.URL)
+	return newLeadsFixtureWithConfig(t, leadsTestConfig(stub.srv.URL))
+}
+
+// newLeadsFixtureWithConfig builds the same fixture under a caller-supplied
+// config (its own notify stub is created for the forwarder seam).
+func newLeadsFixtureWithConfig(t *testing.T, cfg config.Config) *leadsFixture {
+	t.Helper()
+	stub := newNotifyStub(t)
 
 	d, err := db.Open(filepath.Join(t.TempDir(), "touch.db"))
 	if err != nil {
@@ -273,7 +280,9 @@ func newLeadsFixture(t *testing.T) *leadsFixture {
 	} else {
 		f.code = link["code"].(string)
 	}
-	if status, _, _ := f.admin(t, "POST", "/api/v1/campaigns/"+f.campaignID+"/lead-form", `{"marketing_optin_enabled":true}`); status != 201 {
+	// with FEATURE_LEADS_CAPTURE off the whole lead surface is invisible and the
+	// form upsert (correctly) answers the uniform 404 — only fail on other codes
+	if status, _, _ := f.admin(t, "POST", "/api/v1/campaigns/"+f.campaignID+"/lead-form", `{"marketing_optin_enabled":true}`); status != 201 && cfg.FeatureLeadsCapture {
 		t.Fatal("lead form upsert failed")
 	}
 	return f
@@ -298,6 +307,13 @@ func leadsTestConfig(notifyURL string) config.Config {
 			return "test-pepper"
 		case "FEATURE_LEADS_CAPTURE":
 			return "on"
+		// HUI-4594: trusted leads receiver seam. leads-ingest carries the
+		// lead_receiver role; other-svc stays on the default queue_producer role
+		// so the role gate has a real negative case.
+		case "TOUCH_SERVICE_TOKENS":
+			return leadsReceiverID + ":" + leadsReceiverToken + ";other-svc:other-svc-token"
+		case "TOUCH_SERVICE_ROLES":
+			return leadsReceiverID + ":lead_receiver"
 		}
 		return ""
 	})
