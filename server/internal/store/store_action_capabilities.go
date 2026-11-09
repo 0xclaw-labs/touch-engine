@@ -338,9 +338,12 @@ func (s *Store) SetActionCapabilityEmergency(id string, disabled bool, audit Con
 	return true, nil
 }
 
-// GetActionCapabilitiesByCode returns every visible record for one catalog
-// code: platform-level truth ('*') plus the tenant's own scoped rows.
-// tenantID="" selects platform truth only (公共面语义:不接受客户端租户参数).
+// GetActionCapabilitiesByCode returns the visible records for one catalog
+// code with v1-style best-match collapse: for the same natural key
+// (platform, method, scenario) a tenant-scoped row wins over the platform
+// '*' row — the resolution path never emits two governing routes for one
+// method. tenantID="" selects platform truth only (公共面语义:不接受客户端
+// 租户参数;实例路径的租户来自服务端反查).
 func (s *Store) GetActionCapabilitiesByCode(catalogCode, tenantID string) ([]channeladmission.ActionCapability, error) {
 	rows, err := s.DB.Query(
 		`SELECT `+actionCapCols+` FROM channel_action_capabilities
@@ -350,7 +353,29 @@ func (s *Store) GetActionCapabilitiesByCode(catalogCode, tenantID string) ([]cha
 		return nil, err
 	}
 	defer rows.Close()
-	return collectActionCapabilities(rows)
+	all, err := collectActionCapabilities(rows)
+	if err != nil {
+		return nil, err
+	}
+	if tenantID == "" {
+		return all, nil
+	}
+	// Best-match 收敛:定向行压过 '*' 行(其余自然键原样保留)。
+	type key struct{ platform, method, scenario string }
+	scoped := map[key]bool{}
+	for _, r := range all {
+		if r.TenantScope == tenantID {
+			scoped[key{r.Platform, r.Method, r.Scenario}] = true
+		}
+	}
+	out := make([]channeladmission.ActionCapability, 0, len(all))
+	for _, r := range all {
+		if r.TenantScope == "*" && scoped[key{r.Platform, r.Method, r.Scenario}] {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out, nil
 }
 
 // ListActionCapabilities returns every record visible to a tenant ('*' plus

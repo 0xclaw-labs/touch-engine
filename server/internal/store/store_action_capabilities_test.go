@@ -444,3 +444,54 @@ func TestSeedHashParity(t *testing.T) {
 		t.Fatalf("audit after unchanged rewrite = %d, want 0", n)
 	}
 }
+
+// TestGetByCodeBestMatchCollapse: 公共解析路径的同自然键 best-match 收敛——
+// (platform,method,scenario) 相同时定向行压过 '*' 行,绝不同响应双路由
+// (与 v1 GetChannelAdmission 单行 best-match 同语义)。
+func TestGetByCodeBestMatchCollapse(t *testing.T) {
+	_, s := openMigratedDB(t)
+	scoped := seededA02Row(t, s)
+	scoped.ID = ""
+	scoped.TenantScope = "t_best"
+	scoped.Status = "unknown"
+	scoped.ReasonCode = "pending_external"
+	if _, _, err := s.UpsertActionCapability(scoped, ControlAudit{Actor: "ops", Reason: "定向复核", Action: "update"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.GetActionCapabilitiesByCode("A02", "t_best")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]int{}
+	for _, r := range rows {
+		key := r.Platform + "|" + r.Method + "|" + r.Scenario
+		seen[key]++
+		if key == "xiaohongshu|js_media_handoff|store_promo" && r.TenantScope != "t_best" {
+			t.Fatalf("best-match broken: kept %s row, want t_best", r.TenantScope)
+		}
+	}
+	if n := seen["xiaohongshu|js_media_handoff|store_promo"]; n != 1 {
+		t.Fatalf("duplicated natural key in resolution path: %d rows, want 1 (best-match 收敛)", n)
+	}
+	// 无定向行的租户仍见 '*'。
+	rowsOther, err := s.GetActionCapabilitiesByCode("A02", "t_other")
+	if err != nil || len(rowsOther) != 2 {
+		t.Fatalf("t_other rows = %d err=%v, want 2 (A02 全部 '*' 行)", len(rowsOther), err)
+	}
+}
+
+// seededA02Row fetches the seeded A02 js row for mutation.
+func seededA02Row(t *testing.T, s *Store) channeladmission.ActionCapability {
+	t.Helper()
+	rows, err := s.GetActionCapabilitiesByCode("A02", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.Method == "js_media_handoff" && r.TenantScope == "*" {
+			return r
+		}
+	}
+	t.Fatal("seeded A02 js_media_handoff row not found")
+	return channeladmission.ActionCapability{}
+}

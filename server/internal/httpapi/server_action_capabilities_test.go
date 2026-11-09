@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/bianjiefilm/touch-engine/server/internal/channeladmission"
+	"github.com/bianjiefilm/touch-engine/server/internal/store"
 )
 
 // actionCapsGet GETs a public action-capabilities surface.
@@ -525,5 +528,169 @@ func TestPublicActionCapabilitiesFilters(t *testing.T) {
 	routes, _ = body["routes"].([]any)
 	if len(routes) != 0 {
 		t.Fatalf("empty filter result must stay 200 with empty routes, got %d routes", len(routes))
+	}
+}
+
+// ---- 修复轮 1: 动作实例(sa_*)解析（Walk C 契约错位修复） ------------------------
+//
+// B04/4584 契约: actions/{id} 指动作实例(sa_*),不是目录码。实例解析需要从
+// 实例 id 反查 tenant(公共端点无会话上下文),由装配缝合点注入(4584 动作目录
+// 域,合流后中央装配接线);本分支 nil 安全——sa_* 在未接线的树里 404 unknown
+// action,目录码直查保留为内部/管理面。
+
+// seededRow fetches a seeded capability row ( '*') for mutation in tests.
+func seededRow(t *testing.T, f *admissionFixture, code, method string) channeladmission.ActionCapability {
+	t.Helper()
+	rows, err := f.s.St.GetActionCapabilitiesByCode(code, "")
+	if err != nil {
+		t.Fatalf("seeded row %s/%s: %v", code, method, err)
+	}
+	for _, r := range rows {
+		if r.Method == method && r.TenantScope == "*" {
+			return r
+		}
+	}
+	t.Fatalf("seeded row %s/%s not found", code, method)
+	return channeladmission.ActionCapability{}
+}
+
+// wireInstanceResolver installs a fake instance resolver over the fixture.
+func wireInstanceResolver(f *admissionFixture, m map[string]fakeInstance) {
+	f.s.ResolvePublicActionInstance = func(id string) (PublicActionInstance, PublicActionInstanceState) {
+		inst, ok := m[id]
+		if !ok {
+			return PublicActionInstance{}, PublicActionInstanceUnknown
+		}
+		if !inst.enabled {
+			return PublicActionInstance{CatalogCode: inst.code, Platform: inst.platform, TenantID: inst.tenant}, PublicActionInstanceDisabled
+		}
+		return PublicActionInstance{CatalogCode: inst.code, Platform: inst.platform, TenantID: inst.tenant}, PublicActionInstanceOK
+	}
+}
+
+type fakeInstance struct {
+	code     string
+	platform string
+	tenant   string
+	enabled  bool
+}
+
+// TestPublicActionCapabilitiesByInstance: 启用实例→按 catalog_code+platform
+// 解析能力记录,四分能力 JSON 原样返回;action_id=实例 id。
+func TestPublicActionCapabilitiesByInstance(t *testing.T) {
+	f := newAdmissionFixture(t, true)
+	wireInstanceResolver(f, map[string]fakeInstance{
+		"sa_pub_a01": {code: "A01", platform: "douyin", tenant: f.tenA, enabled: true},
+	})
+	status, body := actionCapsGet(t, f, "/api/v1/public/actions/sa_pub_a01/capabilities")
+	if status != http.StatusOK {
+		t.Fatalf("instance capabilities = %d, want 200: %v", status, body)
+	}
+	if body["action_id"] != "sa_pub_a01" || body["catalog_code"] != "A01" {
+		t.Fatalf("action_id/catalog = %v/%v, want sa_pub_a01/A01", body["action_id"], body["catalog_code"])
+	}
+	r := actionRoute(t, body, "h5_share", "desktop_browser")
+	if routeBool(r, "allowed") || routeStr(r, "reason") != "not_admitted" {
+		t.Fatalf("instance four-way route = allowed=%v reason=%s, want false/not_admitted", routeBool(r, "allowed"), routeStr(r, "reason"))
+	}
+	if routeStr(r, "platform") != "douyin" {
+		t.Fatalf("instance platform filter broken: %v", r["platform"])
+	}
+}
+
+// TestPublicActionCapabilitiesInstanceDisabled: 停用实例 → 404 且带明确拒绝说明。
+func TestPublicActionCapabilitiesInstanceDisabled(t *testing.T) {
+	f := newAdmissionFixture(t, true)
+	wireInstanceResolver(f, map[string]fakeInstance{
+		"sa_off": {code: "A04", platform: "wechat", tenant: f.tenA, enabled: false},
+	})
+	status, body := actionCapsGet(t, f, "/api/v1/public/actions/sa_off/capabilities")
+	if status != http.StatusNotFound {
+		t.Fatalf("disabled instance = %d, want 404", status)
+	}
+	if body["error"] != "not_found" {
+		t.Fatalf("disabled body error = %v, want not_found (同形)", body["error"])
+	}
+	if msg, _ := body["message"].(string); !strings.Contains(msg, "停用") {
+		t.Fatalf("disabled message must be explicit (明确拒绝码): %v", body["message"])
+	}
+}
+
+// TestPublicActionCapabilitiesInstanceUnknown: 未知实例 → 404 同形
+// (与未知目录码/未接线 sa_* 同一 not_found 外形,不泄露存在性)。
+func TestPublicActionCapabilitiesInstanceUnknown(t *testing.T) {
+	f := newAdmissionFixture(t, true)
+	wireInstanceResolver(f, map[string]fakeInstance{
+		"sa_pub_a01": {code: "A01", platform: "douyin", tenant: f.tenA, enabled: true},
+	})
+	status, body := actionCapsGet(t, f, "/api/v1/public/actions/sa_ghost/capabilities")
+	if status != http.StatusNotFound || body["error"] != "not_found" {
+		t.Fatalf("unknown instance = %d %v, want 404/not_found", status, body["error"])
+	}
+
+	// 未接线(nil resolver)的树:sa_* 同样 404,绝不走目录码兜底泄漏能力面。
+	f2 := newAdmissionFixture(t, true)
+	status, body = actionCapsGet(t, f2, "/api/v1/public/actions/sa_noresolver/capabilities")
+	if status != http.StatusNotFound || body["error"] != "not_found" {
+		t.Fatalf("unwired sa_* = %d %v, want 404/not_found", status, body["error"])
+	}
+}
+
+// TestPublicActionCapabilitiesInstanceEnvFilter: 环境过滤在实例路径同样生效。
+func TestPublicActionCapabilitiesInstanceEnvFilter(t *testing.T) {
+	f := newAdmissionFixture(t, true)
+	wireInstanceResolver(f, map[string]fakeInstance{
+		"sa_pub_a01": {code: "A01", platform: "douyin", tenant: f.tenA, enabled: true},
+	})
+	status, body := actionCapsGet(t, f, "/api/v1/public/actions/sa_pub_a01/capabilities?environment=ios_safari")
+	if status != http.StatusOK {
+		t.Fatalf("instance env filter = %d", status)
+	}
+	routes, _ := body["routes"].([]any)
+	if len(routes) == 0 {
+		t.Fatal("env filter must keep routes")
+	}
+	for _, raw := range routes {
+		r, _ := raw.(map[string]any)
+		if r["environment"] != "ios_safari" {
+			t.Fatalf("instance env filter leaked %v", r["environment"])
+		}
+	}
+	// 非法环境参数在实例路径同样 400。
+	if status, _ = actionCapsGet(t, f, "/api/v1/public/actions/sa_pub_a01/capabilities?environment=chrome_os"); status != http.StatusBadRequest {
+		t.Fatalf("instance bogus env = %d, want 400", status)
+	}
+}
+
+// TestPublicActionCapabilitiesInstanceTenantScoped: 实例反查 tenant → 能力查询
+// best-match(定向行优先于 '*');公共端点不接受客户端租户参数的纪律不变,
+// 租户来自服务端实例记录。
+func TestPublicActionCapabilitiesInstanceTenantScoped(t *testing.T) {
+	f := newAdmissionFixture(t, true)
+	// 定向行:本租户对 A02 js_media_handoff 的受控记录(合法性由模型校验兜底)。
+	scoped := seededRow(t, f, "A02", "js_media_handoff")
+	scoped.ID = "" // 新主键由 upsert 生成;自然键含 tenant_scope,定向行与 '*' 行并存
+	scoped.TenantScope = f.tenA
+	scoped.Status = "admitted"
+	scoped.ReasonCode = "admitted"
+	if _, _, err := f.s.St.UpsertActionCapability(scoped, store.ControlAudit{Actor: "ops", Reason: "主体控制台核验完成(定向)", Action: "update"}); err != nil {
+		t.Fatalf("seed tenant-scoped row: %v", err)
+	}
+	wireInstanceResolver(f, map[string]fakeInstance{
+		"sa_inst_a02": {code: "A02", platform: "xiaohongshu", tenant: f.tenA, enabled: true},
+	})
+	status, body := actionCapsGet(t, f, "/api/v1/public/actions/sa_inst_a02/capabilities")
+	if status != http.StatusOK {
+		t.Fatalf("tenant-scoped instance = %d: %v", status, body)
+	}
+	r := actionRoute(t, body, "js_media_handoff", "desktop_browser")
+	if routeStr(r, "status") != "admitted" {
+		t.Fatalf("tenant-scoped row must win best-match: status=%s, want admitted", routeStr(r, "status"))
+	}
+	// 对照:同码经平台真值直查(无租户)仍是 '*' 行 unknown。
+	_, body2 := actionCapsGet(t, f, "/api/v1/public/actions/A02/capabilities")
+	r2 := actionRoute(t, body2, "js_media_handoff", "desktop_browser")
+	if routeStr(r2, "status") != "unknown" {
+		t.Fatalf("catalog path must stay platform truth: status=%s, want unknown", routeStr(r2, "status"))
 	}
 }
