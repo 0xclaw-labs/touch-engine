@@ -78,6 +78,15 @@ func (s *Server) handlePublishConfigPut(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err := campaignenable.ValidateSpec(in); err != nil {
+		// 点评禁奖是准入真值级别的硬拒(3535:点评场景从不携带奖励资格),
+		// 机器原因码单独出,web 落到渠道选择区,不是一般形状错误。
+		if strings.HasPrefix(err.Error(), campaignenable.ReasonReviewRewardProhibited) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error":   campaignenable.ReasonReviewRewardProhibited,
+				"message": "review channels can never carry a reward; remove them from the selection",
+			})
+			return
+		}
 		fail(w, http.StatusBadRequest, "invalid_config", err.Error())
 		return
 	}

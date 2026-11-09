@@ -257,9 +257,9 @@ func fingerprintFor(t *testing.T, st *Store, tenantID, storeID string, draft Sto
 		if err != nil {
 			t.Fatalf("published row: %v", err)
 		}
-		prev = row.draftDocument()
+		prev = row.DraftDocument()
 	}
-	return storefrontversion.Fingerprint(storefrontversion.ChangeSummary(prev, draft.draftDocument()))
+	return storefrontversion.Fingerprint(storefrontversion.ChangeSummary(prev, draft.DraftDocument()))
 }
 
 func TestPublishRequiresConfirmedChangeSummary(t *testing.T) {

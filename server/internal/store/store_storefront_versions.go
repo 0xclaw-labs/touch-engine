@@ -142,9 +142,10 @@ func scanStorefrontVersion(sc interface{ Scan(...any) error }) (StorefrontVersio
 	return v, nil
 }
 
-// draftDocument reassembles the leaf Document from a stored row (diffs and
-// fingerprints operate on the leaf shape).
-func (v StorefrontVersion) draftDocument() storefrontversion.Document {
+// DraftDocument reassembles the leaf Document from a stored row (diffs and
+// fingerprints operate on the leaf shape; the HTTP layer recomputes summaries
+// from the same leaf truth).
+func (v StorefrontVersion) DraftDocument() storefrontversion.Document {
 	return storefrontversion.Document{
 		Sections: v.Sections, Actions: v.Actions, ActionRefs: v.ActionRefs,
 		OfferRefs: v.OfferRefs, CampaignRefs: v.CampaignRefs, BrandRef: v.BrandRef,
@@ -257,7 +258,7 @@ func (s *Store) SaveStorefrontDraft(tenantID, storeID string, expectedRevision i
 		BrandRef: strings.TrimSpace(doc.BrandRef), CreatedBy: actor,
 	}
 	if hasLatest && latest.Status == StorefrontStatusDraft {
-		if draftFingerprint(doc) == draftFingerprint(latest.draftDocument()) {
+		if draftFingerprint(doc) == draftFingerprint(latest.DraftDocument()) {
 			return latest, nil // 幂等重放:不推修订、不触 epoch
 		}
 		desired.ID = latest.ID
@@ -373,9 +374,9 @@ func (s *Store) PublishStorefrontVersion(tenantID, storeID string, candidateRevi
 		if err != nil {
 			return StorefrontPublishResult{}, err
 		}
-		prevDoc = prevRow.draftDocument()
+		prevDoc = prevRow.DraftDocument()
 	}
-	summary := storefrontversion.ChangeSummary(prevDoc, latest.draftDocument())
+	summary := storefrontversion.ChangeSummary(prevDoc, latest.DraftDocument())
 	if storefrontversion.Fingerprint(summary) != confirmFingerprint {
 		return StorefrontPublishResult{}, ErrStorefrontConfirmRequired
 	}
@@ -603,6 +604,29 @@ func (s *Store) assertStorefrontRefsFresh(latest StorefrontVersion, tenantID str
 		return fmt.Errorf("%w: %s", ErrStorefrontRefDrift, strings.Join(sortedStrings(drifted), ","))
 	}
 	return nil
+}
+
+// StorefrontActionFacts assembles the live world facts for the given action
+// ids of this store (HTTP 层预检输入): store_actions 行 + 内容绑定真值,只读。
+func (s *Store) StorefrontActionFacts(tenantID, storeID string, actionIDs []string, at time.Time) ([]storefrontversion.ActionFact, error) {
+	facts := make([]storefrontversion.ActionFact, 0, len(actionIDs))
+	for _, id := range actionIDs {
+		row, err := s.GetStoreActionByID(tenantID, storeID, id)
+		if errors.Is(err, ErrNotFound) {
+			facts = append(facts, storefrontversion.ActionFact{ActionID: id, Found: false})
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		facts = append(facts, storefrontversion.ActionFact{
+			ActionID: id, Found: true, Enabled: row.Enabled, Revoked: row.Revoked,
+			Expired:        actionExpired(row.ExpiresAt, at),
+			TargetOfficial: row.TargetRef != "" && extrajump.OfficialAddress(row.TargetRef),
+			ContentState:   s.actionContentState(tenantID, id, at),
+		})
+	}
+	return facts, nil
 }
 
 // storefrontRefVerdicts assembles the live world facts for every referenced

@@ -116,6 +116,12 @@ type Server struct {
 	// create/disable/rebind all bumpEpoch, so 0 stale requests.
 	TpCache *readcache.Cache[store.TouchpointRows]
 
+	// StorefrontCache (HUI-1676) is the public storefront projection behind the
+	// same discipline: keyed by store code, epoch-validated — every publish /
+	// rollback bumps the store epoch, so a revision switch is a deterministic
+	// 0-stale-request boundary. Consulted only when FEATURE_PUBLIC_CACHE is on.
+	StorefrontCache *readcache.Cache[map[string]any]
+
 	// Participation (HUI-3546) owns the participation/attempt/handoff
 	// tables. Constructed always; its routes register only under
 	// FEATURE_PARTICIPATION. The BenefitReserver stays nil until the reward
@@ -198,6 +204,10 @@ func New(cfg config.Config, database *sql.DB, idc *identity.Client, upc *upload.
 			Epoch: st.Epoch,
 		}),
 		TpCache: readcache.New[store.TouchpointRows](readcache.Options{
+			Capacity: publicCacheCapacity, TTL: publicCacheTTL, Jitter: publicCacheJitter,
+			Epoch: st.Epoch,
+		}),
+		StorefrontCache: readcache.New[map[string]any](readcache.Options{
 			Capacity: publicCacheCapacity, TTL: publicCacheTTL, Jitter: publicCacheJitter,
 			Epoch: st.Epoch,
 		}),
@@ -507,12 +517,20 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("GET /api/v1/public/touchpoints/{code}", http.HandlerFunc(s.handlePublicTouchpoint))
 	}
 
-	// HUI-4584 公共门店面(FEATURE_STOREFRONT 默认 off;off = 路由不注册且
-	// handler gate 再答统一 404 —— 双保险同款)。GET-only 数据面:只含已映射+
-	// 启用的动作实例;storefront_revision 本票恒 0(发布版本归 1676);
-	// payload 白名单无 tenant/target_ref/legacy 字段。
+	// HUI-4584 公共门店面 + HUI-1676 门店首页版本域(FEATURE_STOREFRONT 默认
+	// off;off = 路由不注册且 handler gate 再答统一 404 —— 双保险同款)。
+	// 公共 GET-only 数据面:有发布版本时渲染版本冻结载荷(实时否决仍在),
+	// 无发布版本时保留 4584 默认投影;商家面四端点(draft/preflight/publish/
+	// rollback)+ 预览/审计读面,授权走既有 authz 门店作用域。
 	if s.Cfg.FeatureStorefront {
 		mux.Handle("GET /api/v1/public/storefronts/{storeCode}", http.HandlerFunc(s.handlePublicStorefront))
+		mux.Handle("GET /api/v1/stores/{id}/storefront-draft", s.requireSession(s.handleStorefrontDraftGet))
+		mux.Handle("PUT /api/v1/stores/{id}/storefront-draft", s.requireSession(s.handleStorefrontDraftPut))
+		mux.Handle("POST /api/v1/stores/{id}/storefront/preflight", s.requireSession(s.handleStorefrontPreflight))
+		mux.Handle("POST /api/v1/stores/{id}/storefront/publish", s.requireSession(s.handleStorefrontPublish))
+		mux.Handle("POST /api/v1/stores/{id}/storefront/rollback", s.requireSession(s.handleStorefrontRollback))
+		mux.Handle("GET /api/v1/stores/{id}/storefront/revisions", s.requireSession(s.handleStorefrontRevisions))
+		mux.Handle("GET /api/v1/stores/{id}/storefront-preview", s.requireSession(s.handleStorefrontPreview))
 	}
 
 	mux.Handle("GET /api/v1/admin/members", s.requireSession(s.handleMemberList))
