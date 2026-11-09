@@ -103,6 +103,26 @@ func (s *Store) GetContentMedia(id, tenantID string) (ContentMedia, error) {
 	return m, err
 }
 
+// ListContentMedia returns the store's verified media oldest-first.
+func (s *Store) ListContentMedia(tenantID, storeID string) ([]ContentMedia, error) {
+	rows, err := s.DB.Query(
+		`SELECT `+contentMediaCols+` FROM content_media WHERE tenant_id=? AND store_id=? ORDER BY created_at, id`,
+		tenantID, storeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]ContentMedia, 0)
+	for rows.Next() {
+		m, err := scanContentMedia(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // ---- store content packs (门店根) ---------------------------------------------------
 
 // StoreContentPack is one store-rooted bundle. Legacy marks campaign-domain
