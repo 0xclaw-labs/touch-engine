@@ -501,3 +501,29 @@ func TestChannelActionsWriteIsInternalOnly(t *testing.T) {
 		t.Fatalf("session audit = %d, want 401", status)
 	}
 }
+
+// TestPublicActionCapabilitiesFilters: method/scenario 是便捷过滤,组合环境过滤
+// 后只返回匹配 routes;全过滤为空集仍是 200(不 404——动作存在)。
+func TestPublicActionCapabilitiesFilters(t *testing.T) {
+	f := newAdmissionFixture(t, true)
+	status, body := actionCapsGet(t, f, "/api/v1/public/actions/A01/capabilities?method=h5_share&environment=ios_wechat")
+	if status != http.StatusOK {
+		t.Fatalf("method+env filter = %d", status)
+	}
+	routes, _ := body["routes"].([]any)
+	if len(routes) != 1 {
+		t.Fatalf("filtered routes = %d, want 1", len(routes))
+	}
+	r, _ := routes[0].(map[string]any)
+	if r["method"] != "h5_share" || r["environment"] != "ios_wechat" {
+		t.Fatalf("filtered route = %v/%v", r["method"], r["environment"])
+	}
+	status, body = actionCapsGet(t, f, "/api/v1/public/actions/A01/capabilities?method=direct_open")
+	if status != http.StatusOK {
+		t.Fatalf("method-only filter = %d", status)
+	}
+	routes, _ = body["routes"].([]any)
+	if len(routes) != 0 {
+		t.Fatalf("empty filter result must stay 200 with empty routes, got %d routes", len(routes))
+	}
+}
