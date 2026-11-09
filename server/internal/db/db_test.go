@@ -49,6 +49,8 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"customer_publish_attempts",
 		// HUI-1671 增量(0068-0072)
 		"deal_offers",
+		// HUI-4590 (0087) 外部券核销尝试
+		"external_voucher_attempts",
 		"extra_jump_actions",
 		"extra_jump_clicks",
 		"handoff_credentials",
@@ -100,6 +102,10 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"store_content_pack_version_events",
 		"store_content_pack_versions",
 		"store_content_packs",
+		// HUI-4590 增量(0084-0087): 团购套餐目录/适用门店/点击归因/外部券核销事实。
+		"store_deal_click_stats",
+		"store_deal_offer_stores",
+		"store_deal_offers",
 		"store_motion_requests",
 		// HUI-4589 (0079-0081): 门店服务配置/行为事件/企微回调日志。
 		"store_service_configs",

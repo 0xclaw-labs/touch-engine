@@ -6,6 +6,15 @@ import { presentAccountSeparation, type SeparationView } from "@/lib/account-sep
 import { rewardPresentation, surfaceLabel } from "@/lib/product-finish";
 import { rewardNotice, type RewardView } from "@/lib/publish-reward";
 import {
+  couponOutcomeText,
+  offerStatusText,
+  platformText,
+  priceStateText,
+  verifiedAtText,
+  type DealCouponResultView,
+  type StoreDealOfferView,
+} from "@/lib/deals";
+import {
   benefitStatusText,
   canConfirmRewards,
   canManageInventory,
@@ -31,6 +40,15 @@ interface Campaign {
   id: string;
   title: string;
   status: string;
+}
+
+interface StoreRec {
+  id: string;
+  name: string;
+}
+
+interface DealClickTotals {
+  clicks: Record<string, number>;
 }
 
 interface Ruleset {
@@ -76,6 +94,10 @@ export default function RewardsPage() {
   const [externalIssuances, setExternalIssuances] = useState<ExternalIssuanceView[]>([]);
   const [revealed, setRevealed] = useState<Record<string, boolean>>({});
   const [actionNote, setActionNote] = useState("");
+  // HUI-4590 外部团购：套餐按门店维护（store-scoped，无活动也可用）。
+  const [stores, setStores] = useState<StoreRec[]>([]);
+  const [storeId, setStoreId] = useState("");
+  const [offers, setOffers] = useState<StoreDealOfferView[]>([]);
 
   const loadLedger = useCallback(
     async (cid: string) => {
@@ -102,9 +124,10 @@ export default function RewardsPage() {
   useEffect(() => {
     let alive = true;
     void (async () => {
-      const [campaignRes, accountRes] = await Promise.all([
+      const [campaignRes, accountRes, storesRes] = await Promise.all([
         session.api("GET", "campaigns"),
         session.api("GET", "account-separation"),
+        session.api("GET", "stores").catch(() => null),
       ]);
       if (!alive) return;
       if (!campaignRes.ok) {
@@ -115,6 +138,11 @@ export default function RewardsPage() {
       const items = Array.isArray(campaignRes.data.items) ? (campaignRes.data.items as Campaign[]) : [];
       setCampaigns(items);
       setCampaignId(items[0]?.id ?? "");
+      if (storesRes && storesRes.ok && Array.isArray(storesRes.data.items)) {
+        const recs = storesRes.data.items as StoreRec[];
+        setStores(recs);
+        setStoreId(recs[0]?.id ?? "");
+      }
       if (accountRes.ok) {
         const presented = presentAccountSeparation(accountRes.data as unknown as SeparationView);
         setSeparation(presented.rewardText);
@@ -160,6 +188,38 @@ export default function RewardsPage() {
       alive = false;
     };
   }, [campaignId, session, attempt, loadLedger]);
+
+  const loadOffers = useCallback(
+    async (sid: string) => {
+      if (!sid) return;
+      const res = await session.api("GET", `stores/${sid}/deal-offers`);
+      if (res.ok && Array.isArray(res.data.items)) {
+        setOffers(res.data.items as StoreDealOfferView[]);
+      } else {
+        setOffers([]);
+        if (res.status !== 404) setActionNote(failureText(res.status, res.data));
+      }
+    },
+    [session],
+  );
+
+  useEffect(() => {
+    if (!storeId) return;
+    void loadOffers(storeId).catch(() => setActionNote("团购套餐没有读到。不把它写成已上架。"));
+  }, [storeId, loadOffers, attempt]);
+
+  const runDealAction = useCallback(
+    async (sid: string, fn: () => Promise<void>) => {
+      setActionNote("");
+      try {
+        await fn();
+      } catch {
+        setActionNote("操作没有完成。没有事实不写成功。");
+      }
+      await loadOffers(sid);
+    },
+    [loadOffers],
+  );
 
   const presented = rewardPresentation(reward);
   const manage = canManageInventory(session.role);
@@ -256,28 +316,17 @@ export default function RewardsPage() {
           </div>
 
           {tab === "external" ? (
-            <section aria-label="外部团购（占位）">
-              <h2 className="tk-subtitle">外部团购（外部平台券）</h2>
-              <p className="tk-note" data-field="external-placeholder">
-                外部团购的配置与授权核销由 HUI-4590 的授权适配器提供；本页只显示事实状态，不代发也不本地核销。
-                外部券的本地账没有核销权限，待确认不是已发放。
-              </p>
-              {externalIssuances.length === 0 ? (
-                <p className="tk-note" data-field="external-empty">还没有外部券发放登记。没有事实不写成功。</p>
-              ) : (
-                <ul className="tk-list" data-field="external-list">
-                  {externalIssuances.map((item) => (
-                    <li key={item.id} data-external-id={item.id} data-external-state={item.state}>
-                      <span data-field="external-state">{externalStateText(item.state)}</span>
-                      {" · "}
-                      {item.provider || "外部平台"}
-                      {" · 参与/尝试引用 "}
-                      {item.participation_id}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
+            <ExternalGroupBuyTab
+              stores={stores}
+              storeId={storeId}
+              onStoreChange={setStoreId}
+              offers={offers}
+              externalIssuances={externalIssuances}
+              manage={manage}
+              session={session}
+              onNote={(note) => setActionNote(note)}
+              onReload={() => runDealAction(storeId, async () => {})}
+            />
           ) : (
             <>
           <section aria-label="奖励汇总">
@@ -663,6 +712,343 @@ function InventoryCreateForm(props: {
       <button className="tk-quiet" type="button" data-action="create-batch" disabled={busy} onClick={submit}>
         {busy ? "提交中…" : "建立批次"}
       </button>
+    </div>
+  );
+}
+
+// HUI-4590: 外部团购页签落地（上下架/编辑/校验时间管理 + 外部券授权核销工具）。
+// 诚实纪律：点击不是成交；平台成交与核销数本地不可知；未授权不接通——
+// 不代发也不本地核销；核销事实只来自授权适配器；待确认不是已发放。
+function ExternalGroupBuyTab(props: {
+  stores: StoreRec[];
+  storeId: string;
+  onStoreChange: (id: string) => void;
+  offers: StoreDealOfferView[];
+  externalIssuances: ExternalIssuanceView[];
+  manage: boolean;
+  session: SessionLike;
+  onNote: (note: string) => void;
+  onReload: () => void;
+}) {
+  const { stores, storeId, onStoreChange, offers, externalIssuances, manage, session, onNote, onReload } = props;
+
+  const act = (fn: () => Promise<void>) =>
+    void (async () => {
+      onNote("");
+      try {
+        await fn();
+      } catch {
+        onNote("操作没有完成。没有事实不写成功。");
+      }
+      onReload();
+    })();
+
+  const setOfferStatus = (offer: StoreDealOfferView, status: string) =>
+    act(async () => {
+      const res = await session.api("POST", `stores/${storeId}/deal-offers/${offer.id}/status`, { status });
+      if (res.ok) {
+        onNote(status === "paused" ? "已下架（顾客不再看到新曝光）。" : status === "active" ? "已上架。" : "已退役（不可逆）。");
+      } else {
+        onNote(failureText(res.status, res.data));
+      }
+    });
+
+  const editOffer = (offer: StoreDealOfferView, field: "title" | "price", raw: string) =>
+    act(async () => {
+      if (field === "price") {
+        if (!/^\d+$/.test(raw.trim())) {
+          onNote("价格要是非负整数（分）。没有改成就不写。");
+          return;
+        }
+      }
+      const body: Record<string, unknown> =
+        field === "title" ? { title: raw.trim() } : { price_minor: Number(raw.trim()) };
+      const res = await session.api("PATCH", `stores/${storeId}/deal-offers/${offer.id}`, body);
+      if (res.ok) onNote(field === "title" ? "标题已更新。" : "价格已更新（未重新核对前顾客仍看到「到平台查看」）。");
+      else onNote(failureText(res.status, res.data));
+    });
+
+  const verifyPrice = (offer: StoreDealOfferView) =>
+    act(async () => {
+      const res = await session.api("PATCH", `stores/${storeId}/deal-offers/${offer.id}`, { mark_price_verified: true });
+      if (res.ok) onNote("已记录本次价格核对（校验时间=服务器时间；72 小时内顾客可见该价）。");
+      else onNote(failureText(res.status, res.data));
+    });
+
+  const recordAuth = (offer: StoreDealOfferView, raw: string) =>
+    act(async () => {
+      const res = await session.api("PATCH", `stores/${storeId}/deal-offers/${offer.id}`, { authorization_ref: raw.trim() });
+      if (res.ok) onNote("授权引用已记录。获得官方授权后核销才走适配器；未接通时核销仍会诚实拒绝。");
+      else onNote(failureText(res.status, res.data));
+    });
+
+  const createOffer = (form: DealCreateFormState) =>
+    act(async () => {
+      if (!form.platform || !form.title.trim() || !form.product_url.trim()) {
+        onNote("平台、标题和商品链接都要填。没有事实不写成功。");
+        return;
+      }
+      const res = await session.api("POST", `stores/${storeId}/deal-offers`, {
+        platform: form.platform,
+        provider_offer_id: form.provider_offer_id.trim(),
+        product_url: form.product_url.trim(),
+        title: form.title.trim(),
+        image_ref: form.image_ref.trim(),
+        price_minor: Number(form.price) || 0,
+        currency: form.currency.trim(),
+        price_source: form.price_source,
+        valid_until: form.valid_until.trim(),
+      });
+      if (res.ok) onNote("套餐已上架（顾客门店页可以看到，点击会跳到平台商品页）。");
+      else onNote(failureText(res.status, res.data));
+    });
+
+  return (
+    <>
+      <section aria-label="外部团购套餐管理">
+        <h2 className="tk-subtitle">外部团购（美团 / 大众点评 / 抖音）</h2>
+        <p className="tk-note" data-field="external-placeholder">
+          外部团购配置与授权核销归 HUI-4590 的授权适配器；顾客点击套餐卡只是点击，不计为成交。
+          价格只在核对未超过 72 小时时展示，其余显示「到平台查看」。未接通的券不代发也不本地核销。
+        </p>
+        {stores.length === 0 ? (
+          <p className="tk-note" data-field="external-empty-store">还没有门店，先到门店页建立门店。</p>
+        ) : (
+          <>
+            <label className="tk-label">
+              门店
+              <select className="tk-select" data-field="external-store" value={storeId} onChange={(e) => onStoreChange(e.target.value)}>
+                {stores.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            </label>
+            {offers.length === 0 ? (
+              <p className="tk-note" data-field="external-empty">该门店还没有团购套餐。空不是没有生意。</p>
+            ) : (
+              <ul className="tk-list" data-field="external-offers">
+                {offers.map((offer) => (
+                  <li key={offer.id} data-offer-id={offer.id} data-offer-status={offer.status}>
+                    <span data-field="offer-platform">{platformText(offer.platform)}</span>
+                    {" · "}
+                    <span data-field="offer-title">{offer.title}</span>
+                    {" · "}
+                    <span data-field="offer-status">{offerStatusText(offer.status)}</span>
+                    {" · "}
+                    <span data-field="offer-price">{priceStateText(offer.price_state)}</span>
+                    {" · "}
+                    <span data-field="offer-verified">{verifiedAtText(offer.price_verified_at)}</span>
+                    {" · 点击 "}
+                    <span data-field="offer-clicks">{offer.click_total ?? 0}</span>
+                    （点击不是成交）
+                    {manage && offer.status === "active" ? (
+                      <button className="tk-quiet" type="button" data-action="offer-pause" onClick={() => setOfferStatus(offer, "paused")}>下架</button>
+                    ) : null}
+                    {manage && offer.status === "paused" ? (
+                      <button className="tk-quiet" type="button" data-action="offer-resume" onClick={() => setOfferStatus(offer, "active")}>上架</button>
+                    ) : null}
+                    {manage && offer.status !== "retired" ? (
+                      <button className="tk-quiet" type="button" data-action="offer-retire" onClick={() => setOfferStatus(offer, "retired")}>退役</button>
+                    ) : null}
+                    {manage ? (
+                      <button className="tk-quiet" type="button" data-action="offer-retitle" onClick={() => {
+                        const raw = window.prompt("新标题：", offer.title);
+                        if (raw && raw.trim()) editOffer(offer, "title", raw);
+                      }}>改标题</button>
+                    ) : null}
+                    {manage ? (
+                      <button className="tk-quiet" type="button" data-action="offer-reprice" onClick={() => {
+                        const raw = window.prompt("新价格（分）：", String(offer.price_minor));
+                        if (raw !== null && raw.trim() !== "") editOffer(offer, "price", raw);
+                      }}>改价格</button>
+                    ) : null}
+                    {manage ? (
+                      <button className="tk-quiet" type="button" data-action="offer-verify" onClick={() => verifyPrice(offer)}>标记已核对价格</button>
+                    ) : null}
+                    {manage ? (
+                      <button className="tk-quiet" type="button" data-action="offer-auth" onClick={() => {
+                        const raw = window.prompt("外部授权引用（从平台授权适配器获得；留空取消）：", offer.authorization_ref || "");
+                        if (raw && raw.trim()) recordAuth(offer, raw);
+                      }}>记录授权</button>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {manage ? <DealOfferCreateForm storeId={storeId} onCreate={createOffer} /> : null}
+            <CouponTool
+              storeId={storeId}
+              offers={offers}
+              session={session}
+              onNote={onNote}
+            />
+          </>
+        )}
+        <h2 className="tk-subtitle">外部券发放登记</h2>
+        {externalIssuances.length === 0 ? (
+          <p className="tk-note" data-field="external-empty">还没有外部券发放登记。没有事实不写成功。</p>
+        ) : (
+          <ul className="tk-list" data-field="external-list">
+            {externalIssuances.map((item) => (
+              <li key={item.id} data-external-id={item.id} data-external-state={item.state}>
+                <span data-field="external-state">{externalStateText(item.state)}</span>
+                {" · "}
+                {item.provider || "外部平台"}
+                {" · 参与/尝试引用 "}
+                {item.participation_id}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </>
+  );
+}
+
+interface DealCreateFormState {
+  platform: string;
+  provider_offer_id: string;
+  product_url: string;
+  title: string;
+  image_ref: string;
+  price: string;
+  currency: string;
+  price_source: string;
+  valid_until: string;
+}
+
+function DealOfferCreateForm(props: {
+  storeId: string;
+  onCreate: (form: DealCreateFormState) => void;
+}) {
+  const initial: DealCreateFormState = {
+    platform: "meituan",
+    provider_offer_id: "",
+    product_url: "",
+    title: "",
+    image_ref: "",
+    price: "0",
+    currency: "FEN",
+    price_source: "platform",
+    valid_until: "",
+  };
+  const [form, setForm] = useState<DealCreateFormState>(initial);
+  const [busy, setBusy] = useState(false);
+  const set = (k: keyof DealCreateFormState) => (e: { target: { value: string } }) =>
+    setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  return (
+    <div data-field="offer-create">
+      <p className="tk-note">
+        商品链接必须是该平台官方域名的公网 https 页面（美团↔美团、点评↔点评、抖音↔抖音），错挂渠道会被拒绝。
+      </p>
+      <label className="tk-label">
+        平台
+        <select className="tk-select" data-field="offer-platform-input" value={form.platform} onChange={set("platform")}>
+          <option value="meituan">美团</option>
+          <option value="dianping">大众点评</option>
+          <option value="douyin">抖音</option>
+        </select>
+      </label>
+      <label className="tk-label">
+        平台商品 ID（可空）
+        <input className="tk-input" data-field="offer-provider-id" value={form.provider_offer_id} onChange={set("provider_offer_id")} />
+      </label>
+      <label className="tk-label">
+        商品链接（https）
+        <input className="tk-input" data-field="offer-url" value={form.product_url} onChange={set("product_url")} />
+      </label>
+      <label className="tk-label">
+        展示标题
+        <input className="tk-input" data-field="offer-title-input" value={form.title} onChange={set("title")} />
+      </label>
+      <label className="tk-label">
+        展示图引用（可空）
+        <input className="tk-input" data-field="offer-image" value={form.image_ref} onChange={set("image_ref")} />
+      </label>
+      <label className="tk-label">
+        价格（分）
+        <input className="tk-input" data-field="offer-price" value={form.price} onChange={set("price")} />
+      </label>
+      <label className="tk-label">
+        币种单位
+        <input className="tk-input" data-field="offer-currency" value={form.currency} onChange={set("currency")} />
+      </label>
+      <label className="tk-label">
+        价格来源
+        <select className="tk-select" data-field="offer-price-source" value={form.price_source} onChange={set("price_source")}>
+          <option value="platform">平台页实价</option>
+          <option value="merchant">商家手填</option>
+        </select>
+      </label>
+      <label className="tk-label">
+        有效期至（RFC3339，可空）
+        <input className="tk-input" data-field="offer-valid-until" value={form.valid_until} onChange={set("valid_until")} />
+      </label>
+      <button className="tk-quiet" type="button" data-action="create-offer" disabled={busy} onClick={() => { setBusy(true); try { props.onCreate(form); } finally { setBusy(false); } setForm(initial); }}>
+        {busy ? "提交中…" : "上架套餐"}
+      </button>
+    </div>
+  );
+}
+
+function CouponTool(props: {
+  storeId: string;
+  offers: StoreDealOfferView[];
+  session: SessionLike;
+  onNote: (note: string) => void;
+}) {
+  const { storeId, offers, session, onNote } = props;
+  const [offerId, setOfferId] = useState("");
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  if (offers.length === 0) return null;
+
+  const run = (kind: "inspect" | "redeem") =>
+    void (async () => {
+      if (!offerId || !code.trim()) {
+        onNote("选择套餐并输入券码。没有事实不写成功。");
+        return;
+      }
+      setBusy(true);
+      try {
+        const res = await session.api("POST", `stores/${storeId}/external-vouchers/${kind}`, {
+          offer_id: offerId,
+          code: code.trim(),
+        });
+        if (res.ok) {
+          onNote(couponOutcomeText(res.data as unknown as DealCouponResultView));
+        } else {
+          onNote(failureText(res.status, res.data));
+        }
+      } catch {
+        onNote("操作没有完成。没有事实不写成功。");
+      } finally {
+        setBusy(false);
+      }
+    })();
+
+  return (
+    <div data-field="coupon-tool">
+      <p className="tk-note">
+        外部券检查/核销走授权适配器返回平台事实；未接通或未授权会诚实拒绝（不本地假核销）。券码不进日志。
+      </p>
+      <label className="tk-label">
+        套餐
+        <select className="tk-select" data-field="coupon-offer" value={offerId} onChange={(e) => setOfferId(e.target.value)}>
+          <option value="">选择套餐…</option>
+          {offers.map((o) => (
+            <option key={o.id} value={o.id}>{platformText(o.platform)} · {o.title}</option>
+          ))}
+        </select>
+      </label>
+      <label className="tk-label">
+        券码
+        <input className="tk-input" data-field="coupon-code" value={code} onChange={(e) => setCode(e.target.value)} />
+      </label>
+      <button className="tk-quiet" type="button" data-action="coupon-check" disabled={busy} onClick={() => run("inspect")}>查券</button>
+      <button className="tk-quiet" type="button" data-action="coupon-redeem" disabled={busy} onClick={() => run("redeem")}>核销</button>
     </div>
   );
 }

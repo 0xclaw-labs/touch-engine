@@ -33,6 +33,7 @@ import (
 	"github.com/bianjiefilm/touch-engine/server/internal/config"
 	"github.com/bianjiefilm/touch-engine/server/internal/copyjob"
 	"github.com/bianjiefilm/touch-engine/server/internal/db"
+	"github.com/bianjiefilm/touch-engine/server/internal/deals"
 	"github.com/bianjiefilm/touch-engine/server/internal/identity"
 	"github.com/bianjiefilm/touch-engine/server/internal/leads"
 	"github.com/bianjiefilm/touch-engine/server/internal/matrixconsume"
@@ -133,6 +134,12 @@ type Server struct {
 	// FEATURE_PUBLISH_HANDOFF. Without a receipt secret the verifier refuses
 	// everything (NOT_VERIFIED residual) — honest by construction.
 	PublishHandoff *publishhandoff.Service
+
+	// DealCoupons (HUI-4590) is the authorization-backed external coupon
+	// adapter for the three group-buy platforms. Production stays nil until
+	// an official authorization exists: check/redeem then answer the honest
+	// 503 not_connected and no redemption fact is ever invented.
+	DealCoupons deals.Adapter
 }
 
 // Frozen cache budgets (HUI-2981 comparison report §2.1 — do not tune without
@@ -749,6 +756,11 @@ func (s *Server) Handler() http.Handler {
 	// HUI-1671 B3 真实奖励交付: /work 管理面(无开关)、受信预留(internal token)、
 	// 公共 Summary(FEATURE_REWARD_OPS 默认 off)注册段集中在一个方法里。
 	s.registerRewardOpsRoutes(mux)
+
+	// HUI-4590 团购套餐: 商家面 CRUD/上下架/校验时间 + 店员外部券 check/redeem
+	// (无开关,session+authz) + 顾客公共读面/点击 beacon(FEATURE_STOREFRONT
+	// 双保险,同 4584 公共门店面)。
+	s.registerDealRoutes(mux)
 
 	// HUI-3546 participation & cross-device resume. 登记制开关
 	// FEATURE_PARTICIPATION(默认 off;off = 全部路由不注册且 handler gate
