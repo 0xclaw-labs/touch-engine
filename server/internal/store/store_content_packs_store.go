@@ -59,8 +59,8 @@ func scanContentMedia(sc interface{ Scan(...any) error }) (ContentMedia, error) 
 	return m, err
 }
 
-// RegisterContentMedia records one verified upload. Same tenant + sha256
-// replays the existing row (平台重复取材零新增).
+// RegisterContentMedia records one verified upload. Same tenant + store +
+// sha256 replays the existing row (平台重复取材零新增;跨店不共享,内容归店).
 func (s *Store) RegisterContentMedia(tenantID, storeID string, meta upload.MediaMeta, filename, createdBy string) (ContentMedia, bool, error) {
 	if _, err := s.GetStore(storeID, tenantID); err != nil {
 		return ContentMedia{}, false, err
@@ -68,13 +68,14 @@ func (s *Store) RegisterContentMedia(tenantID, storeID string, meta upload.Media
 	filename = strings.TrimSpace(filename)
 	var existing int
 	if err := s.DB.QueryRow(
-		`SELECT COUNT(1) FROM content_media WHERE tenant_id=? AND sha256=?`,
-		tenantID, meta.SHA256).Scan(&existing); err != nil {
+		`SELECT COUNT(1) FROM content_media WHERE tenant_id=? AND store_id=? AND sha256=?`,
+		tenantID, storeID, meta.SHA256).Scan(&existing); err != nil {
 		return ContentMedia{}, false, err
 	}
 	if existing > 0 {
 		m, err := scanContentMedia(s.DB.QueryRow(
-			`SELECT `+contentMediaCols+` FROM content_media WHERE tenant_id=? AND sha256=?`, tenantID, meta.SHA256))
+			`SELECT `+contentMediaCols+` FROM content_media WHERE tenant_id=? AND store_id=? AND sha256=?`,
+			tenantID, storeID, meta.SHA256))
 		return m, err == nil, err
 	}
 	m := ContentMedia{
@@ -1031,7 +1032,11 @@ func (s *Store) GetActionContentBinding(tenantID, actionID string) (ActionConten
 
 // GetActionContentBindingAnyTenant resolves the binding row by action_id
 // alone (the B05 public face has no session; the ROW is the tenant truth —
-// action_id is a lookup key, never an authorization). Unknown -> ErrNotFound.
+// action_id is a lookup key, never an authorization). PRECONDITION: action_id
+// is a server-minted instance ID with global uniqueness (HUI-4584 action
+// catalog PK discipline); a cross-tenant action_id collision would resolve to
+// an arbitrary tenant, which is why ids are minted, never chosen by callers.
+// Unknown -> ErrNotFound.
 func (s *Store) GetActionContentBindingAnyTenant(actionID string) (ActionContentBinding, error) {
 	b, err := scanActionBinding(s.DB.QueryRow(
 		`SELECT `+actionBindingCols+` FROM store_action_content_bindings WHERE action_id=?`,

@@ -232,14 +232,19 @@ func (s *Server) handlePublicMediaAccess(w http.ResponseWriter, r *http.Request)
 	for _, m := range collectVersionMedia(v) {
 		known[m.mediaID] = m
 	}
-	now := time.Now()
-	items := make([]map[string]any, 0, len(in.MediaIDs))
+	// 先整体校验,再签发:避免部分媒体失败时留下半批凭据审计。
+	requested := make([]versionMedia, 0, len(in.MediaIDs))
 	for _, mediaID := range in.MediaIDs {
 		m, okKnown := known[mediaID]
 		if !okKnown {
 			fail(w, http.StatusUnprocessableEntity, contentpack.ReasonMediaMissing, "the requested media is not part of this version")
 			return
 		}
+		requested = append(requested, m)
+	}
+	now := time.Now()
+	items := make([]map[string]any, 0, len(requested))
+	for _, m := range requested {
 		claim, err := contentpack.NewMediaAccessClaim(v.ID, m.mediaID, in.Purpose, in.ActionSessionID, now, 0)
 		if err != nil {
 			if !invalidPack422(w, err) {

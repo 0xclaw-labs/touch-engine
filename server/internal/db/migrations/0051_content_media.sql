@@ -7,7 +7,8 @@
 --     byte_size/sha256 是落盘时的实测值;duration_ms/width/height 来自对
 --     mp4 结构的尽力解析(缺失记 0),不伪造;
 --   - kind 由探测出的 MIME 决定(video|image),不是客户端声明;
---   - 同租户同 sha256 去重复用同一行(平台重复取材零新增)。
+--   - 同租户同店同 sha256 去重复用同一行(平台重复取材零新增;跨店不共享,
+--     内容归店,复用他店行会让媒体在本店不可用)。
 
 PRAGMA foreign_keys = ON;
 
@@ -26,7 +27,7 @@ CREATE TABLE IF NOT EXISTS content_media (
     media_ref   TEXT NOT NULL,
     created_by  TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL,
-    UNIQUE (tenant_id, sha256)
+    UNIQUE (tenant_id, store_id, sha256)
 );
 
 CREATE INDEX IF NOT EXISTS idx_content_media_store ON content_media(tenant_id, store_id, created_at);
