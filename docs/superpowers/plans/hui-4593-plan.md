@@ -57,7 +57,7 @@ agency_relations 新列：`allowed_actions TEXT`（JSON 数组；NULL/空 = 旧�
 `store_scope_set TEXT`（JSON 数组；空 = 全门店）、`valid_until TEXT`、`grant_revision INTEGER NOT NULL DEFAULT 0`、
 `payer_grant_ref TEXT NOT NULL DEFAULT ''`。
 
-- allowed_actions 白名单值（冻结）: `storefront` / `action` / `renewal`。旧关系(NULL)不获得任何新增写权。
+- allowed_actions 白名单值（冻结）: `storefront` / `action` / `channel_target` / `renewal`。旧关系(NULL)不获得任何新增写权。
 - 代付: `payer_grant_ref` 非空才可能过 billing 资格判定；最终扣费仍由公共 payer 权威裁决（HUI-4591）。
 - 到期/撤销即失权: 回填判定改为 `revoked_at IS NULL AND (valid_until IS NULL OR valid_until > now)`，
   每请求实时回填（既有 authzMember 单点），撤销后旧 token 下一请求即 403（T17）。

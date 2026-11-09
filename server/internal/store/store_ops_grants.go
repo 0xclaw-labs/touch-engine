@@ -148,6 +148,16 @@ func (s *Store) listOpsGrants(q string, arg string) ([]OpsGrant, error) {
 	return out, rows.Err()
 }
 
+// GetOpsGrant reads one row by id (issuer ownership is checked by the caller).
+func (s *Store) GetOpsGrant(id string) (OpsGrant, error) {
+	row := s.DB.QueryRow(`SELECT `+opsGrantCols+` FROM ops_grants WHERE id=?`, id)
+	g, err := scanOpsGrant(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return OpsGrant{}, ErrNotFound
+	}
+	return g, err
+}
+
 // RevokeOpsGrant tombstones the grant. Double revoke is an explicit conflict.
 func (s *Store) RevokeOpsGrant(id, revokedBy string, nowT time.Time) (OpsGrant, error) {
 	row := s.DB.QueryRow(`SELECT `+opsGrantCols+` FROM ops_grants WHERE id=?`, id)

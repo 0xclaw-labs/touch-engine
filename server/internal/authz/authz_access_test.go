@@ -242,6 +242,35 @@ func TestCanManageBrandSettings(t *testing.T) {
 	}
 }
 
+func TestStaffStoreScopeBusinessActions(t *testing.T) {
+	// HUI-4593 门店店员 scope 显式建模:带 scope 的 staff 行业务动作只在本店;
+	// 存量 staff 行(scope="")保留 T0 租户级语义,行为逐字节不变。
+	scoped := staffS1
+	storeRec := RecordScope{TenantID: "tnt_X", StoreID: "sto_S1"}
+	otherRec := RecordScope{TenantID: "tnt_X", StoreID: "sto_S2"}
+	tenantRec := RecordScope{TenantID: "tnt_X"}
+
+	for _, act := range []Action{ActionCreate, ActionReadList, ActionReadRecord, ActionUpdate} {
+		if !Authorize(scoped, act, storeRec).Allowed {
+			t.Fatalf("scoped staff %s on own store must pass", act)
+		}
+		if d := Authorize(scoped, act, otherRec); d.Allowed || d.Reason != ReasonOutOfScope {
+			t.Fatalf("scoped staff %s cross-store = %+v, want out_of_scope", act, d)
+		}
+	}
+	// legacy staff: tenant-level semantics untouched
+	for _, act := range []Action{ActionCreate, ActionReadList, ActionReadRecord, ActionUpdate} {
+		if !Authorize(staffX, act, otherRec).Allowed || !Authorize(staffX, act, tenantRec).Allowed {
+			t.Fatalf("legacy staff %s tenant-wide semantics must stay", act)
+		}
+	}
+	// scoped staff still holds zero configuration dimensions (fail-closed)
+	a := ResolveAccess(scoped, nil, nil, nowT)
+	if Can(a, "storefront:configure", "sto_S1").Allowed {
+		t.Fatal("scoped staff never gains configuration dimensions")
+	}
+}
+
 func TestEffectiveAccessIsCopySafe(t *testing.T) {
 	a := ResolveAccess(ownerX, nil, nil, nowT)
 	a.Permissions[0] = "tampered"

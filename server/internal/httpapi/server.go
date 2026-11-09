@@ -289,6 +289,10 @@ func callerFrom(r *http.Request) *caller {
 // point where 代管关系 activity enters authorization (any store error answers
 // false, fail-closed). Non-agent roles skip the lookup entirely (zero cost,
 // existing semantics byte-identical).
+//
+// HUI-4593: 回填升级为 HasValidAgencyRelation —— 撤销与到期同待遇(撤销墓碑或
+// valid_until 已过 = 无激活关系,代理能力整体 fail-closed;旧行 valid_until 空
+// = 不过期,行为不变)。撤销后既有 token/会话下一请求立即失权(T17)。
 func (s *Server) authzMember(c *caller) *authz.Member {
 	if c == nil || c.Member == nil {
 		return nil
@@ -296,7 +300,7 @@ func (s *Server) authzMember(c *caller) *authz.Member {
 	am := &authz.Member{ID: c.Member.ID, TenantID: c.Member.TenantID, PrincipalRef: c.Member.PrincipalRef,
 		Role: authz.Role(c.Member.Role), StoreScope: c.Member.StoreScope, Enabled: c.Member.Enabled}
 	if am.Role == authz.RoleAgent {
-		am.AgencyActive = s.St.HasActiveAgencyRelation(c.Member.TenantID, c.Member.PrincipalRef)
+		am.AgencyActive = s.St.HasValidAgencyRelation(c.Member.TenantID, c.Member.PrincipalRef, time.Now())
 	}
 	return am
 }
@@ -600,8 +604,27 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("POST /api/v1/agency/relations", s.requireSession(s.handleAgencyRelationCreate))
 		mux.Handle("GET /api/v1/agency/relations", s.requireSession(s.handleAgencyRelationList))
 		mux.Handle("DELETE /api/v1/agency/relations/{id}", s.requireSession(s.handleAgencyRelationRevoke))
+		// HUI-4593: 代管 scope 显式授权/变更(org_owner 专属,乐观并发+审计)。
+		mux.Handle("PUT /api/v1/agency/relations/{id}/scope", s.requireSession(s.handleAgencyRelationScopeSet))
 		mux.Handle("POST /api/v1/agency/sub-accounts", s.requireSession(s.handleAgencySubAccountCreate))
 		mux.Handle("GET /api/v1/agency/sub-accounts", s.requireSession(s.handleAgencySubAccountList))
+	}
+
+	// authz (HUI-4593 连锁与代管 B11 公共权限契约): 登记制开关 FEATURE_AUTHZ
+	// (默认 off;off = 路由不注册且 handler gate 再答统一 404 —— 双保险同款)。
+	// access/effective 是 2222/4592 等消费票的稳定裁决读面;template-assignments
+	// 只记录连锁模板分发/授权结果(不写 storefront 版本表);ops-grants 只走受信
+	// 服务生产者缝;access/audit 是授权域审计回查(org_owner 专属)。
+	if s.Cfg.FeatureAuthz {
+		mux.Handle("GET /api/v1/access/effective", s.requireSession(s.handleAccessEffective))
+		mux.Handle("GET /api/v1/access/audit", s.requireSession(s.handleAccessAudit))
+		mux.Handle("POST /api/v1/template-assignments", s.requireSession(s.handleTemplateAssignmentCreate))
+		mux.Handle("GET /api/v1/template-assignments", s.requireSession(s.handleTemplateAssignmentList))
+		mux.Handle("GET /api/v1/template-assignments/{id}", s.requireSession(s.handleTemplateAssignmentGet))
+		mux.Handle("PATCH /api/v1/template-assignments/{id}", s.requireSession(s.handleTemplateAssignmentPatch))
+		mux.Handle("POST /api/v1/ops-grants", s.requireOpsGrantProducer(s.handleOpsGrantCreate))
+		mux.Handle("GET /api/v1/ops-grants", s.requireOpsGrantProducer(s.handleOpsGrantList))
+		mux.Handle("DELETE /api/v1/ops-grants/{id}", s.requireOpsGrantProducer(s.handleOpsGrantRevoke))
 	}
 
 	// HUI-2053 brand shell + tenant lifecycle/export. Off = routes absent.
