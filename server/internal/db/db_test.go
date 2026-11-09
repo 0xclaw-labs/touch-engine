@@ -25,6 +25,15 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"authorized_returns",
 		// HUI-4593 (0065) 授权域审计
 		"authz_audit_log",
+		// HUI-4591 (0108-0112) 订购收费账单:价格目录/订阅投影/订单/AI 用量/硬件/退款
+		"billing_ai_usage",
+		"billing_hardware_fulfillment",
+		"billing_hardware_items",
+		"billing_order_events",
+		"billing_orders",
+		"billing_price_catalog",
+		"billing_refunds",
+		"billing_subscriptions",
 		"campaign_assets",
 		"campaign_links",
 		"campaign_publish_config_revisions",
