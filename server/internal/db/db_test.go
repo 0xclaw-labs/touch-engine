@@ -70,7 +70,12 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"reward_official_facts",
 		"reward_operations",
 		"schema_migrations",
+		// HUI-4584 (0043): 门店动作实例模型 + 配置修订 + 公共门店码。
+		"store_action_configs",
+		"store_action_snapshots",
+		"store_actions",
 		"store_motion_requests",
+		"store_storefronts",
 		"stores",
 		"tenant_exports",
 		"tenants",
