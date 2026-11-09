@@ -253,3 +253,30 @@ func TestStoreLeadFormAdminUpsertScoped(t *testing.T) {
 		}
 	})
 }
+
+func TestNotifyDeliveredAuditRecordedOnce(t *testing.T) {
+	f := newLeadsFixture(t)
+	_, out := f.submitLead(t, f.code, validLeadBody)
+	ref := out["submission_ref"].(string)
+	f.forwarder.Tick(t.Context())
+	f.stub.DeliverAll()
+	f.forwarder.Tick(t.Context())
+	f.forwarder.Tick(t.Context()) // the polling repeat must not duplicate the fact
+	rows, err := f.s.St.ListLeadAudit(f.tenA, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, r := range rows {
+		if r["action"] == "notify_delivered" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("notify_delivered audit rows = %d, want 1", n)
+	}
+	lead, _ := f.s.St.GetLeadSubmissionByRef(ref)
+	if lead.SyncState != "pending_sync" {
+		t.Fatalf("transport delivered must stay 待同步: %q", lead.SyncState)
+	}
+}

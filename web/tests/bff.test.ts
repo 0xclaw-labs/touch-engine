@@ -441,3 +441,28 @@ describe("BFF controlled media relay (HUI-3553 D3)", () => {
     expect(body.byteLength).toBe(10);
   });
 });
+
+// ---- HUI-4594: internal seams never travel through the public relay ----------------
+
+describe("BFF internal-path block (HUI-4594)", () => {
+  it("does not forward /api/internal/* (leads receiver seam)", async () => {
+    const res = await call("GET", "internal/lead-records/sub_x", { tenant: "tnt_A" });
+    expect(res.status).toBe(404);
+    expect(upstreamCalls).toHaveLength(0);
+  });
+
+  it("does not forward Go-absolute /api/v1/internal/* passthrough", async () => {
+    const res = await call("POST", "v1/internal/lead-records/sub_x/acknowledgements", {
+      tenant: "tnt_A",
+      body: "{}",
+    });
+    expect(res.status).toBe(404);
+    expect(upstreamCalls).toHaveLength(0);
+  });
+
+  it("still forwards public and admin paths", async () => {
+    await call("GET", "campaigns", { tenant: "tnt_A" });
+    expect(upstreamCalls).toHaveLength(1);
+    expect(upstreamCalls[0].url).toContain("/api/v1/campaigns");
+  });
+});

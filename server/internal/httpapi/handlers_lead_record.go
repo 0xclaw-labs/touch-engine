@@ -116,13 +116,13 @@ func (s *Server) handleLeadRecord(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, "not_found", "record not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, leadRecordView(lead))
+	writeJSON(w, http.StatusOK, s.leadRecordView(r, lead))
 }
 
 // leadRecordView is the minimal authorized field set. Contact fields are
 // present only while the consent is live; a revoked record is a tombstone —
 // fetching re-checks the consent, so a late replay cannot re-serve contact data.
-func leadRecordView(lead store.LeadSubmission) map[string]any {
+func (s *Server) leadRecordView(r *http.Request, lead store.LeadSubmission) map[string]any {
 	revoked := lead.RevokeSourceRevision > 0 || lead.SyncState == "revoked" || lead.RevokedAt != ""
 	revision := lead.SourceVersion
 	if revoked && lead.RevokeSourceRevision > 0 {
@@ -146,6 +146,13 @@ func leadRecordView(lead store.LeadSubmission) map[string]any {
 			"marketing_sms":   lead.MarketingOptin && !revoked,
 			"notice_version":  lead.ConsentNoticeVersion,
 		},
+	}
+	// action provenance (ticket contract: minimal fields include action_id):
+	// resolvable only while the 3546 session reference is live and in scope.
+	if lead.SessionID != "" && s.Participation != nil && s.Participation.SessionsReady() {
+		if sref, err := s.Participation.LookupSessionRef(lead.SessionID); err == nil {
+			rec["action_ref"] = sref.ActionID
+		}
 	}
 	if revoked {
 		rec["authorization"] = "revoked"

@@ -165,8 +165,10 @@ func (f *Forwarder) confirmState(ctx context.Context, res *TickResult, state str
 				}
 				continue
 			}
-			// 传输层事实留痕;同步状态不动(待同步可见),入库以 ACK 为准
-			_ = f.St.AppendLeadAudit(lead.TenantID, lead.SubmissionRef, "notify_delivered", `{"by":"deliveries"}`, "system")
+			// 传输层事实留痕(只记一次);同步状态不动(待同步可见),入库以 ACK 为准
+			if seen, serr := f.St.HasLeadAuditAction(lead.TenantID, lead.SubmissionRef, "notify_delivered"); serr == nil && !seen {
+				_ = f.St.AppendLeadAudit(lead.TenantID, lead.SubmissionRef, "notify_delivered", `{"by":"deliveries"}`, "system")
+			}
 		case "dead":
 			if repair {
 				continue

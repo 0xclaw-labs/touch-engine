@@ -46,6 +46,15 @@ export function bffPathToUpstream(path: string[]): string {
   return "/api/v1/" + path.join("/");
 }
 
+// bffForwardsInternal reports whether a browser path would land on a Go
+// internal seam. HUI-4594: the public BFF must NOT relay internal paths at
+// all — the trusted leads-receiver seam answers registered service
+// identities only, and the relay must not even ferry the attempt.
+export function bffForwardsInternal(path: string[]): boolean {
+  const upstream = bffPathToUpstream(path);
+  return upstream.startsWith("/api/v1/internal/") || upstream.startsWith("/internal/");
+}
+
 export async function proxyToServer(
   req: Request,
   env: BffEnv,
@@ -64,6 +73,15 @@ export async function proxyToServer(
   }
 
   const incoming = new URL(req.url);
+  // HUI-4594: internal seams never travel through the public relay. The Go
+  // gate would refuse them anyway (fail-closed), but the BFF does not forward
+  // the attempt: uniform 404, zero upstream calls, zero log surface.
+  if (bffForwardsInternal(path)) {
+    return Response.json(
+      { error: "not_found", message: "resource not found" },
+      { status: 404 },
+    );
+  }
   const upstreamUrl =
     env.serverUrl.replace(/\/+$/, "") +
     bffPathToUpstream(path) +

@@ -90,7 +90,7 @@ func (s *Store) GetLeadFormByCampaign(campaignID string) (LeadForm, error) {
 }
 
 // UpsertLeadFormForStore configures the store-scoped lead form row
-// (HUI-4594 无活动留资): campaign_id stays '' and store_id locates the row.
+// (HUI-4594 无活动留资): campaign_id stays empty and store_id locates the row.
 func (s *Store) UpsertLeadFormForStore(tenantID, storeID, noticeVersion string, marketingEnabled bool, createdBy string) (LeadForm, error) {
 	cur, err := scanLeadForm(s.DB.QueryRow(
 		`SELECT `+leadFormCols+` FROM lead_forms WHERE campaign_id='' AND store_id=?`, storeID))
@@ -159,11 +159,11 @@ type LeadSubmission struct {
 	RevokedAt            string `json:"revoked_at,omitempty"`
 	// HUI-4594 receiver projection: the trusted receiver's persisted ACK.
 	// Empty receiver_state = nothing confirmed ingested yet (still 待同步).
-	ReceiverState       string `json:"receiver_state,omitempty"`
-	ReceiptID           string `json:"receipt_id,omitempty"`
+	ReceiverState string `json:"receiver_state,omitempty"`
+	ReceiptID     string `json:"receipt_id,omitempty"`
 	// Revocation waterline (HUI-4594): >0 once revoked; late replays of older
 	// revisions cannot resurrect the contact past this watermark.
-	RevokeSourceRevision int   `json:"revoke_source_revision,omitempty"`
+	RevokeSourceRevision int `json:"revoke_source_revision,omitempty"`
 	// HUI-4594 store capture: campaign_id is '' on store-source leads.
 	CaptureSource string `json:"capture_source"`
 	SessionID     string `json:"session_id,omitempty"`
@@ -579,6 +579,17 @@ func (s *Store) ListLeadAudit(tenantID, ref string) ([]map[string]string, error)
 		out = append(out, map[string]string{"action": action, "detail": detail, "actor": actor, "created_at": at})
 	}
 	return out, rows.Err()
+}
+
+// HasLeadAuditAction reports whether one action row already exists for the
+// submission (HUI-4594: the transport verdict polls repeat every tick, so the
+// notify_delivered fact must be recorded once, not on every pass).
+func (s *Store) HasLeadAuditAction(tenantID, ref, action string) (bool, error) {
+	var n int
+	err := s.DB.QueryRow(
+		`SELECT COUNT(1) FROM lead_audit WHERE tenant_id=? AND submission_ref=? AND action=? LIMIT 1`,
+		tenantID, ref, action).Scan(&n)
+	return n > 0, err
 }
 
 // ---- leads outbox (forwarder queue) --------------------------------------------
