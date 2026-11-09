@@ -46,6 +46,19 @@ export function bffPathToUpstream(path: string[]): string {
   return "/api/v1/" + path.join("/");
 }
 
+// HUI-4595: /api/v1/internal/* is the trusted-service seam (成片回流 per
+// content_return_producer tokens). The public BFF must NEVER relay it — a
+// browser path reaching the internal segment is answered with a uniform 404
+// (same shape as the Go server's anti-enumeration answer; no existence leak),
+// and the request is never forwarded. Covers both spellings: the classic BFF
+// form (/api/internal/... -> path[0]==="internal") and the Go-absolute
+// passthrough form (/api/v1/internal/... -> ["v1","internal",...]).
+export function bffPathRefusesInternal(path: string[]): boolean {
+  if (path.length > 0 && path[0] === "internal") return true;
+  if (path.length > 1 && path[0] === "v1" && path[1] === "internal") return true;
+  return false;
+}
+
 export async function proxyToServer(
   req: Request,
   env: BffEnv,
@@ -60,6 +73,15 @@ export async function proxyToServer(
         detail: problems,
       },
       { status: 503 },
+    );
+  }
+
+  // HUI-4595: internal 受信缝对公共 BFF 不可见(票面硬性)。拒绝发生在一切
+  // 转发之前,与 Go 侧统一 404 同形,不给存在性提示。
+  if (bffPathRefusesInternal(path)) {
+    return Response.json(
+      { error: "not_found", message: "resource not found" },
+      { status: 404 },
     );
   }
 
