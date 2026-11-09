@@ -53,6 +53,10 @@ func TestTouchpointProvisionDerivesFromTag(t *testing.T) {
 	if a.TagID != tagID {
 		t.Fatalf("tag binding = %q, want %q", a.TagID, tagID)
 	}
+	// B02:新记录以 store 为根;binding_revision 从 1 起(换并发闸)。
+	if a.TargetType != TargetStore || a.BindingRevision != 1 {
+		t.Fatalf("store-bound provision = (%s,%d), want (%s,1)", a.TargetType, a.BindingRevision, TargetStore)
+	}
 
 	// 重复启用 → ErrTagAlreadyProvisioned
 	if _, err := s.ProvisionTouchpoint(ten.ID, tagID, "x", "", "u1"); !errors.Is(err, ErrTagAlreadyProvisioned) {
@@ -352,14 +356,21 @@ func TestTouchpointViewAndListAndParticipationCount(t *testing.T) {
 		t.Fatalf("cross-tenant count = %d %v", n2, err)
 	}
 
-	// 视图 JOIN:目标活动标题/状态/门店名/规范码与检查态
+	// 视图 JOIN:目标活动标题/状态/门店名/规范码与检查态。
+	// B02:这两张卡绑定在门店上,provision 落 store 根 —— 检查所见=访客所见,
+	// EntryCode 是门店公共码(/s 目标),活动只作注记展示。
+	sf, err := s.StorefrontForStore(ten.ID, sto.ID)
+	mustNoErr(t, err)
 	v, err := s.GetTouchpointView(a1.ID, ten.ID)
 	mustNoErr(t, err)
 	if v.CampaignTitle != "活动" || v.CampaignStatus != "active" || v.StoreName != "旗舰店" {
 		t.Fatalf("view = %+v", v)
 	}
-	if v.EntryCode != links[0].Code || v.EntryState != string(OutcomeAvailable) {
-		t.Fatalf("entry = %s/%s, want %s/%s", v.EntryCode, v.EntryState, links[0].Code, OutcomeAvailable)
+	if v.TargetType != TargetStore || v.StoreCode != sf.StoreCode {
+		t.Fatalf("view target = (%s,%s), want (%s,%s)", v.TargetType, v.StoreCode, TargetStore, sf.StoreCode)
+	}
+	if v.EntryCode != sf.StoreCode || v.EntryState != string(OutcomeAvailable) {
+		t.Fatalf("entry = %s/%s, want %s/%s", v.EntryCode, v.EntryState, sf.StoreCode, OutcomeAvailable)
 	}
 	// 停用别名:检查所见=访客所见(touchpoint_disabled),不显示状态未知
 	if _, err := s.SetTouchpointStatus(a1.ID, ten.ID, TagStatusDisabled, "tester"); err != nil {
@@ -426,5 +437,191 @@ func TestTouchpointViewAndListAndParticipationCount(t *testing.T) {
 	}
 	if v, err := s.GetTouchpointView(a1.ID, ten.ID); err != nil || v.CampaignID != c2 {
 		t.Fatalf("view after rebind = %+v %v", v, err)
+	}
+}
+
+// TestTouchpointStoreRootResolve: store 根触点解析只产出门店定位,活动级状态零门控
+// (B02:无活动/暂停/过期不能关闭门店基础服务),legacy 行为对照逐字节保留。
+func TestTouchpointStoreRootResolve(t *testing.T) {
+	s := tagTestStore(t)
+	ten, err := s.CreateTenant("A")
+	mustNoErr(t, err)
+	sto, err := s.CreateStore(ten.ID, "旗舰店", "", "u")
+	mustNoErr(t, err)
+	cID, links := seedCampaignWithLinks(t, s, ten.ID, "active", 1)
+	tags, err := s.CreateTagsBatch(NewTagBatch{TenantID: ten.ID, CampaignID: cID,
+		LinkIDs: []string{links[0].ID}, BindMode: "shared", Count: 2, StoreID: sto.ID, CreatedBy: "u"})
+	mustNoErr(t, err)
+	aStore, err := s.ProvisionTouchpoint(ten.ID, tags[0].ID, "门店卡", "", "u")
+	mustNoErr(t, err)
+	aLegacy, err := s.ProvisionTouchpoint(ten.ID, tags[1].ID, "对照卡", "", "u")
+	mustNoErr(t, err)
+	if aLegacy.TargetType != TargetStore {
+		t.Fatalf("store-bound tag must provision store root, got %s", aLegacy.TargetType)
+	}
+	sf, err := s.StorefrontForStore(ten.ID, sto.ID)
+	mustNoErr(t, err)
+
+	now := time.Now()
+	// store 根:redirect 携带门店公共码;TargetType 标注;campaign 短码字段留空。
+	got := s.ResolveTouchpoint(aStore.Code, now)
+	if got.Outcome != TpRedirect || got.TargetType != TargetStore || got.StoreCode != sf.StoreCode ||
+		got.State != OutcomeAvailable || got.Code != "" || got.BindingRevision != 1 {
+		t.Fatalf("store resolve = %+v", got)
+	}
+	// 活动暂停/结束都不影响 store 根(解析零活动门控)。
+	if _, err := s.TransitionCampaign(cID, ten.ID, campaign.StatusPaused); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	if got := s.ResolveTouchpoint(aStore.Code, now); got.Outcome != TpRedirect || got.State != OutcomeAvailable {
+		t.Fatalf("campaign paused must not gate store root = %+v", got)
+	}
+	// 结束态:独立种一个 ended 活动 + 门店卡。
+	cEnded, linksEnded := seedCampaignWithLinks(t, s, ten.ID, "ended", 1)
+	tagsEnded, err := s.CreateTagsBatch(NewTagBatch{TenantID: ten.ID, CampaignID: cEnded,
+		LinkIDs: []string{linksEnded[0].ID}, BindMode: "shared", Count: 1, StoreID: sto.ID, CreatedBy: "u"})
+	mustNoErr(t, err)
+	aEnded, err := s.ProvisionTouchpoint(ten.ID, tagsEnded[0].ID, "结束活动门店卡", "", "u")
+	mustNoErr(t, err)
+	if got := s.ResolveTouchpoint(aEnded.Code, now); got.Outcome != TpRedirect || got.State != OutcomeAvailable {
+		t.Fatalf("campaign ended must not gate store root = %+v", got)
+	}
+	// legacy 对照:同一张卡若指向活动(换绑),paused 五态照旧交 /c 契约。
+	if _, err := s.TransitionCampaign(cID, ten.ID, campaign.StatusActive); err != nil {
+		t.Fatalf("back to active: %v", err)
+	}
+	// 同一活动挂 legacy 行(换绑对照):五态照旧走 /c 契约。
+	if _, err := s.RebindTouchpointTarget(aLegacy.ID, ten.ID,
+		TouchpointTarget{Type: TargetLegacyCampaign, CampaignID: cID},
+		TouchpointRebindExpectation{Revision: 1}, "u"); err != nil {
+		t.Fatalf("rebind legacy: %v", err)
+	}
+	if _, err := s.TransitionCampaign(cID, ten.ID, campaign.StatusPaused); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	if got := s.ResolveTouchpoint(aLegacy.Code, now); got.Outcome != TpRedirect || got.State != OutcomePaused ||
+		got.TargetType != TargetLegacyCampaign || got.Code != links[0].Code || got.BindingRevision != 2 {
+		t.Fatalf("legacy resolve = %+v, want paused code %s rev 2", got, links[0].Code)
+	}
+	// LoadTouchpointRows + DecideTouchpoint 与直解等价(缓存拆分路径,store 行)。
+	direct := s.ResolveTouchpoint(aStore.Code, now)
+	split := DecideTouchpoint(s.LoadTouchpointRows(aStore.Code), now)
+	if direct.Outcome != split.Outcome || direct.StoreCode != split.StoreCode || direct.State != split.State {
+		t.Fatalf("store split mismatch: %+v vs %+v", direct, split)
+	}
+	// 停用单卡只关自己:对照卡不受影响。
+	if _, err := s.SetTouchpointStatus(aStore.ID, ten.ID, TagStatusDisabled, "tester"); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if got := s.ResolveTouchpoint(aStore.Code, now); got.Outcome != TpDisabled {
+		t.Fatalf("disabled store root = %s", got.Outcome)
+	}
+	if got := s.ResolveTouchpoint(aLegacy.Code, now); got.Outcome != TpRedirect {
+		t.Fatalf("sibling card = %s, want redirect", got.Outcome)
+	}
+	// store 根行指向的门店没有门店面行(异常态) → fail-closed not_found,绝不猜目标。
+	if _, err := s.DB.Exec(`DELETE FROM store_storefronts WHERE store_id=?`, sto.ID); err != nil {
+		t.Fatalf("strip storefront: %v", err)
+	}
+	if got := s.ResolveTouchpoint(aStore.Code, now); got.Outcome != TpNotFound {
+		t.Fatalf("storefront-less store root = %s, want not_found", got.Outcome)
+	}
+}
+
+// TestTouchpointRebindTarget:换绑以 target 为单位(store 根/legacy 活动互转),
+// expected_binding_revision 乐观并发(URL 与已有参与快照永不随换绑移动)。
+func TestTouchpointRebindTarget(t *testing.T) {
+	s := tagTestStore(t)
+	ten, err := s.CreateTenant("A")
+	mustNoErr(t, err)
+	stoA, err := s.CreateStore(ten.ID, "甲店", "", "u")
+	mustNoErr(t, err)
+	stoB, err := s.CreateStore(ten.ID, "乙店", "", "u")
+	mustNoErr(t, err)
+	ten2, err := s.CreateTenant("B")
+	mustNoErr(t, err)
+	_, tagID, _ := tpSeedTag(t, s, ten.ID, "active", 1) // 无店标签 → legacy 根
+	a, err := s.ProvisionTouchpoint(ten.ID, tagID, "卡", "", "u")
+	mustNoErr(t, err)
+	if a.TargetType != TargetLegacyCampaign || a.BindingRevision != 1 {
+		t.Fatalf("store-less tag = (%s,%d), want (legacy_campaign,1)", a.TargetType, a.BindingRevision)
+	}
+	c2, _ := seedCampaignWithLinks(t, s, ten.ID, "active", 1)
+
+	// legacy → store:同 URL 升级,campaign 注记清空,revision +1,审计一条。
+	rebound, err := s.RebindTouchpointTarget(a.ID, ten.ID,
+		TouchpointTarget{Type: TargetStore, StoreID: stoA.ID},
+		TouchpointRebindExpectation{Revision: a.BindingRevision}, "u1")
+	mustNoErr(t, err)
+	if rebound.Code != a.Code || rebound.TargetType != TargetStore || rebound.StoreID != stoA.ID ||
+		rebound.CampaignID != "" || rebound.BindingRevision != 2 {
+		t.Fatalf("upgrade = %+v", rebound)
+	}
+	sfA, err := s.StorefrontForStore(ten.ID, stoA.ID)
+	mustNoErr(t, err)
+	if got := s.ResolveTouchpoint(rebound.Code, time.Now()); got.Outcome != TpRedirect || got.StoreCode != sfA.StoreCode {
+		t.Fatalf("upgraded resolve = %+v", got)
+	}
+	events, err := s.ListTouchpointEvents(ten.ID, a.ID)
+	mustNoErr(t, err)
+	if len(events) != 2 || events[1].Kind != "rebind" || events[1].Detail == "" {
+		t.Fatalf("rebind audit = %+v", events)
+	}
+
+	// 陈旧 revision → ErrRebindConflict;同目标同 revision(无操作) → ErrRebindConflict。
+	if _, err := s.RebindTouchpointTarget(a.ID, ten.ID,
+		TouchpointTarget{Type: TargetStore, StoreID: stoB.ID},
+		TouchpointRebindExpectation{Revision: 1}, "u2"); !errors.Is(err, ErrRebindConflict) {
+		t.Fatalf("stale revision = %v, want ErrRebindConflict", err)
+	}
+	if _, err := s.RebindTouchpointTarget(a.ID, ten.ID,
+		TouchpointTarget{Type: TargetStore, StoreID: stoA.ID},
+		TouchpointRebindExpectation{Revision: 2}, "u1"); !errors.Is(err, ErrRebindConflict) {
+		t.Fatalf("no-op rebind = %v, want ErrRebindConflict", err)
+	}
+	// 跨租户门店 → ErrNotFound 掩码。
+	stoB2, err := s.CreateStore(ten2.ID, "别家店", "", "u")
+	mustNoErr(t, err)
+	if _, err := s.RebindTouchpointTarget(a.ID, ten.ID,
+		TouchpointTarget{Type: TargetStore, StoreID: stoB2.ID},
+		TouchpointRebindExpectation{Revision: 2}, "u"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-tenant store = %v, want ErrNotFound", err)
+	}
+	// store 目标缺 store_id → 拒绝。
+	if _, err := s.RebindTouchpointTarget(a.ID, ten.ID,
+		TouchpointTarget{Type: TargetStore},
+		TouchpointRebindExpectation{Revision: 2}, "u"); err == nil || errors.Is(err, ErrNotFound) {
+		t.Fatalf("store target without store_id = %v, want explicit reject", err)
+	}
+	// store → legacy(新 API):revision +1,campaign 需有短码。
+	rebound2, err := s.RebindTouchpointTarget(a.ID, ten.ID,
+		TouchpointTarget{Type: TargetLegacyCampaign, CampaignID: c2},
+		TouchpointRebindExpectation{Revision: 2}, "u1")
+	mustNoErr(t, err)
+	if rebound2.TargetType != TargetLegacyCampaign || rebound2.CampaignID != c2 || rebound2.BindingRevision != 3 || rebound2.Code != a.Code {
+		t.Fatalf("down-rebind = %+v", rebound2)
+	}
+	// 旧签名兼容路径(旧调用方):expected campaign guard,行为与升级前一致。
+	if _, err := s.RebindTouchpoint(a.ID, ten.ID, c2, c2, "u"); !errors.Is(err, ErrRebindConflict) {
+		t.Fatalf("legacy signature no-op = %v, want ErrRebindConflict", err)
+	}
+	c3, _ := seedCampaignWithLinks(t, s, ten.ID, "active", 1)
+	rebound4, err := s.RebindTouchpoint(a.ID, ten.ID, c3, c2, "u1")
+	mustNoErr(t, err)
+	if rebound4.CampaignID != c3 || rebound4.BindingRevision != 4 || rebound4.Code != a.Code {
+		t.Fatalf("legacy signature rebind = %+v", rebound4)
+	}
+	// 换绑不动已有参与:参与恒挂原活动,只读统计不变。
+	nowT := time.Now().UTC()
+	if _, err := s.DB.Exec(`INSERT INTO participations(id,tenant_id,store_id,campaign_id,link_code,touchpoint_source,rule_version,content_pack_version,visitor_id,status,idempotency_key,starts_at,expires_at,created_at,updated_at)
+		VALUES('pt_snap','` + ten.ID + `','` + stoA.ID + `','` + c2 + `','','nfc',1,'','v1','in_progress','idem1','` +
+		nowT.Format(time.RFC3339) + `','` + nowT.Add(72*time.Hour).Format(time.RFC3339) + `','` +
+		nowT.Format(time.RFC3339Nano) + `','` + nowT.Format(time.RFC3339Nano) + `')`); err != nil {
+		t.Fatalf("seed participation: %v", err)
+	}
+	n, err := s.CountStartedParticipations(ten.ID, c2)
+	mustNoErr(t, err)
+	if n != 1 {
+		t.Fatalf("participation count after rebinds = %d, want 1 (快照不挪动)", n)
 	}
 }
