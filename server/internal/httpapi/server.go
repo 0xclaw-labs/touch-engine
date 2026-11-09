@@ -453,6 +453,14 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("GET /api/v1/public/touchpoints/{code}", http.HandlerFunc(s.handlePublicTouchpoint))
 	}
 
+	// HUI-4584 公共门店面(FEATURE_STOREFRONT 默认 off;off = 路由不注册且
+	// handler gate 再答统一 404 —— 双保险同款)。GET-only 数据面:只含已映射+
+	// 启用的动作实例;storefront_revision 本票恒 0(发布版本归 1676);
+	// payload 白名单无 tenant/target_ref/legacy 字段。
+	if s.Cfg.FeatureStorefront {
+		mux.Handle("GET /api/v1/public/storefronts/{storeCode}", http.HandlerFunc(s.handlePublicStorefront))
+	}
+
 	mux.Handle("GET /api/v1/admin/members", s.requireSession(s.handleMemberList))
 	mux.Handle("POST /api/v1/admin/members", s.requireSession(s.handleMemberCreate))
 	mux.Handle("PATCH /api/v1/admin/members/{id}", s.requireSession(s.handleMemberPatch))
