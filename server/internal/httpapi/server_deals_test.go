@@ -333,13 +333,13 @@ func TestDealCouponsHonestNotConnected(t *testing.T) {
 	mustEqual(t, status, http.StatusOK)
 	unauthID, _ := doc["id"].(string)
 
-	status, _, doc = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/deal-coupons/check", af.sessOwner, af.tenA,
+	status, _, doc = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/external-vouchers/inspect", af.sessOwner, af.tenA,
 		`{"offer_id":"`+unauthID+`","code":"MT-1"}`)
 	mustEqual(t, status, http.StatusUnprocessableEntity)
 	if doc["error"] != "authorization_required" {
 		t.Fatalf("check error = %v", doc)
 	}
-	status, _, doc = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/deal-coupons/redeem", af.sessOwner, af.tenA,
+	status, _, doc = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/external-vouchers/redeem", af.sessOwner, af.tenA,
 		`{"offer_id":"`+unauthID+`","code":"MT-1"}`)
 	mustEqual(t, status, http.StatusUnprocessableEntity)
 	if doc["error"] != "authorization_required" {
@@ -350,13 +350,13 @@ func TestDealCouponsHonestNotConnected(t *testing.T) {
 	status, _, _ = af.f.do(t, "PATCH", "/api/v1/stores/"+af.stoA+"/deal-offers/"+unauthID, af.sessOwner, af.tenA,
 		`{"authorization_ref":"auth-mt-1"}`)
 	mustEqual(t, status, http.StatusOK)
-	status, _, doc = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/deal-coupons/check", af.sessOwner, af.tenA,
+	status, _, doc = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/external-vouchers/inspect", af.sessOwner, af.tenA,
 		`{"offer_id":"`+unauthID+`","code":"MT-1"}`)
 	mustEqual(t, status, http.StatusServiceUnavailable)
 	if doc["error"] != "not_connected" {
 		t.Fatalf("check (no adapter) = %v", doc)
 	}
-	status, _, doc = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/deal-coupons/redeem", af.sessOwner, af.tenA,
+	status, _, doc = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/external-vouchers/redeem", af.sessOwner, af.tenA,
 		`{"offer_id":"`+unauthID+`","code":"MT-1"}`)
 	mustEqual(t, status, http.StatusServiceUnavailable)
 	if doc["error"] != "not_connected" {
@@ -364,13 +364,13 @@ func TestDealCouponsHonestNotConnected(t *testing.T) {
 	}
 
 	// 缺 code / 缺 offer_id → 400；未知行 → 404。
-	status, _, _ = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/deal-coupons/redeem", af.sessOwner, af.tenA, `{"offer_id":"`+unauthID+`"}`)
+	status, _, _ = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/external-vouchers/redeem", af.sessOwner, af.tenA, `{"offer_id":"`+unauthID+`"}`)
 	mustEqual(t, status, http.StatusBadRequest)
-	status, _, _ = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/deal-coupons/redeem", af.sessOwner, af.tenA, `{"offer_id":"sdoff_missing","code":"x"}`)
+	status, _, _ = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/external-vouchers/redeem", af.sessOwner, af.tenA, `{"offer_id":"sdoff_missing","code":"x"}`)
 	mustEqual(t, status, http.StatusNotFound)
 
 	var n int
-	if err := af.f.s.St.DB.QueryRow(`SELECT COUNT(*) FROM store_deal_coupon_redemptions`).Scan(&n); err != nil {
+	if err := af.f.s.St.DB.QueryRow(`SELECT COUNT(*) FROM external_voucher_attempts`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 0 {
@@ -380,9 +380,12 @@ func TestDealCouponsHonestNotConnected(t *testing.T) {
 
 // countingAdapter is a test-only adapter double (fixture/mock 只进测试入口).
 type countingAdapter struct {
-	calls  int
-	check  func() (deals.CheckResult, error)
-	redeem func() (deals.RedeemResult, error)
+	calls   int
+	lookups int
+	check   func() (deals.CheckResult, error)
+	redeem  func() (deals.RedeemResult, error)
+	lookup  func() (deals.RedeemResult, error)
+	refresh func() (deals.RefreshResult, error)
 }
 
 func (c *countingAdapter) Check(deals.CheckRequest) (deals.CheckResult, error) { return c.check() }
@@ -390,6 +393,11 @@ func (c *countingAdapter) Redeem(deals.RedeemRequest) (deals.RedeemResult, error
 	c.calls++
 	return c.redeem()
 }
+func (c *countingAdapter) Lookup(deals.RedeemRequest) (deals.RedeemResult, error) {
+	c.lookups++
+	return c.lookup()
+}
+func (c *countingAdapter) RefreshOffer(string) (deals.RefreshResult, error) { return c.refresh() }
 
 func TestDealCouponsWithAdapter(t *testing.T) {
 	af := newActionsHTTPFixture(t, true)
@@ -405,74 +413,125 @@ func TestDealCouponsWithAdapter(t *testing.T) {
 		redeem: func() (deals.RedeemResult, error) {
 			return deals.RedeemResult{State: deals.RedeemRedeemed, Detail: "ok"}, nil
 		},
+		lookup: func() (deals.RedeemResult, error) {
+			return deals.RedeemResult{State: deals.RedeemUnknown}, nil
+		},
+		refresh: func() (deals.RefreshResult, error) {
+			return deals.RefreshResult{PriceMinor: 9900, Available: true, Detail: "可售"}, nil
+		},
 	}
 	af.f.s.DealCoupons = ad
 
 	// check → 平台事实。
-	status, _, doc = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/deal-coupons/check", af.sessOwner, af.tenA,
+	status, _, doc = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/external-vouchers/inspect", af.sessOwner, af.tenA,
 		`{"offer_id":"`+offerID+`","code":"MT-9"}`)
 	mustEqual(t, status, http.StatusOK)
 	if doc["valid"] != true || doc["detail"] != "可用" {
 		t.Fatalf("check = %v", doc)
 	}
 
-	// redeem → redeemed 事实；重放 → already_redeemed，不再调适配器。
+	// redeem → redeemed 事实（attempt 落库）；重放 → already_redeemed，不再调适配器。
 	body := `{"offer_id":"` + offerID + `","code":"MT-9"}`
-	status, _, doc = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/deal-coupons/redeem", af.sessMgrA, af.tenA, body)
+	status, _, doc = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/external-vouchers/redeem", af.sessMgrA, af.tenA, body)
 	mustEqual(t, status, http.StatusOK)
 	if doc["outcome"] != "redeemed" {
 		t.Fatalf("redeem = %v", doc)
 	}
-	if ad.calls != 1 {
-		t.Fatalf("adapter calls = %d", ad.calls)
+	attemptID, _ := doc["attempt_id"].(string)
+	if attemptID == "" || ad.calls != 1 {
+		t.Fatalf("attempt id missing or adapter mis-called: %v calls=%d", doc, ad.calls)
 	}
-	status, _, doc = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/deal-coupons/redeem", af.sessMgrA, af.tenA, body)
+	status, _, doc = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/external-vouchers/redeem", af.sessMgrA, af.tenA, body)
 	mustEqual(t, status, http.StatusOK)
 	if doc["outcome"] != "already_redeemed" || ad.calls != 1 {
 		t.Fatalf("replay = %v calls=%d", doc, ad.calls)
+	}
+
+	// attempt 轮询（GET）：终态只读回；券码永不出现在响应里。
+	status, _, doc = af.f.do(t, "GET", "/api/v1/stores/"+af.stoA+"/external-vouchers/"+attemptID, af.sessMgrA, af.tenA, "")
+	mustEqual(t, status, http.StatusOK)
+	if doc["state"] != "redeemed" {
+		t.Fatalf("attempt get = %v", doc)
+	}
+	if strings.Contains(jsonString(doc), "MT-9") {
+		t.Fatalf("attempt response must never carry the raw coupon code: %v", doc)
 	}
 
 	// 平台 failed → 200 outcome=failed（真实平台答案，非本地伪造）。
 	ad.redeem = func() (deals.RedeemResult, error) {
 		return deals.RedeemResult{State: deals.RedeemFailed, Detail: "券已退款"}, nil
 	}
-	status, _, doc = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/deal-coupons/redeem", af.sessOwner, af.tenA,
+	status, _, doc = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/external-vouchers/redeem", af.sessOwner, af.tenA,
 		`{"offer_id":"`+offerID+`","code":"MT-10"}`)
 	mustEqual(t, status, http.StatusOK)
 	if doc["outcome"] != "failed" || doc["detail"] != "券已退款" {
 		t.Fatalf("failed = %v", doc)
 	}
 
-	// 传输失败 → 503 result_unknown，零行。
+	// 传输失败 → 200 outcome=unknown，attempt 落库（待确认，不是已核销）。
 	ad.redeem = func() (deals.RedeemResult, error) { return deals.RedeemResult{}, errors.New("timeout") }
-	status, _, doc = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/deal-coupons/redeem", af.sessOwner, af.tenA,
+	status, _, doc = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/external-vouchers/redeem", af.sessOwner, af.tenA,
 		`{"offer_id":"`+offerID+`","code":"MT-11"}`)
-	mustEqual(t, status, http.StatusServiceUnavailable)
-	if doc["error"] != "result_unknown" {
+	mustEqual(t, status, http.StatusOK)
+	if doc["outcome"] != "unknown" || doc["attempt_id"] == "" {
 		t.Fatalf("unknown = %v", doc)
 	}
+	unknownID, _ := doc["attempt_id"].(string)
 
-	// 全程本地奖励账零写入；核销事实仅外部券两行（MT-9/MT-10）。
+	// 同券重试：Lookup 同一请求（不重发核销）；lookup 仍未知 → 保持待确认。
+	lookupBaseline := ad.lookups
+	redeemBaseline := ad.calls
+	status, _, doc = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/external-vouchers/redeem", af.sessOwner, af.tenA,
+		`{"offer_id":"`+offerID+`","code":"MT-11"}`)
+	mustEqual(t, status, http.StatusOK)
+	if doc["outcome"] != "unknown" || ad.lookups != lookupBaseline+1 || ad.calls != redeemBaseline {
+		t.Fatalf("retry must lookup without re-redeem: %v lookups=%d/%d calls=%d/%d",
+			doc, ad.lookups, lookupBaseline, ad.calls, redeemBaseline)
+	}
+
+	// 晚到确认：GET 轮询触发 Lookup → 升级 redeemed（同一 attempt，不新增）。
+	ad.lookup = func() (deals.RedeemResult, error) {
+		return deals.RedeemResult{State: deals.RedeemRedeemed, Detail: "晚到确认"}, nil
+	}
+	status, _, doc = af.f.do(t, "GET", "/api/v1/stores/"+af.stoA+"/external-vouchers/"+unknownID, af.sessOwner, af.tenA, "")
+	mustEqual(t, status, http.StatusOK)
+	if doc["state"] != "redeemed" {
+		t.Fatalf("late confirmation via poll = %v", doc)
+	}
+
+	// 官方能力刷新：价格与校验时间更新；未知 offer → 404。
+	status, _, doc = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/deal-offers/"+offerID+"/refresh", af.sessOwner, af.tenA, "")
+	mustEqual(t, status, http.StatusOK)
+	if doc["price_minor"] != float64(9900) || doc["price_source"] != "platform" {
+		t.Fatalf("refresh = %v", doc)
+	}
+	if v, _ := doc["price_state"].(string); v != deals.PriceShow {
+		t.Fatalf("refreshed price must be showable: %v", doc)
+	}
+	status, _, _ = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/deal-offers/sdoff_missing/refresh", af.sessOwner, af.tenA, "")
+	mustEqual(t, status, http.StatusNotFound)
+
+	// 全程本地奖励账零写入；attempt 行只有 MT-9/MT-10/MT-11 三张券。
 	var rb, cr int
 	if err := af.f.s.St.DB.QueryRow(`SELECT COUNT(*) FROM reward_benefits`).Scan(&rb); err != nil {
 		t.Fatal(err)
 	}
-	if err := af.f.s.St.DB.QueryRow(`SELECT COUNT(*) FROM store_deal_coupon_redemptions`).Scan(&cr); err != nil {
+	if err := af.f.s.St.DB.QueryRow(`SELECT COUNT(*) FROM external_voucher_attempts`).Scan(&cr); err != nil {
 		t.Fatal(err)
 	}
-	if rb != 0 || cr != 2 {
-		t.Fatalf("ledger isolation broken: reward_benefits=%d redemptions=%d", rb, cr)
+	if rb != 0 || cr != 3 {
+		t.Fatalf("ledger isolation broken: reward_benefits=%d attempts=%d", rb, cr)
 	}
 
-	// 店员（本店经理）可 check（只读）；他店经理 404 掩码。
-	status, _, _ = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/deal-coupons/check", af.sessMgrA, af.tenA,
+	// 店员（本店经理）可 inspect（只读）；他店经理 redeem 404 掩码。
+	status, _, _ = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/external-vouchers/inspect", af.sessMgrA, af.tenA,
 		`{"offer_id":"`+offerID+`","code":"MT-9"}`)
 	mustEqual(t, status, http.StatusOK)
-	status, _, _ = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/deal-coupons/redeem", af.sessMgrB, af.tenA, body)
+	status, _, _ = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/external-vouchers/redeem", af.sessMgrB, af.tenA, body)
 	mustEqual(t, status, http.StatusNotFound)
 
-	// staff（租户级）可 check；redeem 走 Update 权限（同 T0 语义允许）。
-	status, _, _ = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/deal-coupons/check", af.sessStaff, af.tenA,
+	// staff（租户级）可 inspect；redeem 走 Update 权限（同 T0 语义允许）。
+	status, _, _ = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/external-vouchers/inspect", af.sessStaff, af.tenA,
 		`{"offer_id":"`+offerID+`","code":"MT-9"}`)
 	mustEqual(t, status, http.StatusOK)
 }

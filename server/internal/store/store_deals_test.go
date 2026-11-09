@@ -276,118 +276,6 @@ func TestStoreOfferClickStats(t *testing.T) {
 	}
 }
 
-// fakeCouponAdapter counts calls: replay must NOT re-call the adapter.
-type fakeCouponAdapter struct {
-	calls    int
-	next     deals.RedeemResult
-	nextErr  error
-	checkRes deals.CheckResult
-	checkErr error
-}
-
-func (f *fakeCouponAdapter) Check(deals.CheckRequest) (deals.CheckResult, error) {
-	return f.checkRes, f.checkErr
-}
-
-func (f *fakeCouponAdapter) Redeem(deals.RedeemRequest) (deals.RedeemResult, error) {
-	f.calls++
-	return f.next, f.nextErr
-}
-
-func authorizedOffer(t *testing.T, s *Store, tenA, stoA string) StoreDealOffer {
-	t.Helper()
-	in := dealInput()
-	in.AuthorizationRef = "auth-meituan-2026"
-	in.ProviderOfferID = "mt-auth-1"
-	off, err := s.CreateStoreDealOffer(tenA, stoA, in)
-	must(t, err)
-	return off
-}
-
-func TestRedeemStoreDealCouponDiscipline(t *testing.T) {
-	s, tenA, stoA, _, _, _ := seedDealsWorld(t)
-	off := authorizedOffer(t, s, tenA, stoA)
-
-	// 1) 无授权引用 → 拒，零行落库。
-	unauth := dealInput()
-	unauth.ProviderOfferID = "mt-noauth"
-	unauthOff, err := s.CreateStoreDealOffer(tenA, stoA, unauth)
-	must(t, err)
-	ad := &fakeCouponAdapter{}
-	if _, _, err := s.RedeemStoreDealCoupon(StoreCouponRedeemInput{
-		TenantID: tenA, StoreID: stoA, OfferID: unauthOff.ID, CouponRef: "MT-1", Actor: "staff",
-	}, ad.Redeem, "2026-11-10T09:00:00Z"); !errors.Is(err, ErrDealAuthorizationRequired) {
-		t.Fatalf("unauthorized offer must refuse: %v", err)
-	}
-
-	// 2) 授权在 + 平台确认 → redeemed 事实行。
-	ad.next = deals.RedeemResult{State: deals.RedeemRedeemed, Detail: "ok"}
-	f1, replayed, err := s.RedeemStoreDealCoupon(StoreCouponRedeemInput{
-		TenantID: tenA, StoreID: stoA, OfferID: off.ID, CouponRef: "MT-9", Actor: "staff",
-	}, ad.Redeem, "2026-11-10T09:00:00Z")
-	must(t, err)
-	if replayed || f1.State != deals.RedeemRedeemed || ad.calls != 1 {
-		t.Fatalf("first redeem = %+v replayed=%v calls=%d", f1, replayed, ad.calls)
-	}
-
-	// 3) 同券重放 → 终态回读，不再调适配器。
-	f2, replayed, err := s.RedeemStoreDealCoupon(StoreCouponRedeemInput{
-		TenantID: tenA, StoreID: stoA, OfferID: off.ID, CouponRef: "MT-9", Actor: "staff2",
-	}, ad.Redeem, "2026-11-10T09:01:00Z")
-	must(t, err)
-	if !replayed || f2.ID != f1.ID || ad.calls != 1 {
-		t.Fatalf("replay must read back without adapter call: %+v replayed=%v calls=%d", f2, replayed, ad.calls)
-	}
-
-	// 4) 平台 failed → failed 行留痕，可重试；重试成功出新 redeemed 行。
-	ad.next = deals.RedeemResult{State: deals.RedeemFailed, Detail: "已被核销过"}
-	if _, _, err := s.RedeemStoreDealCoupon(StoreCouponRedeemInput{
-		TenantID: tenA, StoreID: stoA, OfferID: off.ID, CouponRef: "MT-10", Actor: "staff",
-	}, ad.Redeem, "2026-11-10T09:02:00Z"); err != nil {
-		t.Fatalf("failed platform answer must not error: %v", err)
-	}
-	ad.next = deals.RedeemResult{State: deals.RedeemRedeemed}
-	f3, _, err := s.RedeemStoreDealCoupon(StoreCouponRedeemInput{
-		TenantID: tenA, StoreID: stoA, OfferID: off.ID, CouponRef: "MT-10", Actor: "staff",
-	}, ad.Redeem, "2026-11-10T09:03:00Z")
-	must(t, err)
-	if f3.State != deals.RedeemRedeemed {
-		t.Fatalf("retry after failed must redeem: %+v", f3)
-	}
-
-	// 5) 传输失败/unknown → 诚实未知，零行落库（该券）。
-	ad.next, ad.nextErr = deals.RedeemResult{State: deals.RedeemUnknown}, errors.New("timeout")
-	if _, _, err := s.RedeemStoreDealCoupon(StoreCouponRedeemInput{
-		TenantID: tenA, StoreID: stoA, OfferID: off.ID, CouponRef: "MT-11", Actor: "staff",
-	}, ad.Redeem, "2026-11-10T09:04:00Z"); !errors.Is(err, ErrDealResultUnknown) {
-		t.Fatalf("unknown must answer ErrDealResultUnknown: %v", err)
-	}
-	var n int
-	must(t, s.DB.QueryRow(`SELECT COUNT(*) FROM store_deal_coupon_redemptions WHERE coupon_ref='MT-11'`).Scan(&n))
-	if n != 0 {
-		t.Fatalf("unknown must leave zero rows: %d", n)
-	}
-
-	// 6) 本店不适用该套餐的门店：404 掩码。
-	if _, _, err := s.RedeemStoreDealCoupon(StoreCouponRedeemInput{
-		TenantID: tenA, StoreID: "sto_other", OfferID: off.ID, CouponRef: "MT-12", Actor: "staff",
-	}, ad.Redeem, "2026-11-10T09:05:00Z"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("non-applicable store must 404: %v", err)
-	}
-
-	// 7) 本地奖励账零写入（外部券核销不碰 reward_benefits）。
-	var rb int
-	must(t, s.DB.QueryRow(`SELECT COUNT(*) FROM reward_benefits`).Scan(&rb))
-	if rb != 0 {
-		t.Fatalf("external coupon redemption must never touch the local reward ledger: %d", rb)
-	}
-	// redeemed 终态唯一：直接插第二行 redeemed 违反部分唯一索引。
-	if _, err := s.DB.Exec(`INSERT INTO store_deal_coupon_redemptions(id,tenant_id,store_id,offer_id,platform,coupon_ref,state,actor,created_at)
-		VALUES('x2','` + tenA + `','` + stoA + `','` + off.ID + `','meituan','MT-9','redeemed','a','t')`); err == nil {
-		t.Fatal("second redeemed row for the same coupon must violate the unique index")
-	}
-}
-
 func TestCouponTargetAuthorizationHelper(t *testing.T) {
 	s, tenA, stoA, _, _, _ := seedDealsWorld(t)
 	off := authorizedOffer(t, s, tenA, stoA)
@@ -440,4 +328,227 @@ func TestUpdateDealApplicabilityFullReplacement(t *testing.T) {
 	}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown store in replacement must 404: %v", err)
 	}
+}
+
+// fakeCouponAdapter is a test-only adapter double (fixture/mock 只进测试入口).
+// It counts Redeem vs Lookup separately: the timeout discipline must NEVER
+// re-call Redeem for an unresolved coupon.
+type fakeCouponAdapter struct {
+	redeemCalls  int
+	lookupCalls  int
+	refreshCalls int
+	nextRedeem   deals.RedeemResult
+	redeemErr    error
+	nextLookup   deals.RedeemResult
+	lookupErr    error
+	nextRefresh  deals.RefreshResult
+	refreshErr   error
+}
+
+func (f *fakeCouponAdapter) Check(deals.CheckRequest) (deals.CheckResult, error) {
+	return deals.CheckResult{Valid: false, Detail: "noop"}, nil
+}
+
+func (f *fakeCouponAdapter) Redeem(deals.RedeemRequest) (deals.RedeemResult, error) {
+	f.redeemCalls++
+	return f.nextRedeem, f.redeemErr
+}
+
+func (f *fakeCouponAdapter) Lookup(deals.RedeemRequest) (deals.RedeemResult, error) {
+	f.lookupCalls++
+	return f.nextLookup, f.lookupErr
+}
+
+func (f *fakeCouponAdapter) RefreshOffer(string) (deals.RefreshResult, error) {
+	f.refreshCalls++
+	return f.nextRefresh, f.refreshErr
+}
+
+func TestRedeemExternalVoucherDiscipline(t *testing.T) {
+	s, tenA, stoA, _, _, _ := seedDealsWorld(t)
+	off := authorizedOffer(t, s, tenA, stoA)
+	now := func(seq string) string { return "2026-11-10T09:0" + seq + ":00Z" }
+
+	// 0) 无授权引用 → 拒，零行落库。
+	unauth := dealInput()
+	unauth.ProviderOfferID = "mt-noauth"
+	unauthOff, err := s.CreateStoreDealOffer(tenA, stoA, unauth)
+	must(t, err)
+	ad := &fakeCouponAdapter{}
+	if _, _, _, err := s.RedeemExternalVoucher(VoucherAttemptInput{
+		TenantID: tenA, StoreID: stoA, OfferID: unauthOff.ID, CouponRef: "MT-1", Actor: "staff",
+	}, ad, now("0")); !errors.Is(err, ErrDealAuthorizationRequired) {
+		t.Fatalf("unauthorized offer must refuse: %v", err)
+	}
+
+	// 1) 平台确认 → redeemed 事实行。
+	ad.nextRedeem = deals.RedeemResult{State: deals.RedeemRedeemed, Detail: "ok"}
+	a1, replayed, upgraded, err := s.RedeemExternalVoucher(VoucherAttemptInput{
+		TenantID: tenA, StoreID: stoA, OfferID: off.ID, CouponRef: "MT-9", Actor: "staff",
+	}, ad, now("1"))
+	must(t, err)
+	if replayed || upgraded || a1.State != deals.RedeemRedeemed || ad.redeemCalls != 1 {
+		t.Fatalf("first redeem = %+v replayed=%v upgraded=%v redeemCalls=%d", a1, replayed, upgraded, ad.redeemCalls)
+	}
+
+	// 2) 同券重放 → 终态回读，不再调适配器。
+	a2, replayed, _, err := s.RedeemExternalVoucher(VoucherAttemptInput{
+		TenantID: tenA, StoreID: stoA, OfferID: off.ID, CouponRef: "MT-9", Actor: "staff2",
+	}, ad, now("2"))
+	must(t, err)
+	if !replayed || a2.ID != a1.ID || ad.redeemCalls != 1 {
+		t.Fatalf("replay must read back without adapter call: %+v replayed=%v calls=%d", a2, replayed, ad.redeemCalls)
+	}
+
+	// 3) 传输失败 → unknown 行落库（待确认），不是零行也不是伪造成功。
+	ad.redeemErr = errors.New("timeout")
+	a3, _, _, err := s.RedeemExternalVoucher(VoucherAttemptInput{
+		TenantID: tenA, StoreID: stoA, OfferID: off.ID, CouponRef: "MT-10", Actor: "staff",
+	}, ad, now("3"))
+	must(t, err)
+	if a3.State != deals.RedeemUnknown || a3.ID == "" {
+		t.Fatalf("timeout must persist an unknown attempt: %+v", a3)
+	}
+
+	// 4) 重试同券：先 Lookup 同一请求；lookup 仍未知 → 保持待确认且 Redeem 不再调用。
+	ad.redeemErr, ad.nextLookup, ad.lookupErr = nil, deals.RedeemResult{State: deals.RedeemUnknown}, nil
+	redeemBaseline := ad.redeemCalls
+	a4, replayed, upgraded, err := s.RedeemExternalVoucher(VoucherAttemptInput{
+		TenantID: tenA, StoreID: stoA, OfferID: off.ID, CouponRef: "MT-10", Actor: "staff",
+	}, ad, now("4"))
+	must(t, err)
+	if ad.lookupCalls != 1 || ad.redeemCalls != redeemBaseline {
+		t.Fatalf("retry must lookup, never re-redeem: lookup=%d redeem=%d (baseline %d)", ad.lookupCalls, ad.redeemCalls, redeemBaseline)
+	}
+	if upgraded || a4.State != deals.RedeemUnknown || a4.ID != a3.ID {
+		t.Fatalf("unconfirmed lookup must keep the attempt pending: %+v upgraded=%v", a4, upgraded)
+	}
+
+	// 5) 晚到确认：lookup 确认 redeemed → 升级同一行（不新增行）。
+	ad.nextLookup = deals.RedeemResult{State: deals.RedeemRedeemed, Detail: "晚到确认"}
+	a5, _, upgraded, err := s.RedeemExternalVoucher(VoucherAttemptInput{
+		TenantID: tenA, StoreID: stoA, OfferID: off.ID, CouponRef: "MT-10", Actor: "staff",
+	}, ad, now("5"))
+	must(t, err)
+	if !upgraded || a5.ID != a3.ID || a5.State != deals.RedeemRedeemed {
+		t.Fatalf("late confirmation must upgrade the same attempt: %+v upgraded=%v", a5, upgraded)
+	}
+	var rows int
+	must(t, s.DB.QueryRow(`SELECT COUNT(*) FROM external_voucher_attempts WHERE coupon_ref='MT-10'`).Scan(&rows))
+	if rows != 1 {
+		t.Fatalf("upgrade must not add rows: %d", rows)
+	}
+
+	// 6) 平台明确 failed → failed 行留痕；随后重试成功出新 redeemed 行。
+	ad.nextRedeem = deals.RedeemResult{State: deals.RedeemFailed, Detail: "券已退款"}
+	a6, _, _, err := s.RedeemExternalVoucher(VoucherAttemptInput{
+		TenantID: tenA, StoreID: stoA, OfferID: off.ID, CouponRef: "MT-11", Actor: "staff",
+	}, ad, now("6"))
+	must(t, err)
+	if a6.State != deals.RedeemFailed {
+		t.Fatalf("failed platform answer must persist: %+v", a6)
+	}
+	ad.nextRedeem = deals.RedeemResult{State: deals.RedeemRedeemed}
+	a7, _, _, err := s.RedeemExternalVoucher(VoucherAttemptInput{
+		TenantID: tenA, StoreID: stoA, OfferID: off.ID, CouponRef: "MT-11", Actor: "staff",
+	}, ad, now("7"))
+	must(t, err)
+	if a7.State != deals.RedeemRedeemed {
+		t.Fatalf("retry after failed must redeem: %+v", a7)
+	}
+
+	// 7) 他店提交的同券可回查/读回（券是商家级事实）；不适用店开新请求 404。
+	if _, _, _, err := s.RedeemExternalVoucher(VoucherAttemptInput{
+		TenantID: tenA, StoreID: "sto_other", OfferID: off.ID, CouponRef: "MT-12", Actor: "staff",
+	}, ad, now("8")); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("non-applicable store must 404: %v", err)
+	}
+
+	// 8) redeemed 终态唯一：直接插第二行 redeemed 违反部分唯一索引。
+	if _, err := s.DB.Exec(`INSERT INTO external_voucher_attempts(id,tenant_id,store_id,offer_id,platform,coupon_ref,state,actor,created_at,updated_at)
+		VALUES('x2','` + tenA + `','` + stoA + `','` + off.ID + `','meituan','MT-9','redeemed','a','t','t')`); err == nil {
+		t.Fatal("second redeemed row for the same coupon must violate the unique index")
+	}
+
+	// 9) 本地奖励账零写入（外部券核销不碰 reward_benefits）。
+	var rb int
+	must(t, s.DB.QueryRow(`SELECT COUNT(*) FROM reward_benefits`).Scan(&rb))
+	if rb != 0 {
+		t.Fatalf("external coupon redemption must never touch the local reward ledger: %d", rb)
+	}
+}
+
+func TestRequeryVoucherAttempt(t *testing.T) {
+	s, tenA, stoA, _, _, _ := seedDealsWorld(t)
+	off := authorizedOffer(t, s, tenA, stoA)
+	ad := &fakeCouponAdapter{redeemErr: errors.New("timeout")}
+
+	a, _, _, err := s.RedeemExternalVoucher(VoucherAttemptInput{
+		TenantID: tenA, StoreID: stoA, OfferID: off.ID, CouponRef: "MT-20", Actor: "staff",
+	}, ad, "2026-11-10T09:00:00Z")
+	must(t, err)
+	if a.State != deals.RedeemUnknown {
+		t.Fatalf("seed attempt = %+v", a)
+	}
+
+	// 轮询：lookup 未知 → 保持待确认；确认 → 升级。
+	ad.nextLookup = deals.RedeemResult{State: deals.RedeemUnknown}
+	got, err := s.RequeryVoucherAttempt(tenA, stoA, a.ID, ad, "2026-11-10T09:01:00Z")
+	must(t, err)
+	if got.State != deals.RedeemUnknown {
+		t.Fatalf("unconfirmed requery must stay unknown: %+v", got)
+	}
+	ad.nextLookup = deals.RedeemResult{State: deals.RedeemFailed, Detail: "已退款"}
+	got, err = s.RequeryVoucherAttempt(tenA, stoA, a.ID, ad, "2026-11-10T09:02:00Z")
+	must(t, err)
+	if got.State != deals.RedeemFailed {
+		t.Fatalf("confirmed requery must upgrade: %+v", got)
+	}
+	// 终态再轮询 = 只读回，不再调 lookup。
+	calls := ad.lookupCalls
+	if _, err := s.RequeryVoucherAttempt(tenA, stoA, got.ID, ad, "2026-11-10T09:03:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if ad.lookupCalls != calls {
+		t.Fatalf("terminal attempts must not re-query the platform")
+	}
+	// 跨店 attempt ID → 404 掩码。
+	if _, err := s.GetVoucherAttempt(tenA, "sto_other", a.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-store attempt read must 404: %v", err)
+	}
+}
+
+func TestRefreshStoreDealOffer(t *testing.T) {
+	s, tenA, stoA, _, _, _ := seedDealsWorld(t)
+	off := authorizedOffer(t, s, tenA, stoA)
+	ad := &fakeCouponAdapter{}
+
+	// 官方刷新：价格与校验时间更新，来源=platform。
+	ad.nextRefresh = deals.RefreshResult{PriceMinor: 9900, Available: true, Detail: "可售"}
+	got, err := s.RefreshStoreDealOffer(tenA, stoA, off.ID, ad.RefreshOffer, "2026-11-10T09:00:00Z")
+	must(t, err)
+	if got.PriceMinor != 9900 || got.PriceSource != "platform" || got.PriceVerifiedAt == "" {
+		t.Fatalf("refreshed = %+v", got)
+	}
+	// 传输失败 → 诚实未知，零改动。
+	ad.refreshErr = errors.New("timeout")
+	stale := got.PriceMinor
+	if _, err := s.RefreshStoreDealOffer(tenA, stoA, off.ID, ad.RefreshOffer, "2026-11-10T09:01:00Z"); !errors.Is(err, ErrDealResultUnknown) {
+		t.Fatalf("refresh transport failure must answer unknown: %v", err)
+	}
+	again, err := s.GetStoreDealOffer(off.ID, tenA)
+	must(t, err)
+	if again.PriceMinor != stale || again.PriceVerifiedAt != got.PriceVerifiedAt {
+		t.Fatalf("failed refresh must change nothing: %+v", again)
+	}
+}
+
+func authorizedOffer(t *testing.T, s *Store, tenA, stoA string) StoreDealOffer {
+	t.Helper()
+	in := dealInput()
+	in.AuthorizationRef = "auth-meituan-2026"
+	in.ProviderOfferID = "mt-auth-1"
+	off, err := s.CreateStoreDealOffer(tenA, stoA, in)
+	must(t, err)
+	return off
 }

@@ -42,15 +42,18 @@ describe("/work/rewards 外部团购页签(HUI-4590 落地)", () => {
     expect(page).toContain("错挂渠道会被拒绝");
   });
 
-  it("外部券核销工具:走授权适配器,未接通诚实拒绝", () => {
+  it("外部券核销工具:走授权适配器,未接通诚实拒绝;超时回查不重发核销", () => {
     expect(page).toContain('data-action="coupon-check"');
     expect(page).toContain('data-action="coupon-redeem"');
-    expect(page).toContain("deal-coupons/${kind}");
-    expect(page).toContain('run("check")');
+    expect(page).toContain("external-vouchers/${kind}");
+    expect(page).toContain('run("inspect")');
     expect(page).toContain('run("redeem")');
     expect(page).toContain("不本地假核销");
     // 券码不回显进任何日志面文案。
     expect(page).toContain("券码不进日志");
+    // 待确认文案：同一请求回查，不重发核销。
+    expect(lib).toContain("待确认");
+    expect(lib).toContain("不会重复核销");
   });
 
   it("诚实文案:点击不是成交;平台成交本地不可知;1671 占位纪律升级保留", () => {

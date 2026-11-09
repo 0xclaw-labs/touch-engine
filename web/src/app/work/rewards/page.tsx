@@ -1005,7 +1005,7 @@ function CouponTool(props: {
 
   if (offers.length === 0) return null;
 
-  const run = (kind: "check" | "redeem") =>
+  const run = (kind: "inspect" | "redeem") =>
     void (async () => {
       if (!offerId || !code.trim()) {
         onNote("选择套餐并输入券码。没有事实不写成功。");
@@ -1013,7 +1013,7 @@ function CouponTool(props: {
       }
       setBusy(true);
       try {
-        const res = await session.api("POST", `stores/${storeId}/deal-coupons/${kind}`, {
+        const res = await session.api("POST", `stores/${storeId}/external-vouchers/${kind}`, {
           offer_id: offerId,
           code: code.trim(),
         });
@@ -1047,7 +1047,7 @@ function CouponTool(props: {
         券码
         <input className="tk-input" data-field="coupon-code" value={code} onChange={(e) => setCode(e.target.value)} />
       </label>
-      <button className="tk-quiet" type="button" data-action="coupon-check" disabled={busy} onClick={() => run("check")}>查券</button>
+      <button className="tk-quiet" type="button" data-action="coupon-check" disabled={busy} onClick={() => run("inspect")}>查券</button>
       <button className="tk-quiet" type="button" data-action="coupon-redeem" disabled={busy} onClick={() => run("redeem")}>核销</button>
     </div>
   );

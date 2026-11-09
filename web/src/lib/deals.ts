@@ -26,6 +26,7 @@ export interface StoreDealOfferView {
 }
 
 export interface DealCouponResultView {
+  attempt_id?: string;
   outcome?: string;
   state?: string;
   detail?: string;
@@ -68,8 +69,8 @@ export function verifiedAtText(verifiedAt: string | undefined): string {
 }
 
 // 核销结果文案：已核销/已核销过（回读）是两条事实；failed 是平台的真实答案
-// （不是本地伪造）；未知保持未知，不是已核销。check 响应（valid/detail）同样
-// 只复述平台事实。
+// （不是本地伪造）；unknown 是待确认（结果已留痕，稍后对同一券码再核销会先
+// 回查同一请求，绝不重发核销）。inspect 响应（valid/detail）同样只复述平台事实。
 export function couponOutcomeText(res: DealCouponResultView): string {
   if (res.outcome === undefined && typeof res.valid === "boolean") {
     return res.valid
@@ -83,6 +84,8 @@ export function couponOutcomeText(res: DealCouponResultView): string {
       return "该券已核销过，回读已处理结果，没有第二次核销";
     case "failed":
       return `外部平台返回失败${res.detail ? `：${res.detail}` : ""}（已留痕，可重试）`;
+    case "unknown":
+      return `平台没有给出结果（待确认，不是已核销）。结果已留痕${res.attempt_id ? `（${res.attempt_id}）` : ""}；稍后对同一券码再次核销会自动回查同一请求，不会重复核销。`;
     default:
       return res.detail || "结果未知（未知不是已核销）";
   }

@@ -171,6 +171,8 @@ type CheckResult struct {
 }
 
 // RedeemRequest asks the adapter to redeem one external coupon on the platform.
+// It is also the lookup key: a timed-out redeem MUST be requeried with the
+// SAME request (同一请求先查，不重发核销).
 type RedeemRequest struct {
 	Platform  string
 	OfferRef  string
@@ -178,17 +180,34 @@ type RedeemRequest struct {
 }
 
 // RedeemResult carries the platform's answer. State is one of the Redeem*
-// constants; unknown stays unknown forever (永不升级为已核销).
+// constants; unknown stays unknown until a confirming lookup (永不升级为已核销).
 type RedeemResult struct {
 	State  string
 	Detail string
 }
 
+// RefreshResult is one official refresh of an offer's platform facts
+// (价格/可售性来自官方 API 时才可信；普通购买链接给不了这些事实).
+type RefreshResult struct {
+	PriceMinor int64
+	Available  bool
+	Detail     string
+}
+
 // Adapter is the authorization-backed boundary toward the external platform.
 // Production wiring stays nil until an official authorization exists; a nil
 // adapter means honestly not connected (不假核销). Implementations must be
-// safe for sequential use; they own all network concerns.
+// safe for sequential use; they own all network concerns. An error return is
+// a transport-level failure: the caller answers unknown and never invents a
+// platform fact from it.
 type Adapter interface {
 	Check(CheckRequest) (CheckResult, error)
 	Redeem(RedeemRequest) (RedeemResult, error)
+	// Lookup re-queries a previously submitted redeem with the SAME request
+	// (超时/未知后的回查路径，绝不重发核销).
+	Lookup(RedeemRequest) (RedeemResult, error)
+	// RefreshOffer re-pulls an offer's official price/availability when the
+	// deployment holds that official capability. Without it the refresh
+	// surface answers an explicit capability status, never a fabricated fact.
+	RefreshOffer(offerRef string) (RefreshResult, error)
 }

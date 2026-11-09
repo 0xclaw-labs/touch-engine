@@ -558,8 +558,10 @@ func (s *Store) StoreOfferClickTotals(tenantID, storeID string) (map[string]int6
 	return perOffer, byPlatform, rs.Err()
 }
 
-// StoreCouponRedeemInput is one staff redemption attempt toward the platform.
-type StoreCouponRedeemInput struct {
+// VoucherAttemptInput is one staff redemption attempt toward the platform.
+// The natural idempotency key is (tenant, offer, coupon_ref): the same coupon
+// re-submitted is the same platform request, never a second one.
+type VoucherAttemptInput struct {
 	TenantID  string
 	StoreID   string
 	OfferID   string
@@ -567,18 +569,21 @@ type StoreCouponRedeemInput struct {
 	Actor     string
 }
 
-// StoreCouponRedemption is one persisted redemption fact (redeemed|failed).
-type StoreCouponRedemption struct {
+// ExternalVoucherAttempt is one persisted redemption attempt
+// (external_voucher_attempt). coupon_ref is sensitive: it never serializes
+// into any JSON response, log, or analytics event.
+type ExternalVoucherAttempt struct {
 	ID        string `json:"id"`
 	TenantID  string `json:"-"`
 	StoreID   string `json:"-"`
 	OfferID   string `json:"offer_id"`
 	Platform  string `json:"platform"`
-	CouponRef string `json:"coupon_ref"`
+	AssetRef  string `json:"-"`
 	State     string `json:"state"`
 	Detail    string `json:"detail,omitempty"`
 	Actor     string `json:"-"`
 	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 // AuthorizeStoreCouponTarget resolves the redemption target: the offer must
@@ -603,51 +608,38 @@ func (s *Store) AuthorizeStoreCouponTarget(tenantID, storeID, offerID string) (S
 	return off, nil
 }
 
-// RedeemStoreDealCoupon runs the honest external redemption discipline
-// (mirrors HUI-1671 GrantExternalCoupon):
-//   - offer missing / not applicable → ErrNotFound (404 mask);
-//   - no authorization ref → ErrDealAuthorizationRequired, zero rows;
-//   - an existing redeemed row is terminal: read back, adapter NOT called;
-//   - adapter redeemed → one redeemed fact row (unique per coupon);
-//   - adapter failed → one failed fact row (audit trail, retry allowed);
-//   - adapter unknown/transport error → ErrDealResultUnknown, ZERO rows
-//     (诚实未知，永不冒充核销);
-//   - the local reward ledger is never touched (本地券不能核销外部券，反之亦然).
-func (s *Store) RedeemStoreDealCoupon(in StoreCouponRedeemInput, redeem func(deals.RedeemRequest) (deals.RedeemResult, error), nowTS string) (StoreCouponRedemption, bool, error) {
-	fact := StoreCouponRedemption{}
-	if strings.TrimSpace(in.TenantID) == "" || strings.TrimSpace(in.StoreID) == "" ||
-		strings.TrimSpace(in.OfferID) == "" || strings.TrimSpace(in.CouponRef) == "" ||
-		strings.TrimSpace(in.Actor) == "" {
-		return fact, false, fmt.Errorf("%w: missing fields", ErrDealInvalid)
-	}
-	off, err := s.AuthorizeStoreCouponTarget(in.TenantID, in.StoreID, in.OfferID)
-	if err != nil {
-		return fact, false, err
-	}
-	// Terminal read-back: the platform already confirmed this coupon once.
-	var prevID, prevState, prevDetail, prevActor, prevCreatedAt string
-	err = s.DB.QueryRow(
-		`SELECT id, state, detail, actor, created_at FROM store_deal_coupon_redemptions
-		 WHERE tenant_id=? AND offer_id=? AND coupon_ref=? AND state='redeemed'`,
-		in.TenantID, in.OfferID, in.CouponRef).
-		Scan(&prevID, &prevState, &prevDetail, &prevActor, &prevCreatedAt)
-	if err == nil {
-		return StoreCouponRedemption{
-			ID: prevID, TenantID: in.TenantID, StoreID: in.StoreID, OfferID: in.OfferID,
-			Platform: off.Platform, CouponRef: in.CouponRef, State: prevState,
-			Detail: prevDetail, Actor: prevActor, CreatedAt: prevCreatedAt,
-		}, true, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return fact, false, err
-	}
+const voucherAttemptCols = `id,tenant_id,store_id,offer_id,platform,coupon_ref,state,detail,actor,created_at,updated_at`
 
-	res, rerr := redeem(deals.RedeemRequest{
-		Platform: off.Platform, OfferRef: off.ProviderOfferID, CouponRef: in.CouponRef,
-	})
-	if rerr != nil {
-		return fact, false, ErrDealResultUnknown
+func scanVoucherAttempt(sc interface{ Scan(...any) error }) (ExternalVoucherAttempt, error) {
+	var a ExternalVoucherAttempt
+	var couponRef, detail, actor sql.NullString
+	err := sc.Scan(&a.ID, &a.TenantID, &a.StoreID, &a.OfferID, &a.Platform, &couponRef, &a.State,
+		&detail, &actor, &a.CreatedAt, &a.UpdatedAt)
+	if err != nil {
+		return ExternalVoucherAttempt{}, err
 	}
+	a.AssetRef, a.Detail, a.Actor = couponRef.String, detail.String, actor.String
+	return a, nil
+}
+
+// insertVoucherAttempt persists one attempt row (redeemed|failed|unknown).
+func (s *Store) insertVoucherAttempt(off StoreDealOffer, in VoucherAttemptInput, state, detail, nowTS string) (ExternalVoucherAttempt, error) {
+	a := ExternalVoucherAttempt{
+		ID: newID("evat_"), TenantID: in.TenantID, StoreID: in.StoreID, OfferID: in.OfferID,
+		Platform: off.Platform, AssetRef: strings.TrimSpace(in.CouponRef), State: state,
+		Detail: strings.TrimSpace(detail), Actor: in.Actor, CreatedAt: nowTS, UpdatedAt: nowTS,
+	}
+	if _, err := s.DB.Exec(
+		`INSERT INTO external_voucher_attempts(`+voucherAttemptCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		a.ID, a.TenantID, a.StoreID, a.OfferID, a.Platform, a.AssetRef, a.State, a.Detail, a.Actor, a.CreatedAt, a.UpdatedAt); err != nil {
+		return ExternalVoucherAttempt{}, err
+	}
+	return a, nil
+}
+
+// upgradeVoucherAttempt upgrades an unknown row to its confirmed terminal
+// state (Lookup 已确认才升级；仍未知保持待确认原样).
+func (s *Store) upgradeVoucherAttempt(prev ExternalVoucherAttempt, res deals.RedeemResult, nowTS string) (ExternalVoucherAttempt, error) {
 	state := deals.RedeemUnknown
 	switch res.State {
 	case deals.RedeemRedeemed:
@@ -656,19 +648,178 @@ func (s *Store) RedeemStoreDealCoupon(in StoreCouponRedeemInput, redeem func(dea
 		state = deals.RedeemFailed
 	}
 	if state == deals.RedeemUnknown {
-		return fact, false, ErrDealResultUnknown
-	}
-	fact = StoreCouponRedemption{
-		ID: newID("sdcr_"), TenantID: in.TenantID, StoreID: in.StoreID, OfferID: in.OfferID,
-		Platform: off.Platform, CouponRef: in.CouponRef, State: state,
-		Detail: strings.TrimSpace(res.Detail), Actor: in.Actor, CreatedAt: nowTS,
+		return prev, nil
 	}
 	if _, err := s.DB.Exec(
-		`INSERT INTO store_deal_coupon_redemptions(id,tenant_id,store_id,offer_id,platform,coupon_ref,state,detail,actor,created_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		fact.ID, fact.TenantID, fact.StoreID, fact.OfferID, fact.Platform, fact.CouponRef,
-		fact.State, fact.Detail, fact.Actor, fact.CreatedAt); err != nil {
-		return StoreCouponRedemption{}, false, err
+		`UPDATE external_voucher_attempts SET state=?, detail=?, updated_at=? WHERE id=? AND tenant_id=?`,
+		state, strings.TrimSpace(res.Detail), nowTS, prev.ID, prev.TenantID); err != nil {
+		return ExternalVoucherAttempt{}, err
 	}
-	return fact, false, nil
+	return s.getVoucherAttemptTenant(prev.TenantID, prev.ID)
 }
+
+// GetVoucherAttempt loads one attempt strictly within its tenant+store
+// (跨租户/跨店 attempt ID 读写拒绝，404 同形掩码).
+func (s *Store) GetVoucherAttempt(tenantID, storeID, attemptID string) (ExternalVoucherAttempt, error) {
+	row := s.DB.QueryRow(
+		`SELECT `+voucherAttemptCols+` FROM external_voucher_attempts WHERE id=? AND tenant_id=? AND store_id=?`,
+		attemptID, tenantID, storeID)
+	a, err := scanVoucherAttempt(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ExternalVoucherAttempt{}, ErrNotFound
+	}
+	return a, err
+}
+
+// getVoucherAttemptTenant loads one attempt within the tenant regardless of
+// the submitting store: the same platform coupon may be re-checked by staff at
+// another applicable branch (券是商家级事实，不是提交门店私产).
+func (s *Store) getVoucherAttemptTenant(tenantID, attemptID string) (ExternalVoucherAttempt, error) {
+	row := s.DB.QueryRow(
+		`SELECT `+voucherAttemptCols+` FROM external_voucher_attempts WHERE id=? AND tenant_id=?`,
+		attemptID, tenantID)
+	a, err := scanVoucherAttempt(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ExternalVoucherAttempt{}, ErrNotFound
+	}
+	return a, err
+}
+
+// RedeemExternalVoucher runs the honest external redemption discipline
+// (mirrors HUI-1671 GrantExternalCoupon; 票面硬约束：核销超时先查同一请求，
+// 不重发核销):
+//   - offer missing / not applicable → ErrNotFound (404 mask);
+//   - no authorization ref → ErrDealAuthorizationRequired, zero rows;
+//   - an existing redeemed row is terminal: read back, adapter NOT called;
+//   - an existing unknown row → Lookup with the SAME request first; only a
+//     confirming answer upgrades it, and the redeem closure is NOT re-run;
+//   - fresh request: redeem exactly once;
+//     redeemed → one redeemed row (unique per coupon);
+//     failed → one failed row (audit trail, retry allowed);
+//     unknown/transport error → one unknown row persisted (待确认);
+//   - the local reward ledger is never touched (本地券不能核销外部券，反之亦然).
+//
+// replayed=true reports a terminal read-back (already redeemed); upgraded=true
+// reports that a previously unknown attempt was just confirmed by Lookup.
+func (s *Store) RedeemExternalVoucher(in VoucherAttemptInput, adapter deals.Adapter, nowTS string) (ExternalVoucherAttempt, bool, bool, error) {
+	if strings.TrimSpace(in.TenantID) == "" || strings.TrimSpace(in.StoreID) == "" ||
+		strings.TrimSpace(in.OfferID) == "" || strings.TrimSpace(in.CouponRef) == "" ||
+		strings.TrimSpace(in.Actor) == "" {
+		return ExternalVoucherAttempt{}, false, false, fmt.Errorf("%w: missing fields", ErrDealInvalid)
+	}
+	off, err := s.AuthorizeStoreCouponTarget(in.TenantID, in.StoreID, in.OfferID)
+	if err != nil {
+		return ExternalVoucherAttempt{}, false, false, err
+	}
+	req := deals.RedeemRequest{Platform: off.Platform, OfferRef: off.ProviderOfferID, CouponRef: strings.TrimSpace(in.CouponRef)}
+
+	// Terminal read-back: the platform already confirmed this coupon once.
+	var prevID string
+	err = s.DB.QueryRow(
+		`SELECT id FROM external_voucher_attempts
+		 WHERE tenant_id=? AND offer_id=? AND coupon_ref=? AND state='redeemed'`,
+		in.TenantID, in.OfferID, req.CouponRef).Scan(&prevID)
+	if err == nil {
+		a, gerr := s.getVoucherAttemptTenant(in.TenantID, prevID)
+		return a, true, false, gerr
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return ExternalVoucherAttempt{}, false, false, err
+	}
+
+	// Unresolved attempt for the same coupon: Lookup ONLY (不重发核销).
+	var unknownID string
+	err = s.DB.QueryRow(
+		`SELECT id FROM external_voucher_attempts
+		 WHERE tenant_id=? AND offer_id=? AND coupon_ref=? AND state='unknown'`,
+		in.TenantID, in.OfferID, req.CouponRef).Scan(&unknownID)
+	if err == nil {
+		prev, gerr := s.getVoucherAttemptTenant(in.TenantID, unknownID)
+		if gerr != nil {
+			return ExternalVoucherAttempt{}, false, false, gerr
+		}
+		res, lerr := adapter.Lookup(req)
+		if lerr != nil {
+			// 回查本身失败仍是未知：保持待确认，不升级也不重发。
+			return prev, false, false, nil
+		}
+		updated, uerr := s.upgradeVoucherAttempt(prev, res, nowTS)
+		return updated, false, updated.State != deals.RedeemUnknown, uerr
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return ExternalVoucherAttempt{}, false, false, err
+	}
+
+	// Fresh request: redeem exactly once, persist the honest outcome.
+	res, rerr := adapter.Redeem(req)
+	if rerr != nil {
+		// 传输失败=结果未知：落 unknown 行（待确认），绝不冒充核销。
+		a, ierr := s.insertVoucherAttempt(off, in, deals.RedeemUnknown, "platform_result_unknown", nowTS)
+		return a, false, false, ierr
+	}
+	switch res.State {
+	case deals.RedeemRedeemed:
+		a, ierr := s.insertVoucherAttempt(off, in, deals.RedeemRedeemed, res.Detail, nowTS)
+		return a, false, false, ierr
+	case deals.RedeemFailed:
+		a, ierr := s.insertVoucherAttempt(off, in, deals.RedeemFailed, res.Detail, nowTS)
+		return a, false, false, ierr
+	default:
+		a, ierr := s.insertVoucherAttempt(off, in, deals.RedeemUnknown, res.Detail, nowTS)
+		return a, false, false, ierr
+	}
+}
+
+// RequeryVoucherAttempt re-queries one unknown attempt once via Lookup
+// (轮询回查；晚到的平台答案确认后升级，仍未知保持待确认).
+func (s *Store) RequeryVoucherAttempt(tenantID, storeID, attemptID string, adapter deals.Adapter, nowTS string) (ExternalVoucherAttempt, error) {
+	a, err := s.GetVoucherAttempt(tenantID, storeID, attemptID)
+	if err != nil {
+		return ExternalVoucherAttempt{}, err
+	}
+	if a.State != deals.RedeemUnknown {
+		return a, nil
+	}
+	off, err := s.AuthorizeStoreCouponTarget(tenantID, storeID, a.OfferID)
+	if err != nil {
+		return ExternalVoucherAttempt{}, err
+	}
+	res, lerr := adapter.Lookup(deals.RedeemRequest{
+		Platform: off.Platform, OfferRef: off.ProviderOfferID, CouponRef: a.AssetRef,
+	})
+	if lerr != nil {
+		return a, nil
+	}
+	return s.upgradeVoucherAttempt(a, res, nowTS)
+}
+
+// RefreshStoreDealOffer re-pulls an offer's official price via the adapter's
+// official capability and stamps the verification time. Without an adapter or
+// authorization the caller answers an explicit capability status
+// (ErrDealNotConnected / ErrDealAuthorizationRequired); a transport failure
+// answers ErrDealResultUnknown with nothing changed — a fabricated platform
+// price is never written. Availability stays advisory (detail only): the
+// merchant decides about pausing, the system does not auto-unlist.
+func (s *Store) RefreshStoreDealOffer(tenantID, storeID, offerID string, refresh func(offerRef string) (deals.RefreshResult, error), nowTS string) (StoreDealOffer, error) {
+	off, err := s.AuthorizeStoreCouponTarget(tenantID, storeID, offerID)
+	if err != nil {
+		return StoreDealOffer{}, err
+	}
+	res, err := refresh(off.ProviderOfferID)
+	if err != nil {
+		return StoreDealOffer{}, ErrDealResultUnknown
+	}
+	if res.PriceMinor < 0 {
+		return StoreDealOffer{}, fmt.Errorf("%w: platform returned a negative price", ErrDealInvalid)
+	}
+	if _, err := s.UpdateStoreDealOffer(offerID, tenantID, UpdateStoreDealOffer{
+		PriceMinor:          &res.PriceMinor,
+		PriceSource:         ptrToStr("platform"),
+		MarkPriceVerifiedAt: nowTS,
+	}); err != nil {
+		return StoreDealOffer{}, err
+	}
+	return s.GetStoreDealOffer(offerID, tenantID)
+}
+
+func ptrToStr(v string) *string { return &v }

@@ -109,6 +109,14 @@ func (noopAdapter) Redeem(RedeemRequest) (RedeemResult, error) {
 	return RedeemResult{State: RedeemUnknown, Detail: "noop"}, nil
 }
 
+func (noopAdapter) Lookup(RedeemRequest) (RedeemResult, error) {
+	return RedeemResult{State: RedeemUnknown, Detail: "noop"}, nil
+}
+
+func (noopAdapter) RefreshOffer(string) (RefreshResult, error) {
+	return RefreshResult{}, nil
+}
+
 func TestPlatformOfURLHostReportsOwnPlatformOnly(t *testing.T) {
 	// 平台域名归属辅助：URL 归属的平台必须等于套餐渠道（正确商品跳转）。
 	if got := PlatformOfURL("https://www.dianping.com/x"); got != PlatformDianping {

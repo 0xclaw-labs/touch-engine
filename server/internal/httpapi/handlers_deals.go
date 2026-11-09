@@ -36,8 +36,13 @@ func (s *Server) registerDealRoutes(mux *http.ServeMux) {
 	mux.Handle("PATCH /api/v1/stores/{id}/deal-offers/{offerId}", s.requireSession(s.handleStoreDealOfferUpdate))
 	mux.Handle("POST /api/v1/stores/{id}/deal-offers/{offerId}/status", s.requireSession(s.handleStoreDealOfferStatus))
 	// 店员外部券检查/核销（授权适配器边界；未接通=诚实，不假核销）。
-	mux.Handle("POST /api/v1/stores/{id}/deal-coupons/check", s.requireSession(s.handleDealCouponCheck))
-	mux.Handle("POST /api/v1/stores/{id}/deal-coupons/redeem", s.requireSession(s.handleDealCouponRedeem))
+	// 路由名对齐票面 external_vouchers（保留店级前缀=受信作用域解析）；
+	// attempt 由核销请求创建，GET 按 attemptId 轮询（unknown 行自动 Lookup 回查）。
+	mux.Handle("POST /api/v1/stores/{id}/external-vouchers/inspect", s.requireSession(s.handleExternalVoucherInspect))
+	mux.Handle("POST /api/v1/stores/{id}/external-vouchers/redeem", s.requireSession(s.handleExternalVoucherRedeem))
+	mux.Handle("GET /api/v1/stores/{id}/external-vouchers/{attemptId}", s.requireSession(s.handleExternalVoucherGet))
+	// 官方能力刷新（只用已开通官方能力；无授权返回明确能力状态，不编造平台响应）。
+	mux.Handle("POST /api/v1/stores/{id}/deal-offers/{offerId}/refresh", s.requireSession(s.handleStoreDealOfferRefresh))
 	// 顾客面（登记制开关 FEATURE_STOREFRONT 双保险，同公共门店面）。
 	if s.Cfg.FeatureStorefront {
 		mux.Handle("GET /api/v1/public/storefronts/{storeCode}/offers", http.HandlerFunc(s.handlePublicStoreOffers))
@@ -343,7 +348,7 @@ func decodeDealCouponBody(w http.ResponseWriter, r *http.Request) (dealCouponBod
 	return body, true
 }
 
-func (s *Server) handleDealCouponCheck(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleExternalVoucherInspect(w http.ResponseWriter, r *http.Request) {
 	c, _, ok := s.storeDealScope(w, r, authz.ActionReadRecord, true)
 	if !ok {
 		return
@@ -372,7 +377,7 @@ func (s *Server) handleDealCouponCheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"valid": res.Valid, "detail": res.Detail})
 }
 
-func (s *Server) handleDealCouponRedeem(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleExternalVoucherRedeem(w http.ResponseWriter, r *http.Request) {
 	c, _, ok := s.storeDealScope(w, r, authz.ActionUpdate, true)
 	if !ok {
 		return
@@ -390,22 +395,81 @@ func (s *Server) handleDealCouponRedeem(w http.ResponseWriter, r *http.Request) 
 		dealsError(w, store.ErrDealNotConnected)
 		return
 	}
-	fact, replayed, err := s.St.RedeemStoreDealCoupon(store.StoreCouponRedeemInput{
+	attempt, replayed, upgraded, err := s.St.RedeemExternalVoucher(store.VoucherAttemptInput{
 		TenantID: c.Member.TenantID, StoreID: r.PathValue("id"),
 		OfferID: body.OfferID, CouponRef: strings.TrimSpace(body.Code),
 		Actor: c.Member.PrincipalRef,
-	}, s.DealCoupons.Redeem, time.Now().UTC().Format(time.RFC3339Nano))
+	}, s.DealCoupons, time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		dealsError(w, err)
 		return
 	}
-	outcome := fact.State
+	outcome := attempt.State
 	if replayed {
 		outcome = "already_redeemed"
+	} else if upgraded {
+		outcome = "redeemed" // 晚到确认升级（同一请求回查所得，不是第二次核销）
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"outcome": outcome, "state": fact.State, "detail": fact.Detail,
+		"attempt_id": attempt.ID, "outcome": outcome, "state": attempt.State, "detail": attempt.Detail,
 	})
+}
+
+// handleExternalVoucherGet polls one attempt (跨店/跨租户 ID 404 掩码)；
+// unknown 行在适配器在位时自动 Lookup 回查一次——晚到的平台答案确认后升级，
+// 仍未知保持待确认（不是已核销）。
+func (s *Server) handleExternalVoucherGet(w http.ResponseWriter, r *http.Request) {
+	c, _, ok := s.storeDealScope(w, r, authz.ActionReadRecord, true)
+	if !ok {
+		return
+	}
+	attempt, err := s.St.GetVoucherAttempt(c.Member.TenantID, r.PathValue("id"), r.PathValue("attemptId"))
+	if err != nil {
+		dealsError(w, err)
+		return
+	}
+	if attempt.State == deals.RedeemUnknown && s.DealCoupons != nil {
+		if attempt, err = s.St.RequeryVoucherAttempt(c.Member.TenantID, r.PathValue("id"), attempt.ID, s.DealCoupons, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			dealsError(w, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"attempt_id": attempt.ID, "offer_id": attempt.OfferID, "platform": attempt.Platform,
+		"state": attempt.State, "detail": attempt.Detail, "created_at": attempt.CreatedAt,
+	})
+}
+
+// handleStoreDealOfferRefresh re-pulls official price facts for one offer.
+// 未接适配器=503 not_connected、缺授权=422 authorization_required（明确能力
+// 状态）；适配器故障=503 result_unknown 且零改动；成功=官方价+校验时间落库。
+func (s *Server) handleStoreDealOfferRefresh(w http.ResponseWriter, r *http.Request) {
+	c, _, ok := s.storeDealScope(w, r, authz.ActionUpdate, true)
+	if !ok {
+		return
+	}
+	if s.DealCoupons == nil {
+		dealsError(w, store.ErrDealNotConnected)
+		return
+	}
+	var platformDetail string
+	refresh := func(offerRef string) (deals.RefreshResult, error) {
+		res, err := s.DealCoupons.RefreshOffer(offerRef)
+		if err == nil {
+			platformDetail = res.Detail
+		}
+		return res, err
+	}
+	off, err := s.St.RefreshStoreDealOffer(c.Member.TenantID, r.PathValue("id"), r.PathValue("offerId"), refresh, time.Now().UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		dealsError(w, err)
+		return
+	}
+	doc := dealItemDocument(off, time.Now().UTC())
+	if platformDetail != "" {
+		doc["platform_detail"] = platformDetail
+	}
+	writeJSON(w, http.StatusOK, doc)
 }
 
 // ---- 顾客公共面 ---------------------------------------------------------------

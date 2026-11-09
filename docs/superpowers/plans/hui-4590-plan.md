@@ -84,3 +84,12 @@
 ## 正反验收对照（T14 核心）
 - 正：三平台各建 offer→顾客公共端点读到正确商品跳转（域名匹配）→点击计数入分渠道统计→授权适配器在时核销外部券出事实。
 - 反：价格超 72h/未核实→payload 无价格（渲染「到平台查看」）；无适配器/无授权→核销 503/422 且零事实；停用店/悬置租户→404/空；点击只计点击（stats 里无成交字段，payload 无成交声明）。
+
+## 追加轮（票面取回后的对齐增量，Linear 恢复后读到票面原文）
+
+票面（权威 ①）取回后与裁定书基线的差异核对，落地两个实质对齐 + 记录两处裁量：
+
+1. **核销超时必须先查同一请求，不重发核销（票面硬约束）**：原设计"unknown 零行落库"会让重试变成第二次核销调用——已重做为 `external_voucher_attempts`（0087 更名+state 增 unknown）：fresh redeem 恰一次；传输失败落 unknown 行；重试/轮询对 unknown 行只 Lookup（adapter 接口增 `Lookup`），确认才升级 redeemed/failed；redeemed 终态部分唯一不变。HTTP 语义：超时→200 outcome=unknown+attempt_id（可轮询），不再是 503-零行。
+2. **路由对齐票面命名**：deal-coupons/check|redeem → `POST /api/v1/stores/{id}/external-vouchers/inspect|redeem` + `GET /api/v1/stores/{id}/external-vouchers/{attemptId}`（轮询对 unknown 自动回查一次）。保留店级前缀=受信作用域解析（票面草案为租户级路径；店级更符合"作用域事实在服务端"约束 8，偏差记录）。
+3. **新增 `POST /api/v1/stores/{id}/deal-offers/{offerId}/refresh`**（票面"刷新只用已开通官方能力；无授权返回明确能力状态"）：adapter nil→503 not_connected、缺授权→422 authorization_required、适配器故障→503 result_unknown 零改动；成功=官方价+price_source=platform+校验时间落库（adapter 接口增 `RefreshOffer`）。
+4. 裁量偏差（记录，待指挥复核）：inspect（查券）不落库（只读事实复述）；`GET attempt` 响应不携带券码（json:"-"）；attempt 跨店可回查（券是商家级事实，GET/轮询仍限 tenant+提交店 404 掩码，redeem 回查按 tenant+offer+coupon 自然键）；表名 external_voucher_attempts（票面草案 external_voucher_attempt，复数对齐仓内惯例）；商品表字段名 provider_offer_id/product_url 对应票面草案 product_id/official_url；排序字段/详情端点未做（票面草案项，裁定书未列，渲染方可按 payload 排序——如需补 sort_order 一列+PATCH 字段即可）。
