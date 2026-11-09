@@ -61,6 +61,11 @@ func TestAdjudicateExpiryPromiseBlockedPerCause(t *testing.T) {
 			wantAny: nil,
 		},
 		{
+			name:    "reservation TTL elapsed alone does not block promise",
+			in:      d("", "", "", "2026-11-01T00:00:00Z", "", false, false),
+			wantAny: nil,
+		},
+		{
 			name:    "all open allows promise",
 			in:      d("2026-12-31T00:00:00Z", "2026-12-31T00:00:00Z", "2026-12-31T00:00:00Z", "", "2026-12-31T00:00:00Z", true, true),
 			wantAny: nil,
