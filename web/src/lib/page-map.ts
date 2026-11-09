@@ -79,6 +79,8 @@ const recorded: readonly { route: string; id: PatternId; regions: readonly strin
   { route: "/work/touchpoints", id: "list", regions: ["primary_action", "status", "empty"] },
   // HUI-4593 M13 成员与权限页(授权/撤回/代理协作/模板下发/白标授权)。
   { route: "/work/settings", id: "settings", regions: ["primary_action", "status", "empty"] },
+  // HUI-4593 A1 代理工作台(授权商户/受控进入/配置入口/续费协助;硬件与结算诚实空态)。
+  { route: "/agency", id: "list", regions: ["primary_action", "status", "empty"] },
 ];
 
 export function patternIds(): string[] {

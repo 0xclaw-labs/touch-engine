@@ -110,6 +110,8 @@ const markerBook: readonly { route: string; markers: readonly Marker[] }[] = [
   { route: "/work/touchpoints", markers: [] },
   // HUI-4593:成员与权限页面是薄壳,交互全部在组件里,页面源零标记。
   { route: "/work/settings", markers: [] },
+  // HUI-4593:A1 代理工作台页面是薄壳,交互全部在组件里,页面源零标记。
+  { route: "/agency", markers: [] },
 ];
 
 function sameMarkers(recorded: readonly Marker[], scanned: readonly Marker[]): boolean {

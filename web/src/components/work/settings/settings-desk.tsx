@@ -14,7 +14,8 @@ import { useCallback, useEffect, useState } from "react";
 import { failureText, useSession } from "@/components/work/merchant-session";
 import { surfaceLabel } from "@/lib/product-finish";
 
-interface AccessEffective {
+// export:A1 /agency 控制台复用同一裁决读面形状,不另造权限类型。
+export interface AccessEffective {
   role: string;
   permissions: string[];
   allowed_store_ids: string[];
@@ -37,8 +38,10 @@ interface MemberRec {
   display_name: string;
 }
 
-interface AgencyRel {
+// export:A1 /agency 控制台复用同一代管关系行形状(0064 scope 列)。
+export interface AgencyRel {
   id: string;
+  tenant_id: string;
   agent_principal: string;
   note: string;
   revoked_at: string;
@@ -63,7 +66,8 @@ interface TemplateRec {
   allowed_override_fields: string[];
 }
 
-const ACTION_LABELS: Record<string, string> = {
+// export:A1 /agency 控制台复用同一授权动作文案,不另造一套术语。
+export const ACTION_LABELS: Record<string, string> = {
   storefront: "首页配置",
   action: "动作配置",
   channel_target: "渠道目标",
@@ -164,7 +168,8 @@ export function SettingsDesk() {
 }
 
 // 代理视角:正在为谁工作 + 权限与付款主体(A1 受控进入的可见性纪律)。
-function AgentBanner({ tenantName, access }: { tenantName: string; access: AccessEffective | null }) {
+// export:HUI-4593 A1 /agency 控制台复用同一横幅,不另造权限展示。
+export function AgentBanner({ tenantName, access }: { tenantName: string; access: AccessEffective | null }) {
   const actions = (access?.relation?.allowed_actions ?? []).map((a) => ACTION_LABELS[a] ?? a);
   return (
     <section className="tk-section" data-section="agent-banner">
