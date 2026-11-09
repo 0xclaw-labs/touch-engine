@@ -12,6 +12,7 @@ import {
   dedupBasisLabel,
   fromRFC3339,
   modeExplanation,
+  reviewProhibited,
   outOfStockLabel,
   perOrderAllowed,
   refusalCopy,
@@ -357,7 +358,9 @@ export function CampaignConfigPanel({
             ) : (
               <ul className="tk-list" data-field="channels">
                 {admissions.map((rec) => {
-                  const selectable = rec.allowed;
+                  // HUI-1676 全入口轮:点评(review)渠道永不进奖励配置——服务端
+                  // 硬拒(3535 准入真值:点评场景从不携带奖励资格),前端同结论前置。
+                  const selectable = rec.allowed && !reviewProhibited(rec.scenario);
                   const on = channelOn(rec.platform, rec.entry_mode, rec.scenario);
                   return (
                     <li key={`${rec.platform}|${rec.entry_mode}|${rec.scenario}`}>
@@ -370,7 +373,7 @@ export function CampaignConfigPanel({
                           onChange={(e) => toggleChannel(rec.platform, rec.entry_mode, rec.scenario, e.target.checked)}
                         />
                         {channelLabel(rec)}
-                        {" "}{admissionNote(rec)}
+                        {" "}{reviewProhibited(rec.scenario) ? "点评不做奖励:点评入口只帮顾客到门店自主评价。" : admissionNote(rec)}
                       </label>
                     </li>
                   );

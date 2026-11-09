@@ -459,6 +459,8 @@ export default function StoreChannelsPage() {
       </div>
 
       <p className="tk-note">
+        <Link href={`/work/stores/${storeId}/page`} className="tk-quiet">门店首页设置(栏目/发布/回滚)</Link>
+        {" · "}
         <Link href="/work/stores" className="tk-quiet">返回门店列表</Link>
       </p>
     </main>

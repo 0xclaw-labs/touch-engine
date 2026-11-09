@@ -79,6 +79,8 @@ const recorded: readonly { route: string; id: PatternId; regions: readonly strin
   { route: "/work/touchpoints", id: "list", regions: ["primary_action", "status", "empty"] },
   // HUI-4584 M4 门店渠道动作页:门店级动作实例配置(列表/启停/排序/测试入口)。
   { route: "/work/stores/[id]/channels", id: "settings", regions: ["primary_action", "status", "empty"] },
+  // HUI-1676 M3 门店首页设置页:栏目/模板/预览/发布回滚(薄壳,交互在组件)。
+  { route: "/work/stores/[id]/page", id: "settings", regions: ["primary_action", "status", "empty"] },
   // HUI-4593 M13 成员与权限页(授权/撤回/代理协作/模板下发/白标授权)。
   { route: "/work/settings", id: "settings", regions: ["primary_action", "status", "empty"] },
   // HUI-4593 A1 代理工作台(授权商户/受控进入/配置入口/续费协助;硬件与结算诚实空态)。

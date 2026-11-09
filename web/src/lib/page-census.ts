@@ -110,6 +110,8 @@ const markerBook: readonly { route: string; markers: readonly Marker[] }[] = [
   { route: "/work/touchpoints", markers: [] },
   // HUI-4584:门店渠道动作页,直接用原生控件(与 stores 列表页同风格)。
   { route: "/work/stores/[id]/channels", markers: ["raw button", "raw input"] },
+  // HUI-1676:门店首页设置页是薄壳,交互全部在组件里,页面源零标记。
+  { route: "/work/stores/[id]/page", markers: [] },
   // HUI-4593:成员与权限页面是薄壳,交互全部在组件里,页面源零标记。
   { route: "/work/settings", markers: [] },
   // HUI-4593:A1 代理工作台页面是薄壳,交互全部在组件里,页面源零标记。
