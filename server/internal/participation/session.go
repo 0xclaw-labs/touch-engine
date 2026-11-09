@@ -501,6 +501,158 @@ func (s *Service) ExchangeResumeCredential(_ context.Context, in SessionExchange
 	return SessionExchangeResult{Session: sess}, nil
 }
 
+// ---- status view (read-only) ------------------------------------------------------
+
+// SessionParticipationRef is the benefit reference carried on the status
+// view: progress + reservation state only. No visitor key, no idempotency
+// key, no reservation ref ever leaves the server.
+type SessionParticipationRef struct {
+	ID                      string
+	Status                  string
+	BenefitReservationState string
+}
+
+// SessionStatusView is the read-only status payload: the frozen snapshot plus
+// two real-time flags. A disabled/unpublished action never blocks reading —
+// 已发生的事实不受停用影响(旧权益保护) — but resume_available answers false
+// so the current state is never masked by the snapshot.
+type SessionStatusView struct {
+	Session         ActionSession
+	ActionAvailable bool
+	ResumeAvailable bool
+	Participation   *SessionParticipationRef
+}
+
+// ActionSessionStatus reads the caller's own session with live availability
+// flags. Read-only: no state transition, no credential issuance.
+func (s *Service) ActionSessionStatus(ctx context.Context, id, visitorID string) (SessionStatusView, error) {
+	if !s.sessionsReady() {
+		return SessionStatusView{}, ErrDirectoryUnavailable
+	}
+	sess, err := s.getSessionForVisitor(ctx, id, visitorID)
+	if err != nil {
+		return SessionStatusView{}, err
+	}
+	view := SessionStatusView{Session: sess}
+	if ref, ok, rerr := s.dir.ResolveAction(ctx, sess.ActionID); rerr == nil && ok {
+		view.ActionAvailable = ref.Enabled
+	}
+	view.ResumeAvailable = view.ActionAvailable && sess.Status == SessionActive
+	if sess.ParticipationID != "" {
+		if p, perr := s.getScoped(sess.ParticipationID, sess.TenantID); perr == nil {
+			view.Participation = &SessionParticipationRef{
+				ID:                      p.ID,
+				Status:                  string(p.Status),
+				BenefitReservationState: string(p.ReservationState),
+			}
+		}
+	}
+	return view, nil
+}
+
+// ---- benefit upgrade (explicit participation) --------------------------------------
+
+// AttachInput is the explicit benefit upgrade. The participation idempotency
+// key is DERIVED from the session id — one session, one participation, no
+// matter how many times the customer taps 办理 or which client key arrives.
+type AttachInput struct {
+	SessionID string
+	VisitorID string
+	Source    Source
+}
+
+// AttachResult reports the session and its (new or existing) participation.
+type AttachResult struct {
+	Session       ActionSession
+	Participation Participation
+}
+
+// AttachParticipation upgrades an active session into the existing
+// participation semantics: server re-resolves the action live; a session
+// without a real campaign refuses (ErrCampaignRequired — never fabricate
+// campaign ids); an expired campaign window flows into the existing
+// Start() rules (ErrFrozen); rule_version comes from the server (the
+// client's expectation never becomes the authority); the benefit reservation
+// goes through the existing trusted BenefitReserver port (nil → not_requested,
+// never 已保留). Idempotent: an already-attached session returns its
+// participation unchanged.
+func (s *Service) AttachParticipation(ctx context.Context, in AttachInput) (AttachResult, error) {
+	if !s.sessionsReady() {
+		return AttachResult{}, ErrDirectoryUnavailable
+	}
+	sess, err := s.getSessionForVisitor(ctx, in.SessionID, in.VisitorID)
+	if err != nil {
+		return AttachResult{}, err
+	}
+	if sess.Status != SessionActive {
+		return AttachResult{}, ErrSessionEnded
+	}
+	ref, err := s.liveAction(ctx, sess.ActionID)
+	if err != nil {
+		return AttachResult{}, err
+	}
+	if ref.CampaignID == "" {
+		return AttachResult{}, ErrCampaignRequired // 无活动动作办不了权益,不伪造活动
+	}
+	if sess.ParticipationID != "" {
+		p, perr := s.getScoped(sess.ParticipationID, sess.TenantID)
+		if perr != nil {
+			return AttachResult{}, perr
+		}
+		return AttachResult{Session: sess, Participation: p}, nil
+	}
+	content := sess.ContentPackVersion
+	if content == "" {
+		content = ref.ContentPackVersion
+	}
+	// 既有 Start() 全语义:窗口过期→ErrFrozen;幂等键派生自会话,并发同回原行;
+	// reserver nil → not_requested(不伪报已保留)。
+	started, err := s.Start(ctx, StartInput{
+		TenantID: ref.TenantID, StoreID: ref.StoreID, CampaignID: ref.CampaignID,
+		LinkCode: "", Source: in.Source, RuleVersion: ref.RuleVersion,
+		ContentPackVersion: content, VisitorID: sess.VisitorID,
+		IdempotencyKey: "sessattach_" + sess.ID, Window: ref.Window,
+	})
+	if err != nil {
+		return AttachResult{}, err
+	}
+	p := started.Participation
+	if _, err := s.db.Exec(`UPDATE action_sessions SET participation_id=?, updated_at=?
+		WHERE id=? AND tenant_id=?`, p.ID, rfc3339(s.now()), sess.ID, sess.TenantID); err != nil {
+		return AttachResult{}, fmt.Errorf("participation: link session participation: %w", err)
+	}
+	sess.ParticipationID = p.ID
+	if err := s.recordSessionEvent("participation_attached", sess, ""); err != nil {
+		return AttachResult{}, err
+	}
+	return AttachResult{Session: sess, Participation: p}, nil
+}
+
+// ---- cleanup --------------------------------------------------------------------
+
+// CleanupSessions runs one retention sweep for the session surface: expired
+// resume credentials older than the dispute grace are deleted; ended sessions
+// past the retention window are anonymized (visitor key blanked; the row
+// stays for audit). Active sessions are never touched.
+func (s *Service) CleanupSessions(ctx context.Context, now time.Time, retention time.Duration) (anonymized, deleted int64, err error) {
+	cutoff := rfc3339(now.Add(-credentialGrace))
+	res, err := s.db.ExecContext(ctx, `DELETE FROM action_session_credentials WHERE expires_at < ?`, cutoff)
+	if err != nil {
+		return 0, 0, fmt.Errorf("participation: cleanup session credentials: %w", err)
+	}
+	deleted, _ = res.RowsAffected()
+
+	retCutoff := rfc3339(now.Add(-retention))
+	res, err = s.db.ExecContext(ctx, `UPDATE action_sessions SET visitor_id='', updated_at=?
+		WHERE status=? AND updated_at < ? AND visitor_id != ''`,
+		rfc3339(now), string(SessionEnded), retCutoff)
+	if err != nil {
+		return deleted, 0, fmt.Errorf("participation: cleanup sessions: %w", err)
+	}
+	anonymized, _ = res.RowsAffected()
+	return anonymized, deleted, nil
+}
+
 // ---- session lookups ------------------------------------------------------------
 
 // getSessionForVisitor reads a session bound to the caller's own visitor key.
