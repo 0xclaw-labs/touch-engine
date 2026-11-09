@@ -4,18 +4,21 @@ import { useCallback, useEffect, useState } from "react";
 import { failureText, useSession } from "@/components/work/merchant-session";
 import { LoadErrorState } from "@/components/work/load-error-state";
 import { StoreContentDrawer } from "@/components/work/store-content-drawer";
+import { StoreProductionPanel } from "@/components/work/store-production-panel";
 import { surfaceLabel } from "@/lib/product-finish";
 
 // HUI-3553 素材页三入口:上传已有内容 / 从素材库选择 / 帮我制作。
 // TOUCH-ALL-20261109 增量:门店内容包抽屉(真实上传/候选/采用/换版/受控
 // 预览下载)挂在本页,内容包脱离活动成为门店根资产(campaign 可空)。
+// HUI-4595 增量:「帮我制作」接门店真实制作——受信生产方未接入时如实禁用
+// 并说明原因;发起记录/回流候选/明确采用全链可辨。
 // 纪律:
 //   - 商家全程不填 asset_id/version 技术字段:素材用选择器挑(选择器内部携带
 //     素材 ID),来源/类型/授权声明直接展示;
-//   - 「帮我制作」只在真实 handoff 能力存在时可用;本票未接制作引擎,按钮
-//     如实禁用并显示原因,绝不阻塞前两个入口;
+//   - 「帮我制作」只在真实生产方已注册时可用;未接通=按钮如实禁用并显示
+//     原因,绝不阻塞前两个入口,也绝不伪造制作已开始;
 //   - 候选提交后可预览、编辑文案(= 新版本)、明确采用;采用前顾客侧不读它;
-//   - 浏览/换稿/下载零生成零收费。
+//   - 浏览/换稿/下载/候选预览零生成零收费。
 
 interface Campaign {
   id: string;
@@ -440,13 +443,14 @@ export default function MaterialsPage() {
           />
           <section className="tk-section" data-entry="produce">
             <h2 className="tk-section-title">帮我制作</h2>
-            <p className="tk-note">没有合适成片时,可以让制作能力按这个活动的目的、门店资料和选定素材帮你做。只打开制作工程不扣费;生成前沿既有报价与确认。</p>
-            <p className="tk-note tk-unknown" data-field="produce-reason">{produceReason}</p>
-            {/* 制作交接 brief(活动目的/门店资料/选定素材/期望形式)在能力接通后
-                经 POST content-handoffs 提交;本票能力恒不可用,按钮保持禁用。 */}
-            <button className="tk-button" type="button" disabled={!produceAvailable}>
-              帮我制作
-            </button>
+            <p className="tk-note">没有合适成片时,可以让受信制作生产方按内容包帮你做真实成片。生成前报价确认;同一发起重试不重复建工程、不重复计费;成片回到候选区预览后由你明确采用。</p>
+            {/* HUI-4595: 门店真实制作接线——能力如实申报(capabilities),生产方
+                未接入时按钮禁用并说明原因;发起记录与回流候选状态独立可辨。 */}
+            {storeID ? (
+              <StoreProductionPanel storeId={storeID} />
+            ) : (
+              <p className="tk-note tk-unknown" data-field="produce-reason">{produceReason}</p>
+            )}
           </section>
           <section className="tk-section">
             <h2 className="tk-section-title">门店内容包(不需要先建活动)</h2>

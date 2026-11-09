@@ -11,6 +11,7 @@ function read(rel: string): string {
 const materialsRel = "app/work/materials/page.tsx";
 const panelRel = "components/work/content-pack-panel.tsx";
 const detailRel = "app/work/campaigns/[id]/page.tsx";
+const panelProductionRel = "components/work/store-production-panel.tsx";
 
 describe("素材页三个入口，商家不填技术 ID", () => {
   const materials = read(materialsRel);
@@ -49,11 +50,16 @@ describe("素材页三个入口，商家不填技术 ID", () => {
   });
 
   it("帮我制作：未接通时显示原因、按钮不可用，不阻塞上传/选素材", () => {
-    expect(materials).toMatch(/content-handoffs\/capabilities/);
-    expect(materials).toMatch(/production_available/);
-    // 禁用态按钮 + 原因文案区
+    // HUI-4595: 发起制作切到门店真实制作面板(StoreProductionPanel);能力
+    // 申报/禁用态/原因文案由面板承担并经 content-production.test.ts 锁定。
+    // 本断言保持同一语义:未接通=面板挂载+禁用能力+原因文案可见,且两个
+    // 真实入口的表单不因制作不可用而隐藏。
+    expect(materials).toContain("StoreProductionPanel");
+    expect(read(panelProductionRel)).toMatch(/content-production-handoffs\/capabilities/);
+    expect(read(panelProductionRel)).toMatch(/production_available/);
+    expect(read(panelProductionRel)).toMatch(/data-field="produce-reason"/);
+    expect(read(panelProductionRel)).toMatch(/disabled=\{busy \|\| !caps\?\.production_available\}/);
     expect(materials).toMatch(/data-field="produce-reason"/);
-    expect(materials).toMatch(/disabled=\{!/);
     // 两个真实入口的表单不因制作不可用而隐藏
     expect(materials).toMatch(/data-entry-panel=\{entry\}/);
     expect(materials).toMatch(/entry="upload"/);
