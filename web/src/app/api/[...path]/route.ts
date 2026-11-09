@@ -11,6 +11,9 @@ async function handle(req: Request, ctx: Ctx): Promise<Response> {
 }
 
 export const GET = handle;
+// HUI-3553 D3: controlled media advertises itself via HEAD (real file exists,
+// size/Content-Type probeable). Relay it like GET — the Go server answers.
+export const HEAD = handle;
 export const POST = handle;
 export const PUT = handle;
 export const PATCH = handle;
