@@ -18,8 +18,6 @@ package httpapi
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -60,10 +58,7 @@ func pngFixtureBytes(seed byte) []byte {
 	return out
 }
 
-func sha256Hex(b []byte) string {
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
-}
+// sha256Hex 复用 handlers_wecom_callback.go 的同名生产助手（wave2 集成去重）。
 
 type productionFixture struct {
 	s        *Server

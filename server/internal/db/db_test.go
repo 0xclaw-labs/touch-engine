@@ -115,16 +115,13 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"store_content_pack_version_events",
 		"store_content_pack_versions",
 		"store_content_packs",
-<<<<<<< HEAD
+		// HUI-4595 (0091-0092): 门店真实制作交接与受信回流结果。
+		"store_content_production_handoffs",
+		"store_content_production_results",
 		// HUI-4590 增量(0084-0087): 团购套餐目录/适用门店/点击归因/外部券核销事实。
 		"store_deal_click_stats",
 		"store_deal_offer_stores",
 		"store_deal_offers",
-=======
-		// HUI-4595 (0091-0092): 门店真实制作交接与受信回流结果。
-		"store_content_production_handoffs",
-		"store_content_production_results",
->>>>>>> touch/hui-4595-production
 		"store_motion_requests",
 		// HUI-4589 (0079-0081): 门店服务配置/行为事件/企微回调日志。
 		"store_service_configs",

@@ -142,20 +142,18 @@ type Server struct {
 	// everything (NOT_VERIFIED residual) — honest by construction.
 	PublishHandoff *publishhandoff.Service
 
-<<<<<<< HEAD
 	// DealCoupons (HUI-4590) is the authorization-backed external coupon
 	// adapter for the three group-buy platforms. Production stays nil until
 	// an official authorization exists: check/redeem then answer the honest
 	// 503 not_connected and no redemption fact is ever invented.
 	DealCoupons deals.Adapter
-=======
+
 	// HUI-4595 公共权威 seam:报价核验(统一账单)与制作任务提交(公共任务)。
 	// Always constructed; Ready() is checked at use so an unconfigured
 	// deployment answers honestly (quote_verified=false / status=recorded)
 	// instead of faking a verification or a task reference.
 	ProductionQuotes production.QuoteAuthority
 	ProductionTasks  *production.TaskSubmitter
->>>>>>> touch/hui-4595-production
 }
 
 // Frozen cache budgets (HUI-2981 comparison report §2.1 — do not tune without
