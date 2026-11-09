@@ -68,6 +68,8 @@ const recorded: readonly { route: string; id: PatternId; regions: readonly strin
   { route: "/work/campaigns/[id]", id: "detail", regions: ["primary_action", "status", "empty"] },
   { route: "/work/materials", id: "list", regions: ["primary_action", "status", "empty"] },
   { route: "/work/rewards", id: "billing", regions: ["primary_action", "status", "empty"] },
+  // HUI-4591 M12 订购与账单:套餐/门店额度/续费扩店/支付状态/AI 用量/发票退款。
+  { route: "/work/billing", id: "billing", regions: ["primary_action", "status", "empty"] },
   // HUI-3562 店员确认与核销台:确认/核销是复核动作,记 review 模式。
   { route: "/work/service", id: "review", regions: ["primary_action", "status", "empty"] },
   { route: "/work/analytics", id: "workspace", regions: ["primary_action", "status", "empty"] },
