@@ -319,7 +319,8 @@ func dashSQLScalar(t *testing.T, f *dashboardFixture, label, q string, args ...a
 // seedDashboardEvents 播种已知事件集(全部经真实表面):
 //   - 触发:code1 wecom ×2,code2 web(缺省)×1
 //   - 留资:联系人甲(138…)提交 + 重复提交(幂等,同 ref);联系人乙(137…)提交
-//   - 状态机:Tick→pending_sync,DeliverAll+Tick→crm_received
+//   - 状态机:Tick→pending_sync,DeliverAll+Tick 后仍 pending_sync(传输层事实),
+//     受信接收方 ACK(store.AckLeadReceipt)→crm_received(HUI-4595 前真实链)
 //   - 撤销:甲撤销(revoked 为终态,updated_at 落在窗口内)
 func seedDashboardEvents(t *testing.T, f *dashboardFixture) (refA string) {
 	t.Helper()
@@ -341,8 +342,22 @@ func seedDashboardEvents(t *testing.T, f *dashboardFixture) (refA string) {
 
 	f.forwarder.Tick(context.Background()) // publish -> pending_sync
 	f.stub.DeliverAll()
-	if tick := f.forwarder.Tick(context.Background()); tick.Confirmed != 2 {
-		t.Fatalf("confirmed = %d, want 2", tick.Confirmed)
+	f.forwarder.Tick(context.Background()) // delivered: transport fact only
+	refB := ""
+	for _, l := range func() []store.LeadSubmission { v, _ := f.s.St.ListLeadSubmissions(f.tenA, f.camp1ID); return v }() {
+		if l.Phone == "13700137000" {
+			refB = l.SubmissionRef
+		}
+	}
+	if refB == "" {
+		t.Fatal("lead B missing")
+	}
+	// HUI-4594: the receiver's persisted ACK is the only crm_received path
+	if _, _, err := f.s.St.AckLeadReceipt(f.tenA, refB, "leads-ingest", store.LeadAck{
+		ReceiptID: "rcp_dash_b", SourceEventID: refB, SubmissionID: refB,
+		SourceRevision: 1, ReceiverState: store.ReceiverStateStored,
+	}); err != nil {
+		t.Fatalf("ack B: %v", err)
 	}
 
 	revoke := fmt.Sprintf(`{"submission_ref":%q,"phone":"13800138000"}`, refA)

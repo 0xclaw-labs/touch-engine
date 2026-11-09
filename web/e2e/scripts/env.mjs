@@ -163,6 +163,20 @@ async function seed() {
   // 留资表单（FEATURE_LEADS_CAPTURE=on 时可配；notice v1 与 leads.CurrentNotice 同源）
   await goApi("POST", `/api/v1/campaigns/${active.id}/lead-form`, { notice_version: "v1", marketing_optin_enabled: true });
 
+  // HUI-4594：无活动留资走真实产品链。门店级表单开关（商家面）→ 公共 storefront
+  // 提交（顾客面，guest 无会话）。store_code 从 actions 文档取（4584 面下发）。
+  const actionsDoc = await goApi("GET", `/api/v1/stores/${store.id}/actions`);
+  const storeCode = actionsDoc.store_code;
+  await goApi("POST", `/api/v1/stores/${store.id}/lead-form`, { notice_version: "v1", marketing_optin_enabled: true });
+  const storeLeadRes = await fetch(`${GO_URL}/api/v1/public/storefronts/${storeCode}/lead-submissions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "门店散客", phone: "13500135000", consent_version: "v1", consent: true, marketing_optin: false, channel: "web" }),
+  });
+  if (!storeLeadRes.ok) throw new Error(`[env] store lead submit -> ${storeLeadRes.status} ${await storeLeadRes.text()}`);
+  const storeLead = await storeLeadRes.json();
+  console.log(`[env] store lead ${storeLead.submission_ref} captured without a campaign`);
+
   // tenantId：/admin 登录表单要求手填租户 ID（helpers.login 消费）；
   // activeId：E2E 06 spec 的 /work/campaigns/[id] 代表页需要（Task 12 配套）。
   // email/password/tenantName：owner 凭据唯一真实来源（helpers.login 只读这里，不再各自硬编码）。
@@ -259,6 +273,10 @@ async function up() {
     PLATFORM_NOTIFY_TOKEN: "e2e-notify-token",
     LEADS_TARGET_APP_ID: "e2e-crm-app",
     LEADS_PHONE_PEPPER: "e2e-phone-pepper",
+    // HUI-4594：受信线索接收缝（lead-records 取数 + 持久化 ACK）。leads-ingest
+    // 持 lead_receiver 角色；哑值仅用于本地走查部署（令牌纪律同其它服务 token）。
+    TOUCH_SERVICE_TOKENS: "leads-ingest:e2e-leads-receiver-token",
+    TOUCH_SERVICE_ROLES: "leads-ingest:lead_receiver",
     FEATURE_DASHBOARD: "on",
     // HUI-1676：规则编辑器与发布兑奖配置（默认 off；本地测试部署开,启用裁决归 HUI-3531）
     FEATURE_CAMPAIGN_RULES: "on",

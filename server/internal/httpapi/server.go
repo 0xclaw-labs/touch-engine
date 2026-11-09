@@ -380,9 +380,11 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
-	// Authorized submission fetch for leads ingest. Contact fields stay off
-	// the notify event; the registered source pulls them with the internal token.
-	mux.Handle("GET /internal/v1/lead-records/{submissionRef}", s.requireInternal(s.handleLeadRecord))
+	// HUI-4594 trusted leads-receiver seam: the contact leaves this process only
+	// through the TOUCH_SERVICE_TOKENS + lead_receiver path; the BFF shared
+	// token is NOT a receiver identity (the legacy /internal/v1 fetch is retired).
+	mux.Handle("GET /api/v1/internal/lead-records/{submissionId}", s.requireLeadReceiver(s.handleLeadRecord))
+	mux.Handle("POST /api/v1/internal/lead-records/{submissionId}/acknowledgements", s.requireLeadReceiver(s.handleLeadAck))
 
 	// auth (internal token required; no session yet for login/refresh)
 	mux.Handle("POST /api/v1/auth/login", s.requireInternal(s.handleLogin))
@@ -569,6 +571,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/public/links/{code}/lead-status", http.HandlerFunc(s.handlePublicLeadStatus))
 	mux.Handle("POST /api/v1/public/links/{code}/lead-revocations", http.HandlerFunc(s.handlePublicLeadRevoke))
 	mux.Handle("POST /api/v1/public/links/{code}/view-events", http.HandlerFunc(s.handlePublicViewEvent))
+	// HUI-4594 无活动留资: same guest-write discipline on the store lane —
+	// campaign_id stays '', capture_source='store', no campaign is fabricated.
+	mux.Handle("GET /api/v1/public/storefronts/{storeCode}/lead-form", http.HandlerFunc(s.handlePublicStoreLeadForm))
+	mux.Handle("POST /api/v1/public/storefronts/{storeCode}/lead-submissions", http.HandlerFunc(s.handlePublicStoreLeadSubmit))
+	mux.Handle("POST /api/v1/public/storefronts/{storeCode}/lead-status", http.HandlerFunc(s.handlePublicStoreLeadStatus))
+	mux.Handle("POST /api/v1/public/storefronts/{storeCode}/lead-revocations", http.HandlerFunc(s.handlePublicStoreLeadRevoke))
 
 	// HUI-1670 customer preview / manual publish. No platform outbound.
 	mux.Handle("GET /api/v1/public/links/{code}/publish-capabilities", http.HandlerFunc(s.handlePublicPublishCapabilities))
@@ -605,6 +613,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/campaigns/{id}/leads", s.requireSession(s.handleLeadList))
 	mux.Handle("GET /api/v1/campaigns/{id}/lead-stats", s.requireSession(s.handleLeadStats))
 	mux.Handle("GET /api/v1/campaigns/{id}/leads/{ref}/audit", s.requireSession(s.handleLeadAudit))
+	// HUI-4594 M11: tenant-wide authorized-lead view (待同步与已获客分开口径).
+	mux.Handle("GET /api/v1/work/leads", s.requireSession(s.handleWorkLeads))
+	// HUI-4594 无活动留资: the store-level lead form switch (store-scoped).
+	mux.Handle("POST /api/v1/stores/{id}/lead-form", s.requireSession(s.handleStoreLeadFormUpsert))
 
 	// dashboard read surface (HUI-1677 FEAT-0178): gated by FEATURE_DASHBOARD
 	// (default off; off = route not registered AND handler gate answers uniform

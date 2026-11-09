@@ -20,6 +20,7 @@ type LeadForm struct {
 	ID                    string `json:"id"`
 	TenantID              string `json:"tenant_id"`
 	CampaignID            string `json:"campaign_id"`
+	StoreID               string `json:"store_id,omitempty"` // '' on campaign-scoped forms
 	NoticeVersion         string `json:"notice_version"`
 	MarketingOptinEnabled bool   `json:"marketing_optin_enabled"`
 	Enabled               bool   `json:"enabled"`
@@ -28,12 +29,12 @@ type LeadForm struct {
 	UpdatedAt             string `json:"updated_at"`
 }
 
-const leadFormCols = `id,tenant_id,campaign_id,notice_version,marketing_optin_enabled,enabled,created_by,created_at,updated_at`
+const leadFormCols = `id,tenant_id,campaign_id,store_id,notice_version,marketing_optin_enabled,enabled,created_by,created_at,updated_at`
 
 func scanLeadForm(sc interface{ Scan(...any) error }) (LeadForm, error) {
 	var f LeadForm
 	var mkt, enabled int
-	err := sc.Scan(&f.ID, &f.TenantID, &f.CampaignID, &f.NoticeVersion, &mkt, &enabled, &f.CreatedBy, &f.CreatedAt, &f.UpdatedAt)
+	err := sc.Scan(&f.ID, &f.TenantID, &f.CampaignID, &f.StoreID, &f.NoticeVersion, &mkt, &enabled, &f.CreatedBy, &f.CreatedAt, &f.UpdatedAt)
 	if err != nil {
 		return LeadForm{}, err
 	}
@@ -51,8 +52,8 @@ func (s *Store) UpsertLeadForm(tenantID, campaignID, noticeVersion string, marke
 			NoticeVersion: noticeVersion, MarketingOptinEnabled: marketingEnabled, Enabled: true,
 			CreatedBy: createdBy, CreatedAt: now(), UpdatedAt: now()}
 		_, ierr := s.DB.Exec(
-			`INSERT INTO lead_forms(`+leadFormCols+`) VALUES(?,?,?,?,?,?,?,?,?)`,
-			f.ID, f.TenantID, f.CampaignID, f.NoticeVersion, boolInt(f.MarketingOptinEnabled),
+			`INSERT INTO lead_forms(`+leadFormCols+`) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+			f.ID, f.TenantID, f.CampaignID, "", f.NoticeVersion, boolInt(f.MarketingOptinEnabled),
 			boolInt(f.Enabled), f.CreatedBy, f.CreatedAt, f.UpdatedAt)
 		if ierr != nil {
 			return LeadForm{}, ierr
@@ -88,6 +89,53 @@ func (s *Store) GetLeadFormByCampaign(campaignID string) (LeadForm, error) {
 	return f, err
 }
 
+// UpsertLeadFormForStore configures the store-scoped lead form row
+// (HUI-4594 无活动留资): campaign_id stays empty and store_id locates the row.
+func (s *Store) UpsertLeadFormForStore(tenantID, storeID, noticeVersion string, marketingEnabled bool, createdBy string) (LeadForm, error) {
+	cur, err := scanLeadForm(s.DB.QueryRow(
+		`SELECT `+leadFormCols+` FROM lead_forms WHERE campaign_id='' AND store_id=?`, storeID))
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		f := LeadForm{ID: newID("lfrm_"), TenantID: tenantID, CampaignID: "", StoreID: storeID,
+			NoticeVersion: noticeVersion, MarketingOptinEnabled: marketingEnabled, Enabled: true,
+			CreatedBy: createdBy, CreatedAt: now(), UpdatedAt: now()}
+		_, ierr := s.DB.Exec(
+			`INSERT INTO lead_forms(`+leadFormCols+`) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+			f.ID, f.TenantID, f.CampaignID, f.StoreID, f.NoticeVersion, boolInt(f.MarketingOptinEnabled),
+			boolInt(f.Enabled), f.CreatedBy, f.CreatedAt, f.UpdatedAt)
+		if ierr != nil {
+			return LeadForm{}, ierr
+		}
+		s.bumpEpoch()
+		return f, nil
+	case err != nil:
+		return LeadForm{}, err
+	}
+	if cur.TenantID != tenantID {
+		return LeadForm{}, ErrNotFound
+	}
+	cur.NoticeVersion = noticeVersion
+	cur.MarketingOptinEnabled = marketingEnabled
+	cur.Enabled = true
+	cur.UpdatedAt = now()
+	_, err = s.DB.Exec(`UPDATE lead_forms SET notice_version=?,marketing_optin_enabled=?,enabled=?,updated_at=? WHERE id=?`,
+		cur.NoticeVersion, boolInt(cur.MarketingOptinEnabled), boolInt(cur.Enabled), cur.UpdatedAt, cur.ID)
+	if err == nil {
+		s.bumpEpoch()
+	}
+	return cur, err
+}
+
+// GetLeadFormByStore resolves the store-scoped form (store-code public lane).
+func (s *Store) GetLeadFormByStore(storeID string) (LeadForm, error) {
+	f, err := scanLeadForm(s.DB.QueryRow(
+		`SELECT `+leadFormCols+` FROM lead_forms WHERE campaign_id='' AND store_id=?`, storeID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return LeadForm{}, ErrNotFound
+	}
+	return f, err
+}
+
 // ---- lead submissions ---------------------------------------------------------
 
 type LeadSubmission struct {
@@ -109,12 +157,23 @@ type LeadSubmission struct {
 	Attempts             int    `json:"attempts"`
 	SourceVersion        int    `json:"source_version"`
 	RevokedAt            string `json:"revoked_at,omitempty"`
-	CreatedAt            string `json:"created_at"`
-	UpdatedAt            string `json:"updated_at"`
+	// HUI-4594 receiver projection: the trusted receiver's persisted ACK.
+	// Empty receiver_state = nothing confirmed ingested yet (still 待同步).
+	ReceiverState string `json:"receiver_state,omitempty"`
+	ReceiptID     string `json:"receipt_id,omitempty"`
+	// Revocation waterline (HUI-4594): >0 once revoked; late replays of older
+	// revisions cannot resurrect the contact past this watermark.
+	RevokeSourceRevision int `json:"revoke_source_revision,omitempty"`
+	// HUI-4594 store capture: campaign_id is '' on store-source leads.
+	CaptureSource string `json:"capture_source"`
+	SessionID     string `json:"session_id,omitempty"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
 }
 
 const leadCols = `id,tenant_id,campaign_id,store_id,link_id,form_id,submission_ref,name,phone,wechat,` +
-	`marketing_optin,consent_notice_version,consent_at,sync_state,sync_error,attempts,source_version,revoked_at,created_at,updated_at`
+	`marketing_optin,consent_notice_version,consent_at,sync_state,sync_error,attempts,source_version,revoked_at,created_at,updated_at,` +
+	`receiver_state,receipt_id,revoke_source_revision,capture_source,session_id`
 
 func scanLead(sc interface{ Scan(...any) error }) (LeadSubmission, error) {
 	var l LeadSubmission
@@ -122,26 +181,32 @@ func scanLead(sc interface{ Scan(...any) error }) (LeadSubmission, error) {
 	var mkt int
 	err := sc.Scan(&l.ID, &l.TenantID, &l.CampaignID, &l.StoreID, &l.LinkID, &l.FormID, &l.SubmissionRef,
 		&l.Name, &l.Phone, &wechat, &mkt, &l.ConsentNoticeVersion, &l.ConsentAt,
-		&l.SyncState, &syncErr, &l.Attempts, &l.SourceVersion, &revokedAt, &l.CreatedAt, &l.UpdatedAt)
+		&l.SyncState, &syncErr, &l.Attempts, &l.SourceVersion, &revokedAt, &l.CreatedAt, &l.UpdatedAt,
+		&l.ReceiverState, &l.ReceiptID, &l.RevokeSourceRevision, &l.CaptureSource, &l.SessionID)
 	if err != nil {
 		return LeadSubmission{}, err
 	}
 	l.Wechat, l.SyncError, l.RevokedAt = wechat.String, syncErr.String, revokedAt.String
 	l.MarketingOptin = mkt == 1
+	if l.CaptureSource == "" {
+		l.CaptureSource = "campaign" // legacy rows predate the column
+	}
 	return l, nil
 }
 
-const leadColsPlaceholders = `id,tenant_id,campaign_id,store_id,link_id,form_id,submission_ref,dedup_key,name,phone,wechat,
+const leadColsPlaceholders = `id,tenant_id,campaign_id,store_id,link_id,form_id,session_id,capture_source,submission_ref,dedup_key,name,phone,wechat,
 	marketing_optin,consent_notice_version,consent_at,consent_ip_fp,sync_state,source_version,created_at,updated_at`
 
 // NewLeadSubmission carries everything SubmitLead writes in ONE transaction:
 // the lead row and its outbox event (payload pre-built by the caller).
 type NewLeadSubmission struct {
 	TenantID       string
-	CampaignID     string
+	CampaignID     string // '' on store-source leads (HUI-4594 无活动留资)
 	StoreID        string
 	LinkID         string
 	FormID         string
+	SessionID      string // optional 3546 action-session reference for store lanes
+	CaptureSource  string // 'campaign' (default) or 'store'
 	SubmissionRef  string
 	DedupKey       string
 	Name           string
@@ -163,17 +228,23 @@ func (s *Store) SubmitLead(n NewLeadSubmission) (LeadSubmission, bool, error) {
 		return LeadSubmission{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	source := n.CaptureSource
+	if source == "" {
+		source = "campaign"
+	}
 	l := LeadSubmission{
 		ID: newID("lead_"), TenantID: n.TenantID, CampaignID: n.CampaignID,
 		StoreID: n.StoreID, LinkID: n.LinkID, FormID: n.FormID,
+		SessionID: n.SessionID, CaptureSource: source,
 		SubmissionRef: n.SubmissionRef, Name: n.Name, Phone: n.Phone, Wechat: n.Wechat,
 		MarketingOptin: n.MarketingOptin, ConsentNoticeVersion: n.NoticeVersion,
 		ConsentAt: n.ConsentAt, SyncState: "accepted", SourceVersion: 1,
 		CreatedAt: now(), UpdatedAt: now(),
 	}
 	_, err = tx.Exec(
-		`INSERT INTO lead_submissions(`+leadColsPlaceholders+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO lead_submissions(`+leadColsPlaceholders+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		l.ID, l.TenantID, l.CampaignID, n.StoreID, n.LinkID, n.FormID,
+		l.SessionID, l.CaptureSource,
 		l.SubmissionRef, n.DedupKey, l.Name, l.Phone, n.Wechat, boolInt(l.MarketingOptin),
 		l.ConsentNoticeVersion, l.ConsentAt, n.ConsentIPFP, l.SyncState,
 		l.SourceVersion, l.CreatedAt, l.UpdatedAt)
@@ -314,6 +385,57 @@ func (s *Store) CountLeadStates(tenantID string) ([]LeadStateCount, error) {
 	return out, rows.Err()
 }
 
+// ListLeadsByTenant is the HUI-4594 /work/leads listing: every lead of the
+// tenant across both capture sources (campaign and store), newest first.
+// Admin-surface only; the contact columns are the merchant's own authorized
+// source-domain data, the response shape is whitelisted in httpapi.
+func (s *Store) ListLeadsByTenant(tenantID string, limit int) ([]LeadSubmission, error) {
+	rows, err := s.DB.Query(
+		`SELECT `+leadCols+` FROM lead_submissions WHERE tenant_id=? ORDER BY created_at DESC LIMIT ?`,
+		tenantID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]LeadSubmission, 0)
+	for rows.Next() {
+		l, err := scanLead(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// LeadTenantStateCount is the tenant-wide sync×receiver projection the M11
+// page and the stats consumers read: 待同步(pending_sync) 与已获客
+// (crm_received, only via persisted ACK) are separate buckets by construction.
+type LeadTenantStateCount struct {
+	SyncState     string
+	ReceiverState string
+	Count         int
+}
+
+func (s *Store) CountTenantLeadStates(tenantID string) ([]LeadTenantStateCount, error) {
+	rows, err := s.DB.Query(
+		`SELECT sync_state, receiver_state, COUNT(1) FROM lead_submissions WHERE tenant_id=? GROUP BY sync_state, receiver_state`,
+		tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]LeadTenantStateCount, 0)
+	for rows.Next() {
+		var row LeadTenantStateCount
+		if err := rows.Scan(&row.SyncState, &row.ReceiverState, &row.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
 // transitionLead is the compare-and-set core of the sync state machine.
 // no-op when the row already sits in the target state (idempotent), conflict
 // when it sits anywhere else.
@@ -351,11 +473,11 @@ func (s *Store) MarkLeadSyncPending(ref string) error {
 	return s.transitionLead(ref, []string{"accepted", "pending_sync"}, "pending_sync", "")
 }
 
-// MarkLeadDelivered: pending_sync -> crm_received when deliveries report
-// delivered. A row already closed as rejected can still be repaired when a
-// later read of the same notify event says delivered. It never invents receipt.
-func (s *Store) MarkLeadDelivered(ref string) error {
-	return s.transitionLead(ref, []string{"pending_sync", "rejected", "crm_received"}, "crm_received", "")
+// RepairLeadToPending: rejected -> pending_sync when a later read of the same
+// notify event proves the dead-letter verdict was wrong (HUI-4594). It does
+// NOT claim ingestion — only the receiver's persisted ACK ends the sync.
+func (s *Store) RepairLeadToPending(ref string) error {
+	return s.transitionLead(ref, []string{"rejected"}, "pending_sync", "")
 }
 
 // MarkLeadRejected: target refused (dead letter / publish rejection).
@@ -399,8 +521,12 @@ func (s *Store) RevokeLeadSubmission(ref, revokeEventID, revokePayload string) (
 		return LeadSubmission{}, errors.New("store: cannot revoke lead in state " + cur.SyncState)
 	}
 	rv := now()
+	// HUI-4594: freeze the revocation waterline at the revoke fact's source
+	// version (source_version+1, matching what the handler builds). Fetches
+	// serve a tombstone past this point and stored ACKs of older revisions are
+	// refused — a late replay cannot resurrect the contact.
 	if _, err := tx.Exec(
-		`UPDATE lead_submissions SET sync_state='revoked',revoked_at=?,updated_at=? WHERE submission_ref=?`,
+		`UPDATE lead_submissions SET sync_state='revoked',revoked_at=?,revoke_source_revision=source_version+1,updated_at=? WHERE submission_ref=?`,
 		rv, rv, ref); err != nil {
 		return LeadSubmission{}, err
 	}
@@ -453,6 +579,17 @@ func (s *Store) ListLeadAudit(tenantID, ref string) ([]map[string]string, error)
 		out = append(out, map[string]string{"action": action, "detail": detail, "actor": actor, "created_at": at})
 	}
 	return out, rows.Err()
+}
+
+// HasLeadAuditAction reports whether one action row already exists for the
+// submission (HUI-4594: the transport verdict polls repeat every tick, so the
+// notify_delivered fact must be recorded once, not on every pass).
+func (s *Store) HasLeadAuditAction(tenantID, ref, action string) (bool, error) {
+	var n int
+	err := s.DB.QueryRow(
+		`SELECT COUNT(1) FROM lead_audit WHERE tenant_id=? AND submission_ref=? AND action=? LIMIT 1`,
+		tenantID, ref, action).Scan(&n)
+	return n > 0, err
 }
 
 // ---- leads outbox (forwarder queue) --------------------------------------------

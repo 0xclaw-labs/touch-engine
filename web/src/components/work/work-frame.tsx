@@ -11,6 +11,9 @@ const LINKS = [
   { href: "/work/materials", label: "素材" },
   { href: "/work/rewards", label: "奖励" },
   { href: "/work/analytics", label: "统计" },
+  // HUI-4594 M11:授权线索页(接收/待同步/撤回;待同步不计入已获客)。
+  // 页面本体按 FEATURE_LEADS_CAPTURE 诚实降级,入口恒在。
+  { href: "/work/leads", label: "线索" },
   // HUI-4593 M13:成员与权限(授权/撤回/代理协作/模板下发)。页面本体按
   // FEATURE_AUTHZ 与角色诚实降级,入口恒在。
   { href: "/work/settings", label: "设置" },

@@ -33,7 +33,7 @@ describe("账上路由恰好一条普查", () => {
   it("和账本同一组路由，一条不多一条不少", () => {
     const ledger = pageLedger().map((page) => page.route);
     const census = pageCensus();
-    expect(ledger).toHaveLength(19); // 基线15 + HUI-4584 渠道页 + HUI-4593 设置页/代理台 + HUI-4589 服务页
+    expect(ledger).toHaveLength(20); // 基线15 + HUI-4584 渠道页 + HUI-4593 设置页/代理台 + HUI-4589 服务页 + HUI-4594 线索页
     expect(census.map((page) => page.route)).toEqual(ledger);
     expect(new Set(census.map((page) => page.route)).size).toBe(census.length);
     expect(census.some((page) => page.route === "/login" || page.route.startsWith("/api"))).toBe(false);
@@ -120,6 +120,8 @@ describe("surface 归类", () => {
       ["/work/stores/[id]/services", "work"],
       // HUI-4593:成员与权限页是商家工作台设置页。
       ["/work/settings", "work"],
+      // HUI-4594:线索页是商家侧授权线索列表页。
+      ["/work/leads", "work"],
       // HUI-4593:A1 代理工作台是商家侧代理列表页。
       ["/agency", "work"],
       ["/c/[code]", "public"],
@@ -127,7 +129,7 @@ describe("surface 归类", () => {
       // HUI-1665:/t 稳定入口是公开消费者面。
       ["/t/[code]", "public"],
     ]);
-    expect(want.size).toBe(19); // 基线15 + HUI-4584 渠道页 + HUI-4593 设置页/代理台 + HUI-4589 服务页
+    expect(want.size).toBe(20); // 基线15 + HUI-4584 渠道页 + HUI-4593 设置页/代理台 + HUI-4589 服务页 + HUI-4594 线索页
     for (const page of pageCensus()) {
       expect(page.surface).toBe(classifySurface(page.route, page.id));
       expect(page.surface).toBe(want.get(page.route));
@@ -251,11 +253,13 @@ describe("半成品标记", () => {
       ["/work/stores/[id]/services", ["raw button", "raw input"]],
       // HUI-4593:成员与权限页面是薄壳,交互全部在组件里,页面源零标记。
       ["/work/settings", []],
+      // HUI-4594:线索页面是薄壳,交互全部在组件里,页面源零标记。
+      ["/work/leads", []],
       // HUI-4593:A1 代理工作台页面是薄壳,交互全部在组件里,页面源零标记。
       ["/agency", []],
     ]);
     const census = pageCensus();
-    expect(want.size).toBe(19); // 基线15 + HUI-4584 渠道页 + HUI-4593 设置页/代理台 + HUI-4589 服务页
+    expect(want.size).toBe(20); // 基线15 + HUI-4584 渠道页 + HUI-4593 设置页/代理台 + HUI-4589 服务页 + HUI-4594 线索页
     expect(census).toHaveLength(want.size);
     for (const page of census) {
       const source = readPage(page.file);

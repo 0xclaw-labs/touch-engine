@@ -7,7 +7,8 @@ package httpapi
 //   - POST /internal/v1/notify/events = notify acceptance (contract headers,
 //     profile parse, target-side fact-key dedup + source_version monotonic
 //     guard = the CRM inbox); the delivery row starts "pending";
-//   - DeliverAll() simulates the CRM coming back / dispatcher success;
+//   - DeliverAll() flips the notify delivery rows to delivered — a transport
+//     fact only: since HUI-4594 it never ends the sync (delivered ≠ 落库);
 //   - GET /internal/v1/notify/events/{id}/deliveries reports that status.
 
 import (
@@ -206,6 +207,8 @@ type leadsFixture struct {
 	stub         *notifyStub
 	code         string // active campaign short code
 	campaignID   string
+	baseStoreID  string // manager-scoped store for the /work/leads matrix
+	tenB         string
 	forwarder    *leads.Forwarder
 	adminSession string
 }
@@ -213,7 +216,14 @@ type leadsFixture struct {
 func newLeadsFixture(t *testing.T) *leadsFixture {
 	t.Helper()
 	stub := newNotifyStub(t)
-	cfg := leadsTestConfig(stub.srv.URL)
+	return newLeadsFixtureWithConfig(t, leadsTestConfig(stub.srv.URL))
+}
+
+// newLeadsFixtureWithConfig builds the same fixture under a caller-supplied
+// config (its own notify stub is created for the forwarder seam).
+func newLeadsFixtureWithConfig(t *testing.T, cfg config.Config) *leadsFixture {
+	t.Helper()
+	stub := newNotifyStub(t)
 
 	d, err := db.Open(filepath.Join(t.TempDir(), "touch.db"))
 	if err != nil {
@@ -230,6 +240,11 @@ func newLeadsFixture(t *testing.T) *leadsFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// HUI-4594: a store-scoped manager for the /work/leads filtering matrix
+	baseStore, err := st.CreateStore(tenA.ID, "基准门店", "", "test")
+	if err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
 	for _, m := range []struct{ tenant, principal, role string }{
 		{tenA.ID, "usr_owner_a", "org_owner"},
 		{tenA.ID, "usr_staff_a", "staff"},
@@ -239,11 +254,15 @@ func newLeadsFixture(t *testing.T) *leadsFixture {
 			t.Fatalf("seed: %v", err)
 		}
 	}
+	if _, err := st.CreateMemberScoped(tenA.ID, "usr_sm_a", "store_manager", "sm", "test", true, baseStore.ID); err != nil {
+		t.Fatalf("seed manager: %v", err)
+	}
 
 	idsrv := fakeIdentity(t, map[string]identitySession{
 		"sess-owner-a": {"usr_owner_a", "a@example.com"},
 		"sess-staff-a": {"usr_staff_a", "staff@example.com"},
 		"sess-owner-b": {"usr_owner_b", "b@example.com"},
+		"sess-sm-a":    {"usr_sm_a", "sm@example.com"},
 	})
 	idc := &identity.Client{BaseURL: idsrv.URL, Token: "identity-token", AppID: "touch-engine", HTTP: idsrv.Client()}
 	upc := &upload.Client{BaseURL: "http://upload.test", Token: "upload-token", AppID: "touch-engine"}
@@ -254,6 +273,7 @@ func newLeadsFixture(t *testing.T) *leadsFixture {
 
 	f := &leadsFixture{
 		s: s, ts: ts, tenA: tenA.ID, stub: stub, adminSession: "sess-owner-a",
+		baseStoreID: baseStore.ID, tenB: tenB.ID,
 		forwarder: leads.NewForwarder(s.St, newTestPoster(stub), log.New(io.Discard, "", 0)),
 	}
 
@@ -272,7 +292,9 @@ func newLeadsFixture(t *testing.T) *leadsFixture {
 	} else {
 		f.code = link["code"].(string)
 	}
-	if status, _, _ := f.admin(t, "POST", "/api/v1/campaigns/"+f.campaignID+"/lead-form", `{"marketing_optin_enabled":true}`); status != 201 {
+	// with FEATURE_LEADS_CAPTURE off the whole lead surface is invisible and the
+	// form upsert (correctly) answers the uniform 404 — only fail on other codes
+	if status, _, _ := f.admin(t, "POST", "/api/v1/campaigns/"+f.campaignID+"/lead-form", `{"marketing_optin_enabled":true}`); status != 201 && cfg.FeatureLeadsCapture {
 		t.Fatal("lead form upsert failed")
 	}
 	return f
@@ -297,6 +319,13 @@ func leadsTestConfig(notifyURL string) config.Config {
 			return "test-pepper"
 		case "FEATURE_LEADS_CAPTURE":
 			return "on"
+		// HUI-4594: trusted leads receiver seam. leads-ingest carries the
+		// lead_receiver role; other-svc stays on the default queue_producer role
+		// so the role gate has a real negative case.
+		case "TOUCH_SERVICE_TOKENS":
+			return leadsReceiverID + ":" + leadsReceiverToken + ";other-svc:other-svc-token"
+		case "TOUCH_SERVICE_ROLES":
+			return leadsReceiverID + ":lead_receiver"
 		}
 		return ""
 	})
@@ -454,20 +483,33 @@ func TestLeadsE2EHappyPath(t *testing.T) {
 		t.Fatal("submit response leaks phone")
 	}
 
-	// CRM confirms -> crm_received
+	// HUI-4594: notify 投递成功≠落库. DeliverAll flips the transport to
+	// delivered, but the sync state must stay 待同步 until the receiver's
+	// persisted ACK arrives.
 	f.stub.DeliverAll()
-	if tick := f.forwarder.Tick(context.Background()); tick.Confirmed != 1 {
-		t.Fatalf("confirm tick = %+v", tick)
+	if tick := f.forwarder.Tick(context.Background()); tick.Published != 0 {
+		t.Fatalf("deliveries are polls, not publishes: %+v", tick)
 	}
 	lead, _ = f.s.St.GetLeadSubmissionByRef(ref)
-	if lead.SyncState != "crm_received" {
-		t.Fatalf("state after confirm = %q", lead.SyncState)
+	if lead.SyncState != "pending_sync" || lead.ReceiverState != "" {
+		t.Fatalf("delivered must not end sync: state=%q receiver=%q", lead.SyncState, lead.ReceiverState)
 	}
 	if !f.stub.marketingAllowed(ref) {
 		t.Fatal("target should have marketing allowed for consented lead")
 	}
+	// the receiver's persisted ACK is the only thing that ends the sync
+	if _, _, err := f.s.St.AckLeadReceipt(f.tenA, ref, "leads-ingest", store.LeadAck{
+		ReceiptID: "rcp_flow_1", SourceEventID: ref, SubmissionID: ref,
+		SourceRevision: 1, ReceiverState: store.ReceiverStateStored,
+	}); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+	lead, _ = f.s.St.GetLeadSubmissionByRef(ref)
+	if lead.SyncState != "crm_received" || lead.ReceiverState != "stored" {
+		t.Fatalf("state after ack = %q/%q", lead.SyncState, lead.ReceiverState)
+	}
 	audits, _ := f.s.St.ListLeadAudit(f.tenA, ref)
-	if len(audits) < 3 { // accept + sync_pending + sync_delivered
+	if len(audits) < 4 { // accept + sync_pending + notify_delivered + receiver_ack
 		t.Fatalf("audit rows = %d", len(audits))
 	}
 }
@@ -581,14 +623,23 @@ func TestLeadsNotifyUnavailableStaysPending(t *testing.T) {
 	if lead.SyncState != "pending_sync" {
 		t.Fatal("pending delivery must not be reported as crm_received")
 	}
-	// CRM recovers: only then crm_received
+	// HUI-4594: CRM "recovers" at the transport (delivered) — still 待同步.
+	// Only the receiver's persisted ACK ends the sync.
 	f.stub.DeliverAll()
-	if tick := f.forwarder.Tick(context.Background()); tick.Confirmed != 1 {
-		t.Fatalf("confirm tick = %+v", tick)
+	f.forwarder.Tick(context.Background())
+	lead, _ = f.s.St.GetLeadSubmissionByRef(ref)
+	if lead.SyncState != "pending_sync" || lead.ReceiverState != "" {
+		t.Fatalf("delivered must stay 待同步: state=%q receiver=%q", lead.SyncState, lead.ReceiverState)
+	}
+	if _, _, err := f.s.St.AckLeadReceipt(f.tenA, ref, "leads-ingest", store.LeadAck{
+		ReceiptID: "rcp_outage_1", SourceEventID: ref, SubmissionID: ref,
+		SourceRevision: 1, ReceiverState: store.ReceiverStateStored,
+	}); err != nil {
+		t.Fatalf("ack: %v", err)
 	}
 	lead, _ = f.s.St.GetLeadSubmissionByRef(ref)
 	if lead.SyncState != "crm_received" {
-		t.Fatalf("state = %q, want crm_received", lead.SyncState)
+		t.Fatalf("state = %q, want crm_received after ACK", lead.SyncState)
 	}
 }
 
@@ -758,10 +809,10 @@ func TestLeadsRevokeAfterDeliverySendsRevokeFact(t *testing.T) {
 	ref := out["submission_ref"].(string)
 	f.forwarder.Tick(context.Background()) // publish -> pending_sync
 	f.stub.DeliverAll()
-	f.forwarder.Tick(context.Background()) // confirm -> crm_received
+	f.forwarder.Tick(context.Background()) // transport delivered (sync stays 待同步)
 	lead, _ := f.s.St.GetLeadSubmissionByRef(ref)
-	if lead.SyncState != "crm_received" {
-		t.Fatalf("precondition: %q", lead.SyncState)
+	if lead.SyncState != "pending_sync" {
+		t.Fatalf("precondition: %q (delivered ≠ 落库)", lead.SyncState)
 	}
 	submitRaw := f.stub.recorded()[0].Raw
 
@@ -844,12 +895,14 @@ func TestRejectedDeliveryRepairsWhenSameEventIsDelivered(t *testing.T) {
 	f.stub.mu.Lock()
 	f.stub.deliveries[notifyID] = "delivered"
 	f.stub.mu.Unlock()
-	if tick := f.forwarder.Tick(context.Background()); tick.Confirmed != 1 {
+	if tick := f.forwarder.Tick(context.Background()); tick.Repaired != 1 {
 		t.Fatalf("repair tick = %+v", tick)
 	}
 	lead, _ = f.s.St.GetLeadSubmissionByRef(ref)
-	if lead.SyncState != "crm_received" || lead.SyncError != "" {
-		t.Fatalf("repaired = state %q err %q", lead.SyncState, lead.SyncError)
+	// HUI-4594: the wrong dead verdict is repaired back to 待同步; ingestion is
+	// still unproven, so crm_received stays reserved for the persisted ACK.
+	if lead.SyncState != "pending_sync" || lead.ReceiverState != "" {
+		t.Fatalf("repaired = state %q receiver %q", lead.SyncState, lead.ReceiverState)
 	}
 }
 

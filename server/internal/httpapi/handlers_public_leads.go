@@ -432,6 +432,330 @@ func (s *Server) handlePublicViewEvent(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// ---- HUI-4594 无活动留资(门店维度公共面) ---------------------------------------------
+//
+// 复用与活动 /contact 提交链完全相同的域原语:同一 notice v1/同意纪律、
+// 同一 NormalizePhone/指纹/幂等键、同一 lead+outbox 同事务、同一 PII 扫描、
+// 同一 forwarder 与受信接收链。差别只有三件:
+//   - 解析对象是门店(storefront store_code),campaign_id 为 '';
+//   - capture_source='store',幂等桶=门店码(同店同日同号幂等);
+//   - 无活动规则(FEAT-0177 频控挂活动)与品牌模板(挂活动),如实不适用。
+
+// resolveStorefrontForLead resolves a storefront code for the lead surface.
+// Unknown code / 悬置租户 / 停用门店 are distinct-but-uniform 404s with state
+// text only (same disclosure discipline as the campaign resolution).
+func (s *Server) resolveStorefrontForLead(w http.ResponseWriter, r *http.Request) (store.StorefrontPublic, bool) {
+	pub, err := s.St.GetStorefrontPublicByCode(strings.TrimSpace(r.PathValue("storeCode")))
+	if err != nil || pub.TenantLifecycle != "active" {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not_found", "state": "unavailable", "message": "storefront is not available"})
+		return store.StorefrontPublic{}, false
+	}
+	if pub.StoreStatus != "active" {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not_found", "state": "disabled", "message": "storefront is not available"})
+		return store.StorefrontPublic{}, false
+	}
+	return pub, true
+}
+
+// GET /api/v1/public/storefronts/{storeCode}/lead-form
+func (s *Server) handlePublicStoreLeadForm(w http.ResponseWriter, r *http.Request) {
+	if !s.leadsGate(w) {
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "lead form is read-only")
+		return
+	}
+	pub, ok := s.resolveStorefrontForLead(w, r)
+	if !ok {
+		return
+	}
+	notice := leads.CurrentNotice()
+	form, err := s.St.GetLeadFormByStore(pub.StoreID)
+	if errors.Is(err, store.ErrNotFound) || !form.Enabled {
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
+		return
+	}
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "lead form lookup failed")
+		return
+	}
+	if form.NoticeVersion != notice.Version {
+		notice.Version = form.NoticeVersion // form pins the version it was configured with
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled":                 true,
+		"fields":                  []string{"name", "phone", "wechat(optional)"},
+		"required_fields":         []string{"name", "phone"},
+		"purpose":                 "本次到店服务与咨询。不留下联系方式也可以继续浏览门店。",
+		"recipient":               map[string]any{"name": pub.StoreName},
+		"notice":                  notice,
+		"marketing_optin_enabled": form.MarketingOptinEnabled,
+		"marketing_blocks_browse": false,
+	})
+}
+
+// POST /api/v1/public/storefronts/{storeCode}/lead-submissions
+func (s *Server) handlePublicStoreLeadSubmit(w http.ResponseWriter, r *http.Request) {
+	if !s.leadsGate(w) {
+		return
+	}
+	pub, ok := s.resolveStorefrontForLead(w, r)
+	if !ok {
+		return
+	}
+	// strict schema, identical discipline to the campaign lane
+	var in struct {
+		Name            string `json:"name"`
+		Phone           string `json:"phone"`
+		Wechat          string `json:"wechat"`
+		ConsentVersion  string `json:"consent_version"`
+		Consent         bool   `json:"consent"`
+		MarketingOptin  bool   `json:"marketing_optin"`
+		Channel         string `json:"channel"`
+		ActionSessionID string `json:"action_session_id"` // optional 3546 会话引用
+	}
+	dec := json.NewDecoder(ioLimit(r))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&in); err != nil {
+		fail(w, http.StatusBadRequest, "bad_request", "invalid or disallowed field in body")
+		return
+	}
+	if !in.Consent {
+		fail(w, http.StatusBadRequest, "consent_required", "explicit consent is required to store a lead")
+		return
+	}
+	notice := leads.CurrentNotice()
+	if in.ConsentVersion != notice.Version {
+		fail(w, http.StatusBadRequest, "notice_version_mismatch", "consent must reference the notice version shown to you")
+		return
+	}
+	phone, err := leads.NormalizePhone(in.Phone)
+	if err != nil {
+		fail(w, http.StatusBadRequest, "bad_phone", "phone must be a valid mainland mobile number")
+		return
+	}
+	if strings.TrimSpace(in.Name) == "" {
+		fail(w, http.StatusBadRequest, "bad_request", "name is required")
+		return
+	}
+	form, err := s.St.GetLeadFormByStore(pub.StoreID)
+	if errors.Is(err, store.ErrNotFound) || (err == nil && !form.Enabled) {
+		fail(w, http.StatusConflict, "lead_capture_not_open", "this store does not accept leads")
+		return
+	}
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "lead form lookup failed")
+		return
+	}
+	if in.MarketingOptin && !form.MarketingOptinEnabled {
+		in.MarketingOptin = false // 营销勾选未开启时提交无效,而非报错
+	}
+	if !s.LeadsLimiter.Allow(clientIP(r)) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "rate_limited", "message": "too many submissions, try later"})
+		return
+	}
+	// 3546 会话引用: 顾客自愿挂上当前动作会话以延续浏览上下文。引用必须真实
+	// 存在、active、且属于本租户本门店——捏造或跨店引用一律 400(不是静默忽略)。
+	sessionID := ""
+	if in.ActionSessionID != "" {
+		if s.Participation == nil || !s.Participation.SessionsReady() {
+			fail(w, http.StatusBadRequest, "bad_session", "action session references are not accepted here")
+			return
+		}
+		sref, serr := s.Participation.LookupSessionRef(in.ActionSessionID)
+		if serr != nil || sref.TenantID != pub.TenantID || sref.StoreID != pub.StoreID {
+			fail(w, http.StatusBadRequest, "bad_session", "action session reference is not valid for this store")
+			return
+		}
+		sessionID = in.ActionSessionID
+	}
+
+	now := time.Now().UTC()
+	phoneFP := leads.PhoneFingerprint(s.Cfg.LeadsPhonePepper, phone)
+	dk := leads.DedupKey(s.Cfg.LeadsPhonePepper, pub.StoreCode, phoneFP, now) // 桶=门店码
+
+	ref, err := leads.NewSubmissionRef()
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "reference mint failed")
+		return
+	}
+	envelope := leads.BuildSubmitEnvelope(
+		s.Cfg.AppID, s.Cfg.LeadsTargetApp, pub.TenantID,
+		"", pub.StoreID, in.Channel, "", "",
+		ref, form.NoticeVersion, now.Format(time.RFC3339), in.MarketingOptin,
+		in.Name, phone, in.Wechat, 1)
+	payload, err := leads.MarshalEnvelope(envelope)
+	if errors.Is(err, leads.ErrPIIDetected) {
+		fail(w, http.StatusInternalServerError, "internal", "outbound fact refused by PII scan")
+		return
+	}
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "envelope build failed")
+		return
+	}
+
+	lead, dup, err := s.St.SubmitLead(store.NewLeadSubmission{
+		TenantID: pub.TenantID, CampaignID: "", StoreID: pub.StoreID,
+		CaptureSource: "store", SessionID: sessionID, FormID: form.ID,
+		SubmissionRef: ref, DedupKey: dk,
+		Name: in.Name, Phone: phone, Wechat: in.Wechat,
+		MarketingOptin: in.MarketingOptin,
+		NoticeVersion:  form.NoticeVersion,
+		ConsentAt:      now.Format(time.RFC3339),
+		ConsentIPFP:    leads.PhoneFingerprint(s.Cfg.LeadsPhonePepper, clientIP(r)),
+		OutboxEventID:  "ev-" + ref, OutboxPayload: string(payload),
+	})
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "lead store failed")
+		return
+	}
+	if !dup {
+		_ = s.St.AppendLeadAudit(pub.TenantID, lead.SubmissionRef, "accept",
+			`{"source":"store","notice":"`+form.NoticeVersion+`","marketing":`+boolJSON(in.MarketingOptin)+`}`, "consumer")
+	}
+	body := publicLeadProgress(lead)
+	body["duplicate"] = dup
+	body["notice_version"] = form.NoticeVersion
+	body["revoke"] = "POST /api/v1/public/storefronts/" + pub.StoreCode + "/lead-revocations"
+	if t, err := s.St.GetTenant(pub.TenantID); err == nil {
+		body["submitted_to"] = map[string]any{"kind": "merchant_tenant", "name": t.Name}
+	}
+	writeJSON(w, mapStatus(dup), body)
+}
+
+// POST /api/v1/public/storefronts/{storeCode}/lead-status — verified read.
+func (s *Server) handlePublicStoreLeadStatus(w http.ResponseWriter, r *http.Request) {
+	if !s.leadsGate(w) {
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "lead status is a verified read")
+		return
+	}
+	lead, ok := s.resolveStoreLeadByVerification(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, publicLeadProgress(lead))
+}
+
+// POST /api/v1/public/storefronts/{storeCode}/lead-revocations
+func (s *Server) handlePublicStoreLeadRevoke(w http.ResponseWriter, r *http.Request) {
+	if !s.leadsGate(w) {
+		return
+	}
+	pub, ok := s.resolveStorefrontForLead(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		SubmissionRef string `json:"submission_ref"`
+		Phone         string `json:"phone"`
+	}
+	dec := json.NewDecoder(ioLimit(r))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&in); err != nil {
+		fail(w, http.StatusBadRequest, "bad_request", "invalid body")
+		return
+	}
+	phone, err := leads.NormalizePhone(in.Phone)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, revocationNotFound()) // no signal about ref existence
+		return
+	}
+	if !s.LeadsLimiter.Allow(clientIP(r)) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "rate_limited", "message": "too many attempts, try later"})
+		return
+	}
+	lead, err := s.St.GetLeadSubmissionByRef(strings.TrimSpace(in.SubmissionRef))
+	// 最小验证: ref 必须是本门店的 store 来源线索且手机号一致;任一失败统一 404 防枚举。
+	if err != nil || lead.TenantID != pub.TenantID || lead.StoreID != pub.StoreID ||
+		lead.CaptureSource != "store" || lead.Phone != phone {
+		writeJSON(w, http.StatusNotFound, revocationNotFound())
+		return
+	}
+	if !s.revokeVerifiedStoreLead(w, lead) {
+		return
+	}
+	updated, err := s.St.GetLeadSubmissionByRef(lead.SubmissionRef)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "revocation failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"submission_ref": updated.SubmissionRef,
+		"state":          updated.SyncState,
+	})
+}
+
+// revokeVerifiedStoreLead performs the revoke enqueue for an already-verified
+// store lead. It returns false when a response was already written.
+func (s *Server) revokeVerifiedStoreLead(w http.ResponseWriter, lead store.LeadSubmission) bool {
+	// the submit fact must exist (it is the record provenance); the store fact
+	// carries no campaign trace, so the revoke envelope is built without one
+	if _, err := s.St.LeadOutboxPayload(lead.SubmissionRef, "submit"); err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "submit fact lookup failed")
+		return false
+	}
+	revokeVersion := lead.SourceVersion + 1
+	revokeEnv := leads.BuildRevokeEnvelope(
+		s.Cfg.AppID, s.Cfg.LeadsTargetApp, lead.TenantID, lead.CampaignID,
+		lead.SubmissionRef, lead.ConsentAt, revokeVersion,
+		lead.Name, lead.Phone, lead.Wechat)
+	revokePayload, err := leads.MarshalEnvelope(revokeEnv)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "revoke fact refused by PII scan")
+		return false
+	}
+	revokeEventID := "ev-" + lead.SubmissionRef + "-revoke"
+	updated, err := s.St.RevokeLeadSubmission(lead.SubmissionRef, revokeEventID, string(revokePayload))
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, revocationNotFound())
+		return false
+	}
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "revocation failed")
+		return false
+	}
+	_ = s.St.AppendLeadAudit(lead.TenantID, lead.SubmissionRef, "revoke",
+		`{"source":"store","prior_state":"`+lead.SyncState+`","revoke_event":`+boolJSON(updated.SyncState == leads.StateRevoked)+`}`, "consumer")
+	return true
+}
+
+// resolveStoreLeadByVerification is the shared verified-read path of the store
+// lane: ref + phone must match a lead of THIS store.
+func (s *Server) resolveStoreLeadByVerification(w http.ResponseWriter, r *http.Request) (store.LeadSubmission, bool) {
+	pub, ok := s.resolveStorefrontForLead(w, r)
+	if !ok {
+		return store.LeadSubmission{}, false
+	}
+	var in struct {
+		SubmissionRef string `json:"submission_ref"`
+		Phone         string `json:"phone"`
+	}
+	dec := json.NewDecoder(ioLimit(r))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&in); err != nil {
+		fail(w, http.StatusBadRequest, "bad_request", "invalid body")
+		return store.LeadSubmission{}, false
+	}
+	phone, err := leads.NormalizePhone(in.Phone)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, revocationNotFound())
+		return store.LeadSubmission{}, false
+	}
+	lead, err := s.St.GetLeadSubmissionByRef(strings.TrimSpace(in.SubmissionRef))
+	if err != nil || lead.TenantID != pub.TenantID || lead.StoreID != pub.StoreID ||
+		lead.CaptureSource != "store" || lead.Phone != phone {
+		writeJSON(w, http.StatusNotFound, revocationNotFound())
+		return store.LeadSubmission{}, false
+	}
+	return lead, true
+}
+
 // ---- small helpers -------------------------------------------------------------
 
 func revocationNotFound() map[string]any {
