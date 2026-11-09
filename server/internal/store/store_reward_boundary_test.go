@@ -45,7 +45,9 @@ func TestConfirmRefusesStoredReviewBinding(t *testing.T) {
 	s, tenA, campA, _, _, _, _ := seedRewardWorld(t)
 	var invID string
 	must(t, s.DB.QueryRow(`SELECT id FROM reward_inventory WHERE tenant_id=? AND campaign_id=?`, tenA, campA).Scan(&invID))
-	if _, err := s.DB.Exec(`UPDATE reward_inventory SET action_kind='review' WHERE id=?`, invID); err != nil { t.Fatal(err) }
+	if _, err := s.DB.Exec(`UPDATE reward_inventory SET action_kind='review' WHERE id=?`, invID); err != nil {
+		t.Fatal(err)
+	}
 
 	in := confirmInput(tenA, campA, "p-review", "staff_observed_submission")
 	_, _, err := s.ConfirmRewardBenefit(in)
@@ -88,7 +90,9 @@ func TestRedeemRespectsBenefitValidityOnly(t *testing.T) {
 
 	// 活动已结束(store 层不参与公共 Gate;handler 层六到期判定的职责是
 	// promise 方向;redeem 只看券有效期)。
-	if _, err := s.DB.Exec(`UPDATE campaigns SET ends_at='2026-01-01T00:00:00Z' WHERE id=?`, campA); err != nil { t.Fatal(err) }
+	if _, err := s.DB.Exec(`UPDATE campaigns SET ends_at='2026-01-01T00:00:00Z' WHERE id=?`, campA); err != nil {
+		t.Fatal(err)
+	}
 	out, _, err := s.RedeemRewardBenefit(tenA, campA, ben.ID, "staff-9", "store-1", "rdm-old", boundaryNow)
 	must(t, err)
 	if out.Status != RewardStatusRedeemed {
@@ -98,7 +102,9 @@ func TestRedeemRespectsBenefitValidityOnly(t *testing.T) {
 	// 券本身有效期已过 → benefit_expired。
 	ben2, _, err := s.ConfirmRewardBenefit(confirmInput(tenA, campA, "p-stale", "staff_observed_submission"))
 	must(t, err)
-	if _, err := s.DB.Exec(`UPDATE reward_expiry_facts SET benefit_until='2026-11-01T00:00:00Z' WHERE benefit_id=?`, ben2.ID); err != nil { t.Fatal(err) }
+	if _, err := s.DB.Exec(`UPDATE reward_expiry_facts SET benefit_until='2026-11-01T00:00:00Z' WHERE benefit_id=?`, ben2.ID); err != nil {
+		t.Fatal(err)
+	}
 	_, _, err = s.RedeemRewardBenefit(tenA, campA, ben2.ID, "staff-9", "store-1", "rdm-stale", boundaryNow)
 	if !errors.Is(err, ErrRewardExpired) {
 		t.Fatalf("expired benefit must refuse redeem: %v", err)
@@ -115,7 +121,9 @@ func TestRedeemExternalOfferForbidden(t *testing.T) {
 	must(t, err)
 	var invID string
 	must(t, s.DB.QueryRow(`SELECT id FROM reward_inventory WHERE tenant_id=? AND campaign_id=?`, tenA, campA).Scan(&invID))
-	if _, err := s.DB.Exec(`UPDATE reward_inventory SET offer_id=? WHERE id=?`, offer.ID, invID); err != nil { t.Fatal(err) }
+	if _, err := s.DB.Exec(`UPDATE reward_inventory SET offer_id=? WHERE id=?`, offer.ID, invID); err != nil {
+		t.Fatal(err)
+	}
 
 	ben, _, err := s.ConfirmRewardBenefit(confirmInput(tenA, campA, "p-ext", "staff_observed_submission"))
 	must(t, err)
@@ -292,8 +300,8 @@ func TestListRewardBenefitsForVisitorT16(t *testing.T) {
 		in.EventID = "cfm-list"
 		// 活动早已结束、订阅早已到期: 查询照常,核销照常。
 		in.Expiry = &rewardops.GrantDeadlines{
-			SubscriptionUntil: "2026-11-01T00:00:00Z",
-			CampaignUntil:     "2026-11-02T00:00:00Z",
+			SubscriptionUntil:  "2026-11-01T00:00:00Z",
+			CampaignUntil:      "2026-11-02T00:00:00Z",
 			ParticipationUntil: "2026-11-03T00:00:00Z",
 		}
 		return in
