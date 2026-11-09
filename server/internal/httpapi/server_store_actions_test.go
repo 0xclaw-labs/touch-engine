@@ -239,11 +239,13 @@ func TestStoreActionsMerchantSurface(t *testing.T) {
 		t.Fatalf("duplicate = %d %v", status, dupRes)
 	}
 
-	// 未知 catalog_code / 非正式目标 / 启用但无目标。
+	// 未知 catalog_code / 非正式目标 / 启用但无目标 / 内容引用形态。
 	for _, tc := range []struct{ body, code string }{
 		{`{"expected_revision":2,"items":[{"catalog_code":"A99","label":"x","target_ref":"https://www.dianping.com/x","order":1,"enabled":true}]}`, "unknown_catalog_code"},
 		{`{"expected_revision":2,"items":[{"catalog_code":"A08","label":"x","target_ref":"http://127.0.0.1/x","order":1,"enabled":true}]}`, "bad_target_ref"},
 		{`{"expected_revision":2,"items":[{"catalog_code":"A08","label":"x","target_ref":"https://shop.example.com/x","order":1,"enabled":true},{"catalog_code":"A17","label":"y","target_ref":"","order":2,"enabled":true}]}`, "target_required"},
+		{`{"expected_revision":2,"items":[{"catalog_code":"A08","label":"x","target_ref":"https://www.dianping.com/x","content_binding_ref":"cpk_123","order":1,"enabled":true}]}`, "bad_content_binding_ref"},
+		{`{"expected_revision":2,"items":[{"catalog_code":"A08","label":"x","target_ref":"https://www.dianping.com/x","content_binding_ref":"pack:","order":1,"enabled":true}]}`, "bad_content_binding_ref"},
 	} {
 		status, _, res := f.do(t, "PUT", "/api/v1/stores/"+af.stoA+"/actions", af.sessOwner, af.tenA, tc.body)
 		if status != http.StatusBadRequest || res["error"] != tc.code {
@@ -255,24 +257,34 @@ func TestStoreActionsMerchantSurface(t *testing.T) {
 		t.Fatalf("rejected writes mutated state")
 	}
 
+	// HUI-3553 契约：pack:<id> 形态可保存并原样回读（写入侧合流后切 BindActionContent）。
+	status, _, bound := f.do(t, "PUT", "/api/v1/stores/"+af.stoA+"/actions", af.sessOwner, af.tenA, `{"expected_revision":2,"items":[
+		{"action_id":"`+ids[0]+`","catalog_code":"A08","label":"大众点评","target_ref":"https://www.dianping.com/shop/changed","content_binding_ref":"pack:cpk_good","order":5,"enabled":true},
+		{"action_id":"`+ids[1]+`","catalog_code":"A17","label":"门店 Wi-Fi","target_ref":"https://shop.example.com/wifi","order":2,"enabled":true}
+	]}`)
+	mustEqual(t, status, http.StatusOK)
+	if itemsOf(t, bound)[0]["content_binding_ref"] != "pack:cpk_good" {
+		t.Fatalf("content_binding_ref not stored/echoed: %v", itemsOf(t, bound)[0])
+	}
+
 	// 鉴权矩阵：staff 可写；本店经理可写；他店经理 403；跨租户 404。
-	status, _, staffPut := f.do(t, "PUT", "/api/v1/stores/"+af.stoA+"/actions", af.sessStaff, af.tenA, `{"expected_revision":2,"items":[
+	status, _, staffPut := f.do(t, "PUT", "/api/v1/stores/"+af.stoA+"/actions", af.sessStaff, af.tenA, `{"expected_revision":3,"items":[
 		{"action_id":"`+ids[0]+`","catalog_code":"A08","label":"大众点评","target_ref":"https://www.dianping.com/shop/changed","order":5,"enabled":true},
 		{"action_id":"`+ids[1]+`","catalog_code":"A17","label":"门店 Wi-Fi","target_ref":"https://shop.example.com/wifi","order":2,"enabled":true},
 		{"catalog_code":"A13","label":"抖音关注","target_ref":"https://www.douyin.com/user/7","order":3,"enabled":true}
 	]}`)
 	mustEqual(t, status, http.StatusOK)
-	if staffPut["config_revision"] != float64(3) {
+	if staffPut["config_revision"] != float64(4) {
 		t.Fatalf("staff put revision = %v", staffPut["config_revision"])
 	}
 
-	status, _, mgrOwn := f.do(t, "PUT", "/api/v1/stores/"+af.stoA+"/actions", af.sessMgrA, af.tenA, `{"expected_revision":3,"items":[
+	status, _, mgrOwn := f.do(t, "PUT", "/api/v1/stores/"+af.stoA+"/actions", af.sessMgrA, af.tenA, `{"expected_revision":4,"items":[
 		{"action_id":"`+ids[0]+`","catalog_code":"A08","label":"大众点评","target_ref":"https://www.dianping.com/shop/changed","order":5,"enabled":true},
 		{"action_id":"`+ids[1]+`","catalog_code":"A17","label":"门店 Wi-Fi","target_ref":"https://shop.example.com/wifi","order":2,"enabled":true},
 		{"action_id":"`+itemsOf(t, staffPut)[2]["action_id"].(string)+`","catalog_code":"A13","label":"抖音关注","target_ref":"https://www.douyin.com/user/7","order":3,"enabled":false}
 	]}`)
 	mustEqual(t, status, http.StatusOK)
-	if mgrOwn["config_revision"] != float64(4) {
+	if mgrOwn["config_revision"] != float64(5) {
 		t.Fatalf("own-store manager put = %v", mgrOwn["config_revision"])
 	}
 
@@ -306,7 +318,7 @@ func TestStoreActionsMerchantSurface(t *testing.T) {
 	}
 	// 甲一店的配置不受乙店写入影响（店间隔离）。
 	status, _, storeA := f.do(t, "GET", "/api/v1/stores/"+af.stoA+"/actions", af.sessOwner, af.tenA, "")
-	if status != http.StatusOK || len(itemsOf(t, storeA)) != 3 || storeA["config_revision"] != float64(4) {
+	if status != http.StatusOK || len(itemsOf(t, storeA)) != 3 || storeA["config_revision"] != float64(5) {
 		t.Fatalf("store isolation broken: %v", storeA["config_revision"])
 	}
 }

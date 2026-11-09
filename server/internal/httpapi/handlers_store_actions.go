@@ -90,9 +90,22 @@ func (s *Server) handleStoreActionsPut(w http.ResponseWriter, r *http.Request) {
 			fail(w, http.StatusBadRequest, "bad_target_ref", "target_ref must be a public https URL")
 			return
 		}
+		// HUI-3553 对接契约：content_binding_ref 只接受 '' 或 pack:<id> 形态
+		// （引用 3553 已采用内容包）。合流后写入侧切换为调用 3553 导出的
+		// BindActionContent（本票此刻同仓不可见，先按契约收口形状，行上仍存
+		// 同值供消费方过渡读取）；未知形态一律拒绝，不做猜测性引用。
+		binding := strings.TrimSpace(raw.ContentBindingRef)
+		if binding != "" && !strings.HasPrefix(binding, "pack:") {
+			fail(w, http.StatusBadRequest, "bad_content_binding_ref", "content_binding_ref must reference an adopted pack as pack:<id>")
+			return
+		}
+		if binding != "" && strings.TrimSpace(strings.TrimPrefix(binding, "pack:")) == "" {
+			fail(w, http.StatusBadRequest, "bad_content_binding_ref", "content_binding_ref must reference an adopted pack as pack:<id>")
+			return
+		}
 		inputs = append(inputs, store.StoreActionInput{
 			ID: strings.TrimSpace(raw.ActionID), CatalogCode: entry.Code,
-			Label: label, TargetRef: target, ContentBindingRef: strings.TrimSpace(raw.ContentBindingRef),
+			Label: label, TargetRef: target, ContentBindingRef: binding,
 			SortOrder: raw.Order, Enabled: raw.Enabled,
 		})
 	}
