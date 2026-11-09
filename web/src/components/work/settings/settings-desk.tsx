@@ -77,6 +77,12 @@ const ROLE_LABELS: Record<string, string> = {
   agent: "代理",
 };
 
+// newTemplateDraft starts ONE logical distribution request: its idempotency
+// key stays fixed across failure retries and is only rotated after success.
+function newTemplateDraft() {
+  return { ref: "", version: "", picked: [] as string[], fields: "", reason: "", key: `dist-${Date.now()}` };
+}
+
 export function SettingsDesk() {
   const session = useSession();
   const owner = session.role === "org_owner";
@@ -200,7 +206,7 @@ function MembersSection({
     const res = await sessionApi("POST", "admin/members", {
       principal_ref: draft.principal.trim(),
       role: draft.role,
-      store_scope: draft.role === "store_manager" || draft.scope ? draft.scope : "",
+      store_scope: (draft.role === "store_manager" || draft.scope !== "") ? draft.scope : "",
       display_name: "",
       reason: draft.reason.trim(),
     });
@@ -453,7 +459,7 @@ function TemplatesSection({
   setNotice: (v: string) => void;
   sessionApi: SessionApi;
 }) {
-  const [draft, setDraft] = useState({ ref: "", version: "", picked: [] as string[], fields: "", reason: "" });
+  const [draft, setDraft] = useState(() => newTemplateDraft());
 
   async function distribute(event: React.FormEvent) {
     event.preventDefault();
@@ -470,7 +476,9 @@ function TemplatesSection({
       source_version: draft.version.trim(),
       store_ids: draft.picked,
       allowed_override_fields: draft.fields.split(/[,，\s]+/).filter(Boolean),
-      request_key: draft.reason.trim().slice(0, 32) + "-" + Date.now(),
+      // 幂等键在一次逻辑请求的生命周期内稳定:失败重试沿用同一 key
+      // (服务端按 key 重放,不重复创建);成功后才换新 key。
+      request_key: draft.key,
     });
     if (!res.ok) {
       setNotice(failureText(res.status, res.data));
@@ -478,7 +486,7 @@ function TemplatesSection({
     }
     const failItems = ((res.data.items as { ok: boolean }[]) ?? []).filter((it) => !it.ok);
     setNotice(failItems.length > 0 ? `下发完成，但有 ${failItems.length} 家门店失败（可重试，不会重复创建）。` : "模板已下发给选中门店。各店的账号、二维码、Wi-Fi 密码不会被覆盖。");
-    setDraft({ ref: "", version: "", picked: [], fields: "", reason: "" });
+    setDraft(newTemplateDraft());
     await reload();
   }
 

@@ -252,9 +252,9 @@ func (s *Server) handleTemplateAssignmentCreate(w http.ResponseWriter, r *http.R
 			items = append(items, map[string]any{"store_id": storeID, "ok": false, "error": "internal"})
 		}
 	}
-	// 审计(成功行逐店一条;失败不落授权事实)
+	// 审计(仅新授权事实落痕;重放行不重复记审计,失败不落授权事实)
 	for _, it := range items {
-		if it["ok"] != true {
+		if it["ok"] != true || it["replayed"] == true {
 			continue
 		}
 		_, _ = s.St.AppendAuthzAudit(store.AuthzAuditEntry{
@@ -266,18 +266,16 @@ func (s *Server) handleTemplateAssignmentCreate(w http.ResponseWriter, r *http.R
 		})
 	}
 
-	status := http.StatusCreated
-	if okCount > 0 && okCount == replayedCount {
-		// 全部命中既有行 = 幂等重放(零新增),答 200 + replayed
+	// 全部成功且全部命中既有行 = 幂等重放(零新增)→ 200 + replayed;
+	// 有任何失败行 → 207 逐项报告(部分失败绝不标全部成功,重试亦然)。
+	failCount := len(items) - okCount
+	if failCount == 0 && okCount > 0 && okCount == replayedCount {
 		writeJSON(w, http.StatusOK, map[string]any{"replayed": true, "items": items})
 		return
 	}
-	if okCount == 0 || (okCount > 0 && len(items) > okCount) {
-		// 有失败行 → 多状态逐项报告(部分失败绝不标全部成功)
+	status := http.StatusCreated
+	if failCount > 0 || okCount == 0 {
 		status = http.StatusMultiStatus
-		if okCount == 0 {
-			status = http.StatusMultiStatus
-		}
 	}
 	writeJSON(w, status, map[string]any{"items": items})
 }

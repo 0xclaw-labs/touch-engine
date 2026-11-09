@@ -361,14 +361,31 @@ func TestTemplateAssignmentDistribution(t *testing.T) {
 		t.Fatalf("report ok=%d fail=%d, want 2/1", okCount, failCount)
 	}
 
-	// idempotent retry: same request_key → replayed, no duplicates
+	// idempotent retry: same request_key → the previously-failed store still
+	// fails (207 逐项如实),the ok rows answer per-row replayed;no duplicates.
 	status, out = f.do(t, "POST", "/api/v1/template-assignments", "sess-owner-a", f.tenA, body)
-	if status != 200 || out["replayed"] != true {
-		t.Fatalf("retry = %d %v, want 200 replayed", status, out)
+	if status != http.StatusMultiStatus {
+		t.Fatalf("retry with failed store = %d, want 207 (逐项如实)", status)
+	}
+	replayedCount := 0
+	for _, m := range stringListAny(out["items"]) {
+		if m["replayed"] == true {
+			replayedCount++
+		}
+	}
+	if replayedCount != 2 {
+		t.Fatalf("retry replayed rows = %d, want 2 (不重复创建)", replayedCount)
 	}
 	_, list := f.do(t, "GET", "/api/v1/template-assignments", "sess-owner-a", f.tenA, "")
 	if got := len(stringListAny(list["items"])); got != 2 {
 		t.Fatalf("list after retry = %d, want 2 (不重复创建)", got)
+	}
+
+	// pure replay (all stores exist now): 200 + top-level replayed
+	body = fmt.Sprintf(`{"template_ref":"tpl_hero","source_version":"v3","store_ids":[%q,%q],"allowed_override_fields":["hero_title"],"request_key":"req_1"}`, f.st1, f.st2)
+	status, out = f.do(t, "POST", "/api/v1/template-assignments", "sess-owner-a", f.tenA, body)
+	if status != 200 || out["replayed"] != true {
+		t.Fatalf("pure replay = %d %v, want 200 replayed", status, out)
 	}
 
 	// reserved fields refused (门店目标/账号/二维码/Wi-Fi 密码永不跨店复制)
