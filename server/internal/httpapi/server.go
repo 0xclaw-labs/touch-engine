@@ -537,6 +537,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/public/links/{code}/lead-status", http.HandlerFunc(s.handlePublicLeadStatus))
 	mux.Handle("POST /api/v1/public/links/{code}/lead-revocations", http.HandlerFunc(s.handlePublicLeadRevoke))
 	mux.Handle("POST /api/v1/public/links/{code}/view-events", http.HandlerFunc(s.handlePublicViewEvent))
+	// HUI-4594 无活动留资: same guest-write discipline on the store lane —
+	// campaign_id stays '', capture_source='store', no campaign is fabricated.
+	mux.Handle("GET /api/v1/public/storefronts/{storeCode}/lead-form", http.HandlerFunc(s.handlePublicStoreLeadForm))
+	mux.Handle("POST /api/v1/public/storefronts/{storeCode}/lead-submissions", http.HandlerFunc(s.handlePublicStoreLeadSubmit))
+	mux.Handle("POST /api/v1/public/storefronts/{storeCode}/lead-status", http.HandlerFunc(s.handlePublicStoreLeadStatus))
+	mux.Handle("POST /api/v1/public/storefronts/{storeCode}/lead-revocations", http.HandlerFunc(s.handlePublicStoreLeadRevoke))
 
 	// HUI-1670 customer preview / manual publish. No platform outbound.
 	mux.Handle("GET /api/v1/public/links/{code}/publish-capabilities", http.HandlerFunc(s.handlePublicPublishCapabilities))
