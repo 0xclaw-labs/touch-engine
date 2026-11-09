@@ -33,6 +33,8 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"campaign_rules",
 		"campaign_saved_copy",
 		"campaigns",
+		"channel_action_capabilities",
+		"channel_admission_control_log",
 		"channel_admission_revisions",
 		"channel_admissions",
 		"content_handoffs",
