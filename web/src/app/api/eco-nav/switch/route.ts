@@ -1,13 +1,14 @@
 import { NextResponse } from "next/server";
 import { bffConfigProblems, readBffEnv } from "@/lib/bff";
-import { validateLaunchUrl } from "@/lib/eco-nav/allowlist";
 
-// HUI-2628: thin browser-facing app-switch BFF.
+// HUI-2628 + HUI-2222: thin browser-facing app-switch mint BFF.
 //   browser {app_id, launch_target_id}
 //     -> Go /api/v1/eco-nav/switch (session + tenant)
 //     -> public-ai POST /internal/v1/identity/shell/launch
-//     -> validated launch_url
-// The response is never assembled here and carries no campaign/asset data.
+//     -> Go keeps the launch_url server-side and answers a short-lived
+//        single-use jump_token (jtg_, 60s, bound to principal+tenant)
+// The mint response never carries a launch_url; the browser redeems via
+// /api/eco-nav/switch/redeem to release it exactly once.
 
 export const dynamic = "force-dynamic";
 
@@ -71,13 +72,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "launch_unavailable", message: "这次切换没有成功，请稍后重试" }, { status: 502 });
   }
 
-  const raw = typeof data.launch_url === "string" ? data.launch_url : "";
-  const launchUrl = validateLaunchUrl(targetId, raw);
-  if (!launchUrl) {
+  // HUI-2222: mint answers a jump credential only. An upstream that still
+  // tries to hand out a launch_url here is misbehaving — fail closed (502)
+  // and never relay it.
+  const jumpToken = typeof data.jump_token === "string" ? data.jump_token : "";
+  if (!jumpToken || typeof data.launch_url === "string") {
     return NextResponse.json(
-      { error: "launch_target_mismatch", message: "这次切换没有成功，请稍后重试" },
+      { error: "mint_contract_violation", message: "这次切换没有成功，请稍后重试" },
       { status: 502 },
     );
   }
-  return NextResponse.json({ launch_url: launchUrl });
+  return NextResponse.json({
+    jump_token: jumpToken,
+    grant_id: typeof data.grant_id === "string" ? data.grant_id : "",
+    expires_at: typeof data.expires_at === "string" ? data.expires_at : "",
+  });
 }
