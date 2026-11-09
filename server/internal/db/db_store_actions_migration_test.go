@@ -108,7 +108,7 @@ func TestStoreActionsLegacyBackfill(t *testing.T) {
 	jump("cmp_1", "wifi", "https://shop.example.com/wifi", 1)
 	jump("cmp_1", "review", "https://www.dianping.com/shop/x", 1)
 	jump("cmp_1", "wecom", "https://work.weixin.qq.com/ca/y", 1)
-	jump("cmp_1", "follow", "https://www.douyin.com/user/z", 0) // 停用态也要保留
+	jump("cmp_1", "follow", "https://www.douyin.com/user/z", 0)  // 停用态也要保留
 	jump("cmp_2", "review", "https://shop.example.com/other", 1) // 平台推不出：待映射
 	jump("cmp_4", "follow", "https://shop.example.com/fb", 1)    // 平台推不出：待映射
 	// UNIQUE(campaign_id,kind)：同活动同 kind 只能一行；navigate 留旧路径。

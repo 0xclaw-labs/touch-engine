@@ -47,9 +47,9 @@ type Storefront struct {
 // public projection needs. Tenant secrets never enter this struct.
 type StorefrontPublic struct {
 	Storefront
-	StoreName      string
-	StoreAddress   string
-	StoreStatus    string
+	StoreName       string
+	StoreAddress    string
+	StoreStatus     string
 	TenantLifecycle string
 }
 

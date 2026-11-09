@@ -102,11 +102,11 @@ func newActionsHTTPFixture(t *testing.T, storefrontFlag bool) *actionsFixture {
 	t.Cleanup(ts.Close)
 
 	return &actionsFixture{
-		f:          &fixture{s: s, ts: ts, tenA: tenA.ID, tenB: tenB.ID, ownA: "usr_owner_a", ownB: "usr_owner_b", staffA: "usr_staff_a"},
-		tenA:       tenA.ID, tenB: tenB.ID,
-		stoA:       stoA.ID, stoB: stoB.ID,
-		sessOwner:  "sess-owner-a", sessStaff: "sess-staff-a",
-		sessMgrA:   "sess-mgr-a", sessMgrB: "sess-mgr-b",
+		f:    &fixture{s: s, ts: ts, tenA: tenA.ID, tenB: tenB.ID, ownA: "usr_owner_a", ownB: "usr_owner_b", staffA: "usr_staff_a"},
+		tenA: tenA.ID, tenB: tenB.ID,
+		stoA: stoA.ID, stoB: stoB.ID,
+		sessOwner: "sess-owner-a", sessStaff: "sess-staff-a",
+		sessMgrA: "sess-mgr-a", sessMgrB: "sess-mgr-b",
 		sessOwnerB: "sess-owner-b",
 	}
 }
