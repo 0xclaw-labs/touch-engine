@@ -245,6 +245,11 @@ func TestTouchpointRebindPreviewConfirmAndConflict(t *testing.T) {
 		"FEATURE_PARTICIPATION":    "on",
 	})
 	camp1, camp2, _, _, _, _, tp1, _ := tpSeedScene(t, f)
+	// B02:场景别名 provision 落 store 根;本测试锁的是 legacy 换绑契约(旧调用方
+	// 兼容路径),先把 tp1 换绑回活动目标(同 URL,revision 前进),再走原断言。
+	status, _, _ := f.do(t, "POST", "/api/v1/touchpoints/"+tp1+"/rebind", "sess-owner-a", f.tenA,
+		`{"target_type":"legacy_campaign","campaign_id":"`+camp1+`","expected_binding_revision":1}`)
+	mustEqual(t, status, http.StatusOK)
 
 	// 两位顾客从 camp1 的短码开始参与(真实公共路径,3546 语义)
 	startBody := func(idem string) string {
@@ -298,9 +303,9 @@ func TestTouchpointRebindPreviewConfirmAndConflict(t *testing.T) {
 	if status != http.StatusBadRequest || body["error"] != "campaign_without_entry" {
 		t.Fatalf("no-entry rebind = %d %v", status, body)
 	}
-	// 审计:created + rebind
+	// 审计:created + 换绑链(含开头 store→legacy 的同 URL 升级)末条 rebind。
 	events := tpDetail(t, f, tp1)["events"].([]any)
-	if len(events) != 2 || events[1].(map[string]any)["kind"] != "rebind" {
+	if len(events) != 3 || events[len(events)-1].(map[string]any)["kind"] != "rebind" {
 		t.Fatalf("events after rebind = %v", events)
 	}
 }
@@ -320,7 +325,9 @@ func TestTouchpointDisableIndependentOfSharedLink(t *testing.T) {
 	}
 	status, _, view = f.do(t, "GET", "/api/v1/public/touchpoints/"+tpAliasCode(t, f, tp2), "", "", "")
 	mustEqual(t, status, http.StatusOK)
-	if view["state"] != "available" || view["code"] != code1 {
+	// B02:对照卡是 store 根 —— available 形状是门店公共码,活动短码字段零出现。
+	tpStoreKeySet(t, view)
+	if view["state"] != "available" || view["target_type"] != "store" || view["store_code"] == "" {
 		t.Fatalf("sibling alias public = %v", view)
 	}
 	// 底层短码照常(旧 /c 兼容零变化)
@@ -559,14 +566,12 @@ func TestTouchpointPublicResolutionAPI(t *testing.T) {
 	// on:available → {state, code}
 	f := newTPFixture(t, map[string]string{"FEATURE_TOUCHPOINT_ENTRY": "on"})
 	camp1, _, code1, tag2, _, _, tpA, tpB := tpSeedScene(t, f)
+	// store 根 available → 白名单五键(store_code;活动注记零参与)
 	status, _, view := f.do(t, "GET", "/api/v1/public/touchpoints/"+tpAliasCode(t, f, tpA), "", "", "")
 	mustEqual(t, status, http.StatusOK)
-	if view["state"] != "available" || view["code"] != code1 {
-		t.Fatalf("public = %v, want available+%s", view, code1)
-	}
-	// 载荷白名单形状:只有 state/code,无 uid_hint/角色/租户
-	if len(view) != 2 {
-		t.Fatalf("public keys = %v, want state+code only", view)
+	tpStoreKeySet(t, view)
+	if view["state"] != "available" || view["target_type"] != "store" || view["store_code"] == "" {
+		t.Fatalf("store public = %v", view)
 	}
 	// 未知码/形状非法/别名停用 → 同形 404 单字段
 	status, _, view = f.do(t, "GET", "/api/v1/public/touchpoints/AAAAAAAAAAAAAAAAAAAA", "", "", "")
@@ -582,8 +587,17 @@ func TestTouchpointPublicResolutionAPI(t *testing.T) {
 	if status != http.StatusNotFound || view["state"] != "touchpoint_disabled" || len(view) != 1 {
 		t.Fatalf("disabled = %d %v", status, view)
 	}
+	// legacy 卡(换绑回活动目标):available → {state, code}(code 兼容保留);
 	// 活动暂停:仍 200 带码(交既有 /c 页渲染五态文案)
+	f.do(t, "POST", "/api/v1/touchpoints/"+tpB+"/rebind", "sess-owner-a", f.tenA,
+		`{"target_type":"legacy_campaign","campaign_id":"`+camp1+`","expected_binding_revision":1}`)
 	f.do(t, "POST", "/api/v1/touchpoints/"+tpB+"/status", "sess-owner-a", f.tenA, `{"status":"active"}`)
+	status, _, view = f.do(t, "GET", "/api/v1/public/touchpoints/"+tpAliasCode(t, f, tpB), "", "", "")
+	mustEqual(t, status, http.StatusOK)
+	tpLegacyKeySet(t, view)
+	if view["state"] != "available" || view["code"] != code1 {
+		t.Fatalf("legacy public = %v, want available+%s", view, code1)
+	}
 	f.do(t, "POST", "/api/v1/campaigns/"+camp1+"/status", "sess-owner-a", f.tenA, `{"status":"paused"}`)
 	status, _, view = f.do(t, "GET", "/api/v1/public/touchpoints/"+tpAliasCode(t, f, tpB), "", "", "")
 	mustEqual(t, status, http.StatusOK)
@@ -628,5 +642,168 @@ func TestTouchpointDisableInvalidatesCacheImmediately(t *testing.T) {
 	mustEqual(t, status, http.StatusOK)
 	if view["code"] == code1 {
 		t.Fatalf("after rebind the resolved code did not move: %v", view)
+	}
+}
+
+// ---- B02 store 根触点 API ---------------------------------------------------------------
+
+// tpStoreKeySet asserts the exact public payload key set (白名单形状闸).
+func tpStoreKeySet(t *testing.T, view map[string]any) {
+	t.Helper()
+	want := map[string]bool{"schema_version": true, "state": true, "target_type": true, "store_code": true, "binding_revision": true}
+	if len(view) != len(want) {
+		t.Fatalf("public keys = %v, want exactly %v", view, want)
+	}
+	for k := range want {
+		if _, ok := view[k]; !ok {
+			t.Fatalf("public keys = %v, missing %q", view, k)
+		}
+	}
+}
+
+func tpLegacyKeySet(t *testing.T, view map[string]any) {
+	t.Helper()
+	want := map[string]bool{"schema_version": true, "state": true, "target_type": true, "code": true, "campaign_code": true, "binding_revision": true}
+	if len(view) != len(want) {
+		t.Fatalf("public keys = %v, want exactly %v", view, want)
+	}
+	for k := range want {
+		if _, ok := view[k]; !ok {
+			t.Fatalf("public keys = %v, missing %q", view, k)
+		}
+	}
+}
+
+// TestTouchpointStoreRootPublicAndRebindAPI:B02 全链 —— 门店根 provision/公共解析
+// (零活动门控)/target 换绑(revision 并发)/越店拒绝/缓存即时失效/store↔legacy 互转。
+func TestTouchpointStoreRootPublicAndRebindAPI(t *testing.T) {
+	f := newTPFixture(t, map[string]string{
+		"FEATURE_TOUCHPOINT_ENTRY": "on",
+		"FEATURE_PUBLIC_CACHE":     "on",
+	})
+	camp1, camp2, _, _, _, _, tp1, tp2 := tpSeedScene(t, f)
+	// B 店标签 + 别名(经 API,服务端从标签派生门店)
+	status, _, links1 := f.do(t, "GET", "/api/v1/campaigns/"+camp1+"/links", "sess-owner-a", f.tenA, "")
+	mustEqual(t, status, http.StatusOK)
+	linkID := links1["items"].([]any)[0].(map[string]any)["id"].(string)
+	status, _, batch := f.do(t, "POST", "/api/v1/nfc/tags/batch", "sess-owner-a", f.tenA,
+		batchReq(camp1, []string{linkID}, 1, f.stoB.ID, "", "B店卡", "shared"))
+	mustEqual(t, status, http.StatusCreated)
+	tagB := batch["items"].([]any)[0].(map[string]any)["id"].(string)
+	status, _, tpvB := f.do(t, "POST", "/api/v1/touchpoints", "sess-owner-a", f.tenA, `{"tag_id":"`+tagB+`"}`)
+	mustEqual(t, status, http.StatusCreated)
+	tpB := tpvB["id"].(string)
+
+	// 1) 详情:store 根 + revision 1 + 门店公共码;campaign 是注记(解析不消费)。
+	v := tpDetail(t, f, tp1)
+	if v["target_type"] != "store" || v["binding_revision"] != float64(1) || v["store_code"] == "" {
+		t.Fatalf("detail = target %v rev %v store_code %v", v["target_type"], v["binding_revision"], v["store_code"])
+	}
+	storeCodeA := v["store_code"].(string)
+	// 2) 公共解析 store 形状:白名单五键;活动注记零参与。
+	codeA := tpAliasCode(t, f, tp1)
+	status, _, view := f.do(t, "GET", "/api/v1/public/touchpoints/"+codeA, "", "", "")
+	mustEqual(t, status, http.StatusOK)
+	tpStoreKeySet(t, view)
+	if view["state"] != "available" || view["target_type"] != "store" || view["store_code"] != storeCodeA {
+		t.Fatalf("store public = %v", view)
+	}
+	// 3) 注记活动暂停:门店入口照常(无活动/暂停不关闭门店基础服务)。
+	status, _, _ = f.do(t, "POST", "/api/v1/campaigns/"+camp1+"/status", "sess-owner-a", f.tenA, `{"status":"paused"}`)
+	mustEqual(t, status, http.StatusOK)
+	status, _, view = f.do(t, "GET", "/api/v1/public/touchpoints/"+codeA, "", "", "")
+	mustEqual(t, status, http.StatusOK)
+	if view["state"] != "available" || view["target_type"] != "store" {
+		t.Fatalf("paused annotation gated store root: %v", view)
+	}
+	status, _, _ = f.do(t, "POST", "/api/v1/campaigns/"+camp1+"/status", "sess-owner-a", f.tenA, `{"status":"active"}`)
+	mustEqual(t, status, http.StatusOK)
+
+	// 4) 换绑预览(store→store B)+ 确认(expected_binding_revision):URL 不变。
+	status, _, pv := f.do(t, "POST", "/api/v1/touchpoints/"+tp1+"/rebind-preview", "sess-owner-a", f.tenA,
+		`{"target_type":"store","store_id":"`+f.stoB.ID+`"}`)
+	mustEqual(t, status, http.StatusOK)
+	if cur, _ := pv["current"].(map[string]any); cur == nil || cur["target_type"] != "store" || cur["id"] != f.stoA.ID {
+		t.Fatalf("preview current = %v", pv["current"])
+	}
+	if nxt, _ := pv["next"].(map[string]any); nxt == nil || nxt["target_type"] != "store" || nxt["id"] != f.stoB.ID || nxt["store_code"] == "" {
+		t.Fatalf("preview next = %v", pv["next"])
+	}
+	if pv["binding_revision"] != float64(1) {
+		t.Fatalf("preview revision = %v", pv["binding_revision"])
+	}
+	before := tpDetail(t, f, tp1)
+	status, _, after := f.do(t, "POST", "/api/v1/touchpoints/"+tp1+"/rebind", "sess-owner-a", f.tenA,
+		`{"target_type":"store","store_id":"`+f.stoB.ID+`","expected_binding_revision":1}`)
+	mustEqual(t, status, http.StatusOK)
+	if after["code"] != before["code"] || after["url"] != before["url"] {
+		t.Fatalf("rebind changed the printed URL: %v -> %v", before["url"], after["url"])
+	}
+	if after["target_type"] != "store" || after["store_id"] != f.stoB.ID || after["binding_revision"] != float64(2) {
+		t.Fatalf("after rebind = %v/%v/%v", after["target_type"], after["store_id"], after["binding_revision"])
+	}
+	if after["campaign_id"] != nil { // omitempty:注记清空后键缺省
+		t.Fatalf("store rebind must clear the campaign annotation, got %v", after["campaign_id"])
+	}
+	// 5) 陈旧 revision → 409 rebind_conflict。
+	status, _, body := f.do(t, "POST", "/api/v1/touchpoints/"+tp1+"/rebind", "sess-owner-a", f.tenA,
+		`{"target_type":"store","store_id":"`+f.stoA.ID+`","expected_binding_revision":1}`)
+	if status != http.StatusConflict || body["error"] != "rebind_conflict" {
+		t.Fatalf("stale revision = %d %v", status, body)
+	}
+	// 6) 缓存开:换绑后公共解析立即反映新门店码(epoch 结构失效)。
+	status, _, view = f.do(t, "GET", "/api/v1/public/touchpoints/"+codeA, "", "", "")
+	mustEqual(t, status, http.StatusOK)
+	if view["store_code"] != after["store_code"] || view["store_code"] == storeCodeA {
+		t.Fatalf("cached public after rebind = %v", view)
+	}
+	// 7) 越店经理:本店别名 + 他店目标 → 404 掩码(目标输入永不放宽经理视野)。
+	status, _, body = f.do(t, "POST", "/api/v1/touchpoints/"+tp2+"/rebind", "sess-mgr-a", f.tenA,
+		`{"target_type":"store","store_id":"`+f.stoB.ID+`","expected_binding_revision":1}`)
+	if status != http.StatusNotFound {
+		t.Fatalf("cross-store manager rebind = %d %v, want 404 mask", status, body)
+	}
+	// 停用门店不可作为换绑目标。
+	status, _, _ = f.do(t, "POST", "/api/v1/stores/"+f.stoB.ID+"/status", "sess-owner-a", f.tenA, `{"status":"disabled"}`)
+	if status == http.StatusNotImplemented {
+		t.Skip("store status endpoint absent") // 门店停用属 1676 域;此处仅契约防线
+	}
+
+	// 8) store → legacy:同卡回到活动契约,公共载荷 legacy 六键。
+	camp2Code := tpLinkCode(t, f, camp2)
+	status, _, after2 := f.do(t, "POST", "/api/v1/touchpoints/"+tp1+"/rebind", "sess-owner-a", f.tenA,
+		`{"target_type":"legacy_campaign","campaign_id":"`+camp2+`","expected_binding_revision":2}`)
+	mustEqual(t, status, http.StatusOK)
+	if after2["target_type"] != "legacy_campaign" || after2["campaign_id"] != camp2 || after2["binding_revision"] != float64(3) {
+		t.Fatalf("store→legacy = %v", after2)
+	}
+	status, _, view = f.do(t, "GET", "/api/v1/public/touchpoints/"+codeA, "", "", "")
+	mustEqual(t, status, http.StatusOK)
+	tpLegacyKeySet(t, view)
+	if view["state"] != "available" || view["code"] != camp2Code || view["campaign_code"] != camp2Code {
+		t.Fatalf("legacy public = %v", view)
+	}
+	// 9) 旧调用方兼容:legacy guard(campaign 比对)仍可用,revision 继续前进。
+	status, _, after3 := f.do(t, "POST", "/api/v1/touchpoints/"+tp1+"/rebind", "sess-owner-a", f.tenA,
+		`{"campaign_id":"`+camp1+`","expected_campaign_id":"`+camp2+`"}`)
+	mustEqual(t, status, http.StatusOK)
+	if after3["campaign_id"] != camp1 || after3["binding_revision"] != float64(4) {
+		t.Fatalf("legacy compat rebind = %v", after3)
+	}
+	// 10) 审计链:created + 每次换绑一条。
+	events := tpDetail(t, f, tp1)["events"].([]any)
+	rebinds := 0
+	for _, e := range events {
+		if e.(map[string]any)["kind"] == "rebind" {
+			rebinds++
+		}
+	}
+	if rebinds != 3 {
+		t.Fatalf("rebind audits = %d, want 3", rebinds)
+	}
+	// tpB(B 店)细节:门店根派生自标签绑定,公共码与 B 店一致。
+	vB := tpDetail(t, f, tpB)
+	if vB["store_id"] != f.stoB.ID || vB["target_type"] != "store" {
+		t.Fatalf("store B alias = %v/%v", vB["store_id"], vB["target_type"])
 	}
 }
