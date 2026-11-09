@@ -166,6 +166,9 @@ func (s *Server) handlePublicPublishHandoffRoutes(w http.ResponseWriter, r *http
 			Now:          time.Now().UTC(),
 			DeepLinkBase: s.Cfg.PublishHandoffH5EntryBase,
 			MiniappBase:  s.Cfg.PublishHandoffMiniappEntryBase,
+			// 服务端派生事实(3535 合同 §6 指令①):客户端标记不可信。
+			RewardPlay:     rec.Scenario == channeladmission.ActionScenarioRewardTask,
+			MerchantAppRef: s.Cfg.PublishHandoffMerchantAppRef,
 		}, rec)
 		plans = append(plans, map[string]any{
 			"entry_mode": rec.EntryMode, "scenario": rec.Scenario, "plan": planView(p),
@@ -182,9 +185,12 @@ func (s *Server) handlePublicPublishHandoffRoutes(w http.ResponseWriter, r *http
 	packFilter := strings.TrimSpace(r.URL.Query().Get("pack_id"))
 	wantSnapshot := packFilter != "" || r.URL.Query().Get("with_snapshot") == "1"
 	if wantSnapshot {
+		// 拒绝面/资格未知面零内容探测:refused 与 pending_external 路线都不给
+		// 快照(无确认对象;与 start 的 gate-first 同口径)。
 		refusedAll := len(plans) > 0
 		for _, item := range plans {
-			if item["plan"].(map[string]any)["kind"] != publishhandoff.PlanRefused {
+			k := item["plan"].(map[string]any)["kind"]
+			if k != publishhandoff.PlanRefused && k != publishhandoff.PlanPendingExternal {
 				refusedAll = false
 				break
 			}
@@ -262,6 +268,8 @@ func (s *Server) handlePublicPublishHandoffStart(w http.ResponseWriter, r *http.
 	tenantID := p.TenantID
 
 	// 1) 渠道裁决先行(拒绝路径零内容探测:不给未准入路线任何信息面)。
+	// 3535 合同 §6 指令②:pending_external(资格未知)与 refused 同样零落行——
+	// unknown 永不自动当 manual 许可,顾客侧不承诺、不显示可完成态。
 	entryMode := strings.TrimSpace(body.EntryMode)
 	if entryMode == "" {
 		entryMode = s.pickEntryMode(tenantID, body.Platform, body.Scenario)
@@ -271,7 +279,10 @@ func (s *Server) handlePublicPublishHandoffStart(w http.ResponseWriter, r *http.
 		TenantID: tenantID, Platform: body.Platform, EntryMode: entryMode, Scenario: body.Scenario,
 		Now:          time.Now().UTC(),
 		DeepLinkBase: s.Cfg.PublishHandoffH5EntryBase, MiniappBase: s.Cfg.PublishHandoffMiniappEntryBase,
-	}, record); plan.Kind == publishhandoff.PlanRefused {
+		// 服务端派生事实(§6 指令①):奖励性质按记录场景,App 绑定按部署配置。
+		RewardPlay:     record.Scenario == channeladmission.ActionScenarioRewardTask,
+		MerchantAppRef: s.Cfg.PublishHandoffMerchantAppRef,
+	}, record); plan.Kind == publishhandoff.PlanRefused || plan.Kind == publishhandoff.PlanPendingExternal {
 		s.writePublishHandoffError(w, &publishhandoff.HandoffRefusedError{
 			Reason: plan.Reason, ReasonText: plan.ReasonText, Notice: plan.Notice, Missing: plan.Missing,
 		})
@@ -504,6 +515,8 @@ func (s *Server) handlePublicPublishHandoffGet(w http.ResponseWriter, r *http.Re
 		TenantID: h.TenantID, Platform: h.Platform, EntryMode: h.EntryMode, Scenario: h.Scenario,
 		Now: time.Now().UTC(), Text: text,
 		DeepLinkBase: s.Cfg.PublishHandoffH5EntryBase, MiniappBase: s.Cfg.PublishHandoffMiniappEntryBase,
+		RewardPlay:     record.Scenario == channeladmission.ActionScenarioRewardTask,
+		MerchantAppRef: s.Cfg.PublishHandoffMerchantAppRef,
 	}, record)
 	refs, err := s.PublishHandoff.MediaForVisitor(r.Context(), h.ID, mustVisitor(r))
 	if err != nil {

@@ -1,14 +1,20 @@
 // 渠道适配:准入裁决决定计划形态,适配器不自建白名单。
 //
-// 三分计划(设计裁决 Q3):
-//   - refused     Gate 拒绝(not_admitted/closed/expired/wrong_binding…):
-//     不给交接入口;not_admitted 同时不提供本玩法的手工发布
-//     步骤——不把手工路径做成被禁营销玩法的后门(票面红线);
-//   - manual_only unknown 或 manual 入口:诚实降级为合规导出+手动指引
-//     (PR#15 基线语义),交接管道照常(恢复/取消/验签/幂等不停);
-//   - automated   admitted:按 entry_mode 构造 H5 深链或小程序薄适配路径;
-//     只携带 capability=supported 的字段,unknown/unsupported
+// 计划形态(2026-11-09 v2 修订,3535 合同 §6):
+//   - refused          Gate 拒绝(not_admitted/closed/expired/wrong_binding/
+//     reward_play_not_authorized):不给交接入口;not_admitted 同时不提供本
+//     玩法的手工发布步骤——不把手工路径做成被禁营销玩法的后门(票面红线);
+//   - pending_external 资格未知(admission_unknown):等待平台批复——不承诺、
+//     不显示可完成态、无手工指引(unknown 永不自动当 manual 许可);
+//   - manual_only      manual 入口且玩法获准:合规导出+手动指引(PR#15 基线
+//     语义),交接管道照常(恢复/取消/验签/幂等不停);
+//   - automated        admitted 且 h5/miniapp 承接:按 entry_mode 构造深链或
+//     小程序薄适配路径;只携带 capability=supported 的字段,unknown/unsupported
 //     字段在交接前逐项解释(不承诺全部预填)。
+//
+// v2 动作面(POST /api/v1/public/actions/{actionId}/handoffs)的同类判定见
+// plan2.go:plan.kind=refused|pending_external|manual_only|official_handoff|
+// oauth_publish,基于 3535 动作级四分能力(JudgeActionRoute)。
 package publishhandoff
 
 import (
@@ -19,11 +25,16 @@ import (
 	"github.com/bianjiefilm/touch-engine/server/internal/channeladmission"
 )
 
-// Plan kinds.
+// Plan kinds. v2 (touch-handoff/v2, 3535 合同 §6 指令②) 增补
+// PlanPendingExternal:admission_unknown 永不自动当 manual 许可——不承诺、
+// 不显示可完成态、无手工指引。PlanAutomated 仅存在于旧 /c 参与面,不进 v2
+// 响应(v2 五值:refused|pending_external|manual_only|official_handoff|
+// oauth_publish,见 plan2.go)。
 const (
-	PlanAutomated  = "automated"
-	PlanManualOnly = "manual_only"
-	PlanRefused    = "refused"
+	PlanAutomated       = "automated"
+	PlanManualOnly      = "manual_only"
+	PlanRefused         = "refused"
+	PlanPendingExternal = "pending_external"
 )
 
 // Entry methods for automated plans.
@@ -77,6 +88,13 @@ type PlanInput struct {
 	// plan (misconfiguration must not fake an entry).
 	DeepLinkBase string
 	MiniappBase  string
+
+	// RewardPlay / MerchantAppRef are SERVER-DERIVED facts (3535 合同 §6 指令①):
+	// 奖励性质按记录 scenario 派生、商户 App 引用来自部署配置,客户端标记
+	// (reward=false 等)永不进入闸门。调用方不填时闸按缺省事实裁决
+	// (RewardPlay=false / MerchantAppRef=""→merchant_authorized 拒绝)。
+	RewardPlay     bool
+	MerchantAppRef string
 }
 
 // EntryPayload is the automated handoff entry. URL 仅供 h5 深链;MiniappPath
@@ -116,6 +134,8 @@ type Plan struct {
 func PlanRoute(in PlanInput, rec channeladmission.Record) Plan {
 	dec := channeladmission.Gate(channeladmission.GateInput{
 		Now: in.Now, TenantID: in.TenantID,
+		RewardPlay:     in.RewardPlay,
+		MerchantAppRef: in.MerchantAppRef,
 	}, rec)
 	plan := Plan{
 		Reason: dec.Reason, ReasonText: dec.ReasonText, Missing: dec.Missing,
@@ -128,12 +148,12 @@ func PlanRoute(in PlanInput, rec channeladmission.Record) Plan {
 			plan.Notice = "官方规范明确排除该场景，本活动不提供此平台的发布交接，也没有可替代的手动发布入口。"
 			return plan
 		}
-		// closed/expired/wrong_binding/unknown…:拒绝自动交接;unknown 降级
-		// 手动指引,其余(渠道关闭/过期/错绑定)连手动指引也不展示为可执行。
+		// 3535 合同 §6 指令②(2026-11-09):admission_unknown → pending_external
+		// (旧 manual_only 降级映射废除)。资格未知=等待平台批复:顾客侧不承诺、
+		// 不显示可完成态、无手工指引;渠道关闭/过期/错绑定仍 refused。
 		if dec.Reason == channeladmission.ReasonAdmissionUnknown {
-			plan.Kind = PlanManualOnly
-			plan.Notice = "该平台承接能力未确认，暂不能自动带入发布；可使用合规导出+手动发布指引，进度与核验照常记录。"
-			plan.Manual = manualGuide(in)
+			plan.Kind = PlanPendingExternal
+			plan.Notice = "该平台的承接资格未确认（等待平台批复），暂不能发起交接，也不提供替代的手动发布入口。"
 			return plan
 		}
 		plan.Kind = PlanRefused

@@ -52,8 +52,9 @@ type OpenVerifier interface {
 
 // Service owns the handoff tables.
 type Service struct {
-	db  *sql.DB
-	opt Options
+	db       *sql.DB
+	opt      Options
+	adapters adapterRegistry
 }
 
 // New builds a Service over an opened database.
@@ -92,12 +93,14 @@ var (
 )
 
 // HandoffRefusedError is the Gate refusal (not_admitted / closed / expired /
-// unknown-without-fallback …). 拒绝原因与缺项如实透出给顾客页。
+// pending_external …). 拒绝原因与缺项如实透出给顾客页;PendingExternal 区分
+// 资格未知(等待批复)与硬拒绝,客户端据此不显示任何可完成态。
 type HandoffRefusedError struct {
-	Reason     string
-	ReasonText string
-	Notice     string
-	Missing    []string
+	Reason          string
+	ReasonText      string
+	Notice          string
+	Missing         []string
+	PendingExternal bool
 }
 
 func (e *HandoffRefusedError) Error() string {
@@ -176,15 +179,32 @@ type Handoff struct {
 	CancelReason         string
 	CreatedAt            string
 	UpdatedAt            string
+	// PayloadKind distinguishes v2 rows (media|link_share) from v1 /c rows
+	// (""). It drives the confirm-event kind (platform_confirm vs
+	// official_confirmed) and the handoff-id receipt binding.
+	PayloadKind string
 }
 
 // receiptBinding is what official receipts must match for this handoff.
 func (h Handoff) receiptBinding(appRef string) ReceiptBinding {
-	return ReceiptBinding{
+	b := ReceiptBinding{
 		AppRef: appRef, TenantID: h.TenantID,
 		ParticipationID: h.ParticipationID, AttemptID: h.AttemptID,
 		ContentVersion: h.ContentVersion,
 	}
+	if h.PayloadKind != "" {
+		// v2 行:回执必须点名本交接(防跨交接重放)。
+		b.HandoffID = h.ID
+	}
+	return b
+}
+
+// confirmEventKind names the platform-confirm event for the row shape.
+func (h Handoff) confirmEventKind() string {
+	if h.PayloadKind != "" {
+		return EventPlatformConfirm
+	}
+	return "official_confirmed"
 }
 
 // ContentFingerprint binds the customer's confirmation to the exact snapshot
@@ -421,9 +441,9 @@ func (s *Service) byKey(tenantID, idem string) (Handoff, bool, error) {
 	return h, true, nil
 }
 
-const handoffCols = `id, tenant_id, store_id, participation_id, attempt_id, platform, entry_mode,
+const handoffCols = `id, tenant_id, store_id, COALESCE(participation_id,''), COALESCE(attempt_id,''), platform, entry_mode,
 	scenario, status, evidence_source, content_version, content_pack_version_id,
-	query_count, timed_out, cancel_reason, created_at, updated_at`
+	query_count, timed_out, cancel_reason, created_at, updated_at, payload_kind`
 
 func (s *Service) scan(row rowScanner) (Handoff, error) {
 	var h Handoff
@@ -431,7 +451,7 @@ func (s *Service) scan(row rowScanner) (Handoff, error) {
 	var timedOut int
 	err := row.Scan(&h.ID, &h.TenantID, &h.StoreID, &h.ParticipationID, &h.AttemptID, &h.Platform,
 		&h.EntryMode, &h.Scenario, &status, &ev, &h.ContentVersion, &h.ContentPackVersionID,
-		&h.QueryCount, &timedOut, &h.CancelReason, &h.CreatedAt, &h.UpdatedAt)
+		&h.QueryCount, &timedOut, &h.CancelReason, &h.CreatedAt, &h.UpdatedAt, &h.PayloadKind)
 	if err != nil {
 		return Handoff{}, err
 	}
@@ -720,8 +740,15 @@ func (s *Service) RecordStaffEvent(_ context.Context, tenantID, handoffID string
 		}
 		h.Status = StateAwaitingReview
 	}
-	if err := s.appendEvent(tenantID, handoffID, fact, who.Name, EvidenceStaffObservation, "", map[string]any{
-		"staff_id": who.ID, "note": strings.TrimSpace(note),
+	// 人工事实 kind 按行形态分记:v1 /c 行 staff_saw_submit/staff_verified_work
+	// (历史语义不变);v2 行统一 staff_confirm(六层之第 5 层),具体事实在
+	// payload.fact 区分。人工永不转官方(状态机结构性保证)。
+	kind := fact
+	if h.PayloadKind != "" {
+		kind = EventStaffConfirm
+	}
+	if err := s.appendEvent(tenantID, handoffID, kind, who.Name, EvidenceStaffObservation, "", map[string]any{
+		"fact": fact, "staff_id": who.ID, "note": strings.TrimSpace(note),
 	}); err != nil {
 		return Handoff{}, err
 	}
@@ -732,10 +759,13 @@ func (s *Service) RecordStaffEvent(_ context.Context, tenantID, handoffID string
 
 // ApplyReceipt verifies + binds + dedupes one official callback:
 //  1. 验签(未配置/错签名=拒绝且不留 receipt_id——防伪造者抢占真回执 ID);
-//  2. 五绑定(app/tenant/participation/attempt/content_version);
+//  2. 五绑定(app/tenant/participation/attempt/content_version;v2 行加
+//     handoff id 绑定);
 //  3. 重放:同 receipt_id 已官方确认 → 幂等回原状态,不新增事件;
 //  4. 结果语义:非 published 照录不确认;
 //  5. 乱序:状态机不允许的迁移 → receipt_rejected + 先回查,状态不盲进。
+//
+// 确认事件按行形态分记:v1 /c 行 official_confirmed;v2 行 platform_confirm。
 func (s *Service) ApplyReceipt(_ context.Context, tenantID, handoffID string, wire ReceiptWire) (Handoff, error) {
 	h, err := s.scan(s.db.QueryRow(`SELECT `+handoffCols+` FROM publish_handoffs WHERE id=? AND tenant_id=?`, handoffID, tenantID))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -744,54 +774,66 @@ func (s *Service) ApplyReceipt(_ context.Context, tenantID, handoffID string, wi
 	if err != nil {
 		return Handoff{}, err
 	}
-
-	reject := func(reason string, receiptID string, err error) (Handoff, error) {
-		_ = s.appendEvent(tenantID, handoffID, "receipt_rejected", "", EvidenceOfficialReceipt, receiptID, map[string]any{
-			"reason": reason,
-		})
-		return h, err
-	}
-
 	// 1) 验签。失败不留 receipt_id(伪造者不得抢占真 ID)。
 	if s.opt.ReceiptVerifier == nil {
-		return reject("verifier_not_configured", "", ErrReceiptUnverified)
+		return h, s.rejectReceipt(tenantID, handoffID, "verifier_not_configured", "", ErrReceiptUnverified)
 	}
 	r, verr := s.opt.ReceiptVerifier.Verify(wire)
 	if verr != nil {
-		return reject("unverified", "", fmt.Errorf("%w: %v", ErrReceiptUnverified, verr))
+		return h, s.rejectReceipt(tenantID, handoffID, "unverified", "", fmt.Errorf("%w: %v", ErrReceiptUnverified, verr))
 	}
-	// 2) 五绑定。
+	return s.confirmPipeline(h, tenantID, handoffID, r)
+}
+
+// confirmPipeline is the shared post-verification pipeline: bindings → replay
+// dedupe → outcome semantics → state machine → confirm event. Used by the
+// HMAC path (ApplyReceipt) and the adapter path (ApplyPlatformCallback — the
+// adapter's VerifyCallback did the signature work).
+func (s *Service) confirmPipeline(h Handoff, tenantID, handoffID string, r Receipt) (Handoff, error) {
+	reject := func(reason string, err error) (Handoff, error) {
+		return h, s.rejectReceipt(tenantID, handoffID, reason, r.ReceiptID, err)
+	}
+	// 2) 绑定。
 	if err := BindReceipt(r, h.receiptBinding(s.opt.AppRef)); err != nil {
-		return reject("binding_mismatch", r.ReceiptID, err)
+		return reject("binding_mismatch", err)
 	}
+	confirmKind := h.confirmEventKind()
 	// 3) 重放(仅认已确认的官方回执;被拒回执允许在状态推进后重新评估=回查)。
 	var seen int
 	if err := s.db.QueryRow(`SELECT COUNT(1) FROM publish_handoff_events
-		WHERE tenant_id=? AND handoff_id=? AND receipt_id=? AND kind='official_confirmed'`,
-		tenantID, handoffID, r.ReceiptID).Scan(&seen); err != nil {
+		WHERE tenant_id=? AND handoff_id=? AND receipt_id=? AND kind=?`,
+		tenantID, handoffID, r.ReceiptID, confirmKind).Scan(&seen); err != nil {
 		return Handoff{}, fmt.Errorf("publishhandoff: replay check: %w", err)
 	}
 	if seen > 0 {
 		return h, nil // 幂等重放:回原状态,不新增事件
 	}
 	if terminal(h.Status) {
-		return reject("terminal_state", r.ReceiptID, fmt.Errorf("%w: %s is terminal", ErrInvalidState, h.Status))
+		return reject("terminal_state", fmt.Errorf("%w: %s is terminal", ErrInvalidState, h.Status))
 	}
 	// 4) 结果语义:照录不确认。
 	if !ReceiptConfirms(r.Outcome) {
-		return reject("outcome_not_confirming", r.ReceiptID, fmt.Errorf("publishhandoff: receipt outcome %q does not confirm", r.Outcome))
+		return reject("outcome_not_confirming", fmt.Errorf("publishhandoff: receipt outcome %q does not confirm", r.Outcome))
 	}
 	// 5) 状态机(乱序拒绝:先回查,不盲进)。
 	next, err := s.setState(h, StatePlatformConfirmed, EvidenceOfficialReceipt)
 	if err != nil {
-		return reject("out_of_order", r.ReceiptID, err)
+		return reject("out_of_order", err)
 	}
-	if err := s.appendEvent(tenantID, handoffID, "official_confirmed", "", EvidenceOfficialReceipt, r.ReceiptID, map[string]any{
+	if err := s.appendEvent(tenantID, handoffID, confirmKind, "", EvidenceOfficialReceipt, r.ReceiptID, map[string]any{
 		"post_id": r.PostID, "platform": r.Platform, "app_ref": r.AppRef,
 	}); err != nil {
 		return next, err
 	}
 	return next, nil
+}
+
+// rejectReceipt records one receipt_rejected evidence event and returns err.
+func (s *Service) rejectReceipt(tenantID, handoffID, reason, receiptID string, err error) error {
+	_ = s.appendEvent(tenantID, handoffID, "receipt_rejected", "", EvidenceOfficialReceipt, receiptID, map[string]any{
+		"reason": reason,
+	})
+	return err
 }
 
 // ---- restart recovery ----------------------------------------------------------------
