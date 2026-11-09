@@ -640,6 +640,12 @@ func (s *Server) Handler() http.Handler {
 	if s.Cfg.FeatureContentPacks {
 		mux.Handle("GET /api/v1/public/links/{code}/content-choices", http.HandlerFunc(s.handlePublicContentChoices))
 		mux.Handle("GET /api/v1/public/links/{code}/content-snapshot", http.HandlerFunc(s.handlePublicContentSnapshot))
+		// HUI-3553 (TOUCH-ALL-20261109) B05: 门店动作的已采用内容读面与受控
+		// 真实媒体。tenant/store 从数据行解析,action_id 不是授权;受控媒体
+		// 支持 HEAD/Range/正确 MIME/短 TTL 续签,不依赖商家 cookie。
+		mux.Handle("GET /api/v1/public/actions/{actionId}/content", http.HandlerFunc(s.handlePublicActionContent))
+		mux.Handle("POST /api/v1/public/content/{version}/media-access", http.HandlerFunc(s.handlePublicMediaAccess))
+		mux.Handle("GET /api/v1/public/content/media/{token}", http.HandlerFunc(s.handlePublicControlledMedia))
 	}
 	// HUI-1671 B3 真实奖励交付: /work 管理面(无开关)、受信预留(internal token)、
 	// 公共 Summary(FEATURE_REWARD_OPS 默认 off)注册段集中在一个方法里。

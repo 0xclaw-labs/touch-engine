@@ -21,14 +21,17 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bianjiefilm/touch-engine/server/internal/config"
+	"github.com/bianjiefilm/touch-engine/server/internal/contentpack"
 	"github.com/bianjiefilm/touch-engine/server/internal/db"
 	"github.com/bianjiefilm/touch-engine/server/internal/identity"
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
@@ -136,7 +139,17 @@ func (f *publicContentFixture) seedAdoptedContent(t *testing.T, tenantID, storeI
 			t.Fatalf("fixture: %v", err)
 		}
 		body := &bytes.Buffer{}
-		mw := newMultipartWriter(body, name, raw)
+		mw := multipart.NewWriter(body)
+		fw, err := mw.CreateFormFile("file", name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fw.Write(raw); err != nil {
+			t.Fatal(err)
+		}
+		if err := mw.Close(); err != nil {
+			t.Fatal(err)
+		}
 		req, _ := http.NewRequest("POST", fmt.Sprintf("%s/api/v1/stores/%s/content-media", f.ts.URL, storeID), body)
 		req.Header.Set("X-Internal-Token", "test-internal-secret")
 		req.Header.Set("X-Session-Token", "sess-owner-a")
@@ -183,11 +196,25 @@ func (f *publicContentFixture) seedAdoptedContent(t *testing.T, tenantID, storeI
 	return packID, versionID, videoID, coverID
 }
 
-func newMultipartWriter(dst *bytes.Buffer, filename string, content []byte) *multipartWriter {
-	mw := &multipartWriter{w: newRealMultipart(dst)}
-	mw.writeField(filename, content)
-	mw.close()
+func newMultipartWriter(dst *bytes.Buffer, filename string, content []byte) *multipart.Writer {
+	mw := multipart.NewWriter(dst)
+	fw, _ := mw.CreateFormFile("file", filename)
+	fw.Write(content)
+	mw.Close()
 	return mw
+}
+
+func timeNowUTC() time.Time { return time.Now() }
+
+// newExpiredClaim builds a syntactically valid claim whose TTL already ended
+// (server must fail closed with 410, never mint new access from it).
+func newExpiredClaim(versionID, mediaID string) (contentpack.MediaAccessClaim, error) {
+	now := time.Now()
+	return contentpack.NewMediaAccessClaim(versionID, mediaID, "preview", "", now.Add(-2*time.Hour), time.Minute)
+}
+
+func mintTestMediaToken(secret string, claim contentpack.MediaAccessClaim) (string, error) {
+	return contentpack.MintMediaAccess(secret, claim)
 }
 
 // rawResponse performs an unauthenticated request and returns status, headers
@@ -235,9 +262,10 @@ func (f *publicContentFixture) publicJSON(t *testing.T, method, path, body strin
 
 func TestPublicActionContentGateOff(t *testing.T) {
 	f := newPublicContentFixture(t, false)
-	status, out := f.publicJSON(t, "GET", "/api/v1/public/actions/act_x/content", "")
-	if status != http.StatusNotFound || out["error"] != "not_found" {
-		t.Fatalf("gate off = %d %v, want uniform 404", status, out)
+	// off = 路由不注册(mux 404,体可为空)+ gate 双保险(见 content-snapshot 面)。
+	status, _ := f.publicJSON(t, "GET", "/api/v1/public/actions/act_x/content", "")
+	if status != http.StatusNotFound {
+		t.Fatalf("gate off content = %d, want 404", status)
 	}
 	status, _ = f.publicJSON(t, "POST", "/api/v1/public/content/cpv_x/media-access", `{"media_ids":["m"],"purpose":"preview"}`)
 	if status != http.StatusNotFound {

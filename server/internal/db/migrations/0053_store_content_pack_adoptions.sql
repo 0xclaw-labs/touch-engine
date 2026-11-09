@@ -1,10 +1,11 @@
--- HUI-3553 (TOUCH-ALL-20261109): 门店×平台当前采用版本指针(采用权威)。
+-- HUI-3553 (TOUCH-ALL-20261109): 门店×包×平台当前采用版本指针(采用权威)。
 -- Additive only:既有表零改动。纪律(同 0030 词汇):
---   - 每行 = 某门店在某平台的「当前采用版」;显式采用端点才写,换版覆盖指针,
+--   - 每行 = 某包在某平台的「当前采用版」;显式采用端点才写,换版覆盖指针,
 --     旧版本内容行零改动(历史在 store_content_pack_version_events);
 --   - 采用动作记录操作者(adopted_by)与时间(created_at/updated_at);
---   - (tenant, store, platform) 唯一:公开读面按服务器指针返回唯一当前版,
---     顾客返回同一版本,不随机刷新换片;
+--   - (tenant, store, platform, pack_id) 唯一:同一门店同平台可有多个已采用
+--     主题包(「换一个」的已采用候选池),每个包每平台一个当前版;公开读面
+--     按服务器指针返回唯一当前版,顾客返回同一版本,不随机刷新换片;
 --   - version_id 无外键级联:版本行不可变永不删除,指针行保持可追溯;
 --   - 旧 campaign 采用(0030)保留不动:活动包采用继续走旧指针;本表只管
 --     门店根内容包。
@@ -22,7 +23,7 @@ CREATE TABLE IF NOT EXISTS store_content_pack_adoptions (
     adopted_by  TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
-    UNIQUE (tenant_id, store_id, platform)
+    UNIQUE (tenant_id, store_id, platform, pack_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_scpa_store ON store_content_pack_adoptions(tenant_id, store_id, platform);

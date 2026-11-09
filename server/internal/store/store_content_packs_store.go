@@ -238,6 +238,7 @@ func (s *Store) ListStoreContentPacks(tenantID, storeID string) ([]StoreContentP
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	rows.Close() // 显式释放:后续 COUNT 查询不得与未收尾的迭代器共享连接
 	for i := range out {
 		var legacy int
 		if err := s.DB.QueryRow(
@@ -617,6 +618,19 @@ func (s *Store) GetStoreContentPackVersion(id, tenantID string) (StoreContentPac
 	return v, err
 }
 
+// GetStoreContentPackVersionByID returns one version WITHOUT tenant scoping
+// (the B05 public face resolves the tenant from the ROW — never from request
+// input; 同 GetContentHandoffByID 受信服务接缝纪律). Callers MUST treat the
+// returned row's TenantID as the only tenant truth. Unknown id -> ErrNotFound.
+func (s *Store) GetStoreContentPackVersionByID(versionID string) (StoreContentPackVersion, error) {
+	v, err := scanStoreVersion(s.DB.QueryRow(
+		`SELECT `+storeVersionCols+` FROM store_content_pack_versions WHERE id=?`, versionID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return StoreContentPackVersion{}, ErrNotFound
+	}
+	return v, err
+}
+
 // ListStoreContentPackVersions returns the pack's versions oldest-first.
 func (s *Store) ListStoreContentPackVersions(tenantID, packID string) ([]StoreContentPackVersion, error) {
 	rows, err := s.DB.Query(
@@ -734,8 +748,8 @@ func (s *Store) AdoptStoreContentPackVersion(tenantID, packID, versionID, platfo
 	nowText := at.UTC().Format(time.RFC3339Nano)
 
 	prev, err := scanStoreAdoption(s.DB.QueryRow(
-		`SELECT `+storeAdoptionCols+` FROM store_content_pack_adoptions WHERE tenant_id=? AND store_id=? AND platform=?`,
-		tenantID, pack.StoreID, platform))
+		`SELECT `+storeAdoptionCols+` FROM store_content_pack_adoptions WHERE tenant_id=? AND store_id=? AND platform=? AND pack_id=?`,
+		tenantID, pack.StoreID, platform, pack.ID))
 	found := err == nil
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return StoreContentPackAdoption{}, err
@@ -793,7 +807,8 @@ func (s *Store) AdoptStoreContentPackVersion(tenantID, packID, versionID, platfo
 }
 
 // GetStoreAdoptedPackVersion resolves the pack's current adopted version (the
-// most recent adoption pointer rooted in this pack). No adoption -> ErrNotFound.
+// most recent adoption pointer rooted in this pack; per (store, platform,
+// pack) 唯一,跨平台取最近). No adoption -> ErrNotFound.
 func (s *Store) GetStoreAdoptedPackVersion(tenantID, packID string) (StoreContentPackVersion, error) {
 	var versionID string
 	err := s.DB.QueryRow(
@@ -810,6 +825,9 @@ func (s *Store) GetStoreAdoptedPackVersion(tenantID, packID string) (StoreConten
 
 // ListStoreAdoptedVersions returns every CURRENT adopted version of the
 // store (the「换一个」candidate pool source; callers re-check Distributable).
+// NOTE: version rows are fetched AFTER the pointer rows close — the SQLite
+// driver allows one connection and nested queries on an open iterator
+// deadlock (同仓内单连接纪律).
 func (s *Store) ListStoreAdoptedVersions(tenantID, storeID string) ([]StoreContentPackVersion, error) {
 	rows, err := s.DB.Query(
 		`SELECT version_id FROM store_content_pack_adoptions WHERE tenant_id=? AND store_id=? ORDER BY updated_at, id`,
@@ -817,13 +835,22 @@ func (s *Store) ListStoreAdoptedVersions(tenantID, storeID string) ([]StoreConte
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := make([]StoreContentPackVersion, 0)
+	ids := make([]string, 0)
 	for rows.Next() {
 		var versionID string
 		if err := rows.Scan(&versionID); err != nil {
+			rows.Close()
 			return nil, err
 		}
+		ids = append(ids, versionID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	out := make([]StoreContentPackVersion, 0, len(ids))
+	for _, versionID := range ids {
 		v, err := s.GetStoreContentPackVersion(versionID, tenantID)
 		if errors.Is(err, ErrNotFound) {
 			continue
@@ -833,7 +860,7 @@ func (s *Store) ListStoreAdoptedVersions(tenantID, storeID string) ([]StoreConte
 		}
 		out = append(out, v)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // ListStoreAdoptions returns the store's platform pointers oldest-first.
@@ -996,6 +1023,19 @@ func (s *Store) GetActionContentBinding(tenantID, actionID string) (ActionConten
 	b, err := scanActionBinding(s.DB.QueryRow(
 		`SELECT `+actionBindingCols+` FROM store_action_content_bindings WHERE tenant_id=? AND action_id=?`,
 		tenantID, strings.TrimSpace(actionID)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ActionContentBinding{}, ErrNotFound
+	}
+	return b, err
+}
+
+// GetActionContentBindingAnyTenant resolves the binding row by action_id
+// alone (the B05 public face has no session; the ROW is the tenant truth —
+// action_id is a lookup key, never an authorization). Unknown -> ErrNotFound.
+func (s *Store) GetActionContentBindingAnyTenant(actionID string) (ActionContentBinding, error) {
+	b, err := scanActionBinding(s.DB.QueryRow(
+		`SELECT `+actionBindingCols+` FROM store_action_content_bindings WHERE action_id=?`,
+		strings.TrimSpace(actionID)))
 	if errors.Is(err, sql.ErrNoRows) {
 		return ActionContentBinding{}, ErrNotFound
 	}
