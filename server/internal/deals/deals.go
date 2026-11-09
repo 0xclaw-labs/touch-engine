@@ -108,7 +108,7 @@ func PriceState(verifiedAt, validFrom, validUntil, status string, now time.Time)
 	if status != StatusActive {
 		return PricePlatform
 	}
-	if !windowOpen(validFrom, validUntil, now) {
+	if !WindowOpen(validFrom, validUntil, now) {
 		return PricePlatform
 	}
 	raw := strings.TrimSpace(verifiedAt)
@@ -131,7 +131,9 @@ func PriceState(verifiedAt, validFrom, validUntil, status string, now time.Time)
 	return PriceShow
 }
 
-func windowOpen(validFrom, validUntil string, now time.Time) bool {
+// WindowOpen reports whether the validity window covers now. Empty bounds are
+// open-ended; unparseable bounds fail closed.
+func WindowOpen(validFrom, validUntil string, now time.Time) bool {
 	if raw := strings.TrimSpace(validFrom); raw != "" {
 		if t, err := parseTime(raw); err != nil || t.After(now) {
 			return false
