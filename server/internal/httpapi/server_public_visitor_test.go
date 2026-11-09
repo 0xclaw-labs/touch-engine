@@ -343,8 +343,11 @@ func TestPublicLinkPublishesCapabilityFlags(t *testing.T) {
 	status, _, sto := f.do(t, "POST", "/api/v1/stores", "sess-owner-a", f.tenA, `{"name":"能力店","address":"x"}`)
 	mustEqual(t, status, http.StatusCreated)
 	storeID := sto["id"].(string)
+	// HUI-1671 根因修复(3535 定谳并入): 硬编码 2026-10-31 已是过去时(诚实
+	// expired 404),改相对 now 的动态窗口;能力断言本身不动。
+	now := time.Now().UTC()
 	status, _, cmp := f.do(t, "POST", "/api/v1/campaigns", "sess-owner-a", f.tenA,
-		`{"title":"能力活动","public_content":"看活动","store_id":"`+storeID+`","starts_at":"2026-09-01T00:00:00Z","ends_at":"2026-10-31T00:00:00Z"}`)
+		`{"title":"能力活动","public_content":"看活动","store_id":"`+storeID+`","starts_at":"`+now.Add(-24*time.Hour).Format(time.RFC3339)+`","ends_at":"`+now.Add(48*time.Hour).Format(time.RFC3339)+`"}`)
 	mustEqual(t, status, http.StatusCreated)
 	id := cmp["id"].(string)
 	status, _, _ = f.do(t, "POST", "/api/v1/campaigns/"+id+"/status", "sess-owner-a", f.tenA, `{"status":"active"}`)
@@ -372,7 +375,7 @@ func TestPublicLinkPublishesCapabilityFlags(t *testing.T) {
 	status, _, sto = off.do(t, "POST", "/api/v1/stores", "sess-owner-a", off.tenA, `{"name":"关闭店","address":"x"}`)
 	mustEqual(t, status, http.StatusCreated)
 	status, _, cmp = off.do(t, "POST", "/api/v1/campaigns", "sess-owner-a", off.tenA,
-		`{"title":"关闭活动","public_content":"看活动","store_id":"`+sto["id"].(string)+`","starts_at":"2026-09-01T00:00:00Z","ends_at":"2026-10-31T00:00:00Z"}`)
+		`{"title":"关闭活动","public_content":"看活动","store_id":"`+sto["id"].(string)+`","starts_at":"`+now.Add(-24*time.Hour).Format(time.RFC3339)+`","ends_at":"`+now.Add(48*time.Hour).Format(time.RFC3339)+`"}`)
 	mustEqual(t, status, http.StatusCreated)
 	id = cmp["id"].(string)
 	status, _, _ = off.do(t, "POST", "/api/v1/campaigns/"+id+"/status", "sess-owner-a", off.tenA, `{"status":"active"}`)
