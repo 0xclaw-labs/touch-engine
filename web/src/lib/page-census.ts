@@ -106,6 +106,12 @@ const markerBook: readonly { route: string; markers: readonly Marker[] }[] = [
   { route: "/c/[code]/contact", markers: [] },
   // HUI-1665:/t 稳定入口页是 server 闸门薄壳,交互在 touch-entry.tsx,页面源零标记。
   { route: "/t/[code]", markers: [] },
+  // HUI-1896:顾客六视图页面是薄壳,交互全部在视图组件里,页面源零标记。
+  { route: "/s/[storeCode]", markers: [] },
+  { route: "/s/[storeCode]/content/[actionId]", markers: [] },
+  { route: "/s/[storeCode]/service/[actionId]", markers: [] },
+  { route: "/s/[storeCode]/benefits", markers: [] },
+  { route: "/s/[storeCode]/privacy", markers: [] },
   // HUI-1665:触点管理台页面是薄壳,交互全部在组件里,页面源零标记。
   { route: "/work/touchpoints", markers: [] },
   // HUI-4584:门店渠道动作页,直接用原生控件(与 stores 列表页同风格)。
