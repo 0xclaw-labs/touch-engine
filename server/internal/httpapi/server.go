@@ -161,7 +161,7 @@ func New(cfg config.Config, database *sql.DB, idc *identity.Client, upc *upload.
 		logger = log.Default()
 	}
 	st := store.New(database)
-	return &Server{
+	srv := &Server{
 		Cfg: cfg, St: st, ID: idc, Upload: upc, Log: logger,
 		Media:             upload.NewMediaStore(cfg.MediaDir, maxMediaUploadBytes),
 		LeadsLimiter:      leads.NewRateLimiter(leadsRatePerMinute, time.Minute),
@@ -189,6 +189,12 @@ func New(cfg config.Config, database *sql.DB, idc *identity.Client, upc *upload.
 			MiniappEntryBase: cfg.PublishHandoffMiniappEntryBase,
 		}),
 	}
+	// 中央集成接线(2026-11-10): HUI-4584 已发布动作目录 ← HUI-3546
+	// ActionDirectory 端口。不接这行,会话面在生产 503(fail-closed 诚实关闭);
+	// 适配器语义见 server_action_directory.go(unknown/未发布/停用一律
+	// fail-closed)。测试注入自己的目录桩时不经此处。
+	srv.Participation.SetActionDirectory(srv)
+	return srv
 }
 
 // matrixFromConfig installs the permission and draft clients only when a base
