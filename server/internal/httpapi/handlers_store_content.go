@@ -263,11 +263,11 @@ type storeVersionSpecBody struct {
 
 func (b storeVersionSpecBody) spec() store.StoreVersionSpec {
 	spec := store.StoreVersionSpec{
-		ContentKind:       contentpack.ContentKind(b.ContentKind),
-		VideoMediaID:      b.VideoMediaID,
-		CoverMediaID:      b.CoverMediaID,
+		ContentKind:    contentpack.ContentKind(b.ContentKind),
+		VideoMediaID:   b.VideoMediaID,
+		CoverMediaID:   b.CoverMediaID,
 		ImageTextMediaIDs: b.ImageTextMediaIDs,
-		Title:             b.Title, Body: b.Body, Topics: b.Topics,
+		Title:          b.Title, Body: b.Body, Topics: b.Topics,
 		StoreName: b.StoreName, PriceNote: b.PriceNote, ValidNote: b.ValidNote,
 		GrantRefs: b.GrantRefs, GrantUntil: b.GrantUntil,
 		Marking:        contentpack.Marking(b.Marking),

@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS billing_refunds (
     auditor        TEXT NOT NULL DEFAULT '',
     source         TEXT NOT NULL,
     event_id       TEXT NOT NULL,
+    payload        TEXT NOT NULL DEFAULT '{}',
     occurred_at    TEXT NOT NULL,
     created_at     TEXT NOT NULL,
     UNIQUE (tenant_id, source, event_id)
