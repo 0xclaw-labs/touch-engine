@@ -12,10 +12,17 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const webDir = path.resolve(here, "..", "..");
 const repoDir = path.resolve(webDir, "..");
 const serverDir = path.join(repoDir, "server");
-const evidenceDir = path.join(webDir, "e2e", "evidence");
-const artDir = path.join(webDir, "e2e", "_art");
+// HUI-3531 wave1 集成：端口/产物目录可用环境变量分实例（并行走查各起一套），
+// 不传则保持原默认值，既有 run.sh 语义不变。
+const TAG = process.env.E2E_TAG ? `-${process.env.E2E_TAG}` : "";
+const evidenceDir = path.join(webDir, "e2e", `evidence${TAG}`);
+const artDir = path.join(webDir, "e2e", `_art${TAG}`);
 
-const PORTS = { go: 18460, identity: 18461, web: 18462 };
+const PORTS = {
+  go: Number(process.env.E2E_GO_PORT) || 18460,
+  identity: Number(process.env.E2E_IDENTITY_PORT) || 18461,
+  web: Number(process.env.E2E_WEB_PORT) || 18462,
+};
 const GO_URL = `http://127.0.0.1:${PORTS.go}`;
 const INTERNAL_TOKEN = "e2e-internal-token";
 const EMAIL = "owner@e2e.test";
@@ -266,6 +273,13 @@ async function up() {
     FEATURE_ASSET_LIB: "on",
     FEATURE_PARTICIPATION: "on",
     FEATURE_REWARD_OPS: "on",
+    // HUI-3531 wave1 集成走查面（默认 off 的新票开关；本地测试部署全开）。
+    FEATURE_AUTHZ: "on",
+    FEATURE_AGENCY: "on",
+    FEATURE_STOREFRONT: "on",
+    FEATURE_CHANNEL_ADMISSION: "on",
+    FEATURE_PUBLISH_HANDOFF: "on",
+    FEATURE_TOUCHPOINT_ENTRY: "on",
   };
 
   execFileSync(go, ["build", "-o", path.join(artDir, "touch-server"), "./cmd/touch-server"], { cwd: serverDir, env: goEnv });
