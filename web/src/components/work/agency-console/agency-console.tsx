@@ -41,12 +41,28 @@ interface GrantedRelation extends AgencyRel {
   payer_granted: boolean;
 }
 
+// 修复轮 4(F1):受控进入目标提升为模块级单例 —— switchTenant 会把会话置为
+// loading,AgencyConsole 因此早退渲染加载态并把 AgencyDesk(连同其 useEffect
+// 与本地 pendingEnter)一起卸载;ready 重挂后本地状态已死,跳转永不发生。
+// 成功路径依赖模块状态而不是组件存活:任何一次重挂的 AgencyDesk 挂载时都会
+// 检查本标记,条件满足即跳 M1。
+let pendingEnterTarget = "";
+
 export function AgencyConsole() {
   const session = useMerchantSession();
   if (session.phase === "loading") {
-    return <main className="tk-page"><p className="tk-state" data-state="loading">{surfaceLabel("loading")}</p></main>;
+    return (
+      <main className="tk-page">
+        {pendingEnterTarget ? (
+          <p className="tk-state" data-state="loading" data-field="entering">正在受控进入商户工作台…</p>
+        ) : (
+          <p className="tk-state" data-state="loading">{surfaceLabel("loading")}</p>
+        )}
+      </main>
+    );
   }
   if (session.phase === "error") {
+    if (pendingEnterTarget) pendingEnterTarget = ""; // 进入失败:退出等待态
     return (
       <main className="tk-page">
         <p className="tk-state tk-danger" data-state="error">
@@ -81,9 +97,8 @@ function AgencyDesk({ session }: { session: MerchantSession }) {
   const [insideName, setInsideName] = useState("");
   const [access, setAccess] = useState<AccessEffective | null>(null);
   const [drawer, setDrawer] = useState<{ tenantId: string; name: string; stores: StoreRec[]; loading: boolean } | null>(null);
-  // 修复轮 3(F1):受控进入的等待态。switchTenant 是异步单缝(确认租户后才写
-  // 记忆),绝不能与硬跳转竞速 —— 记 pendingEnter,等会话真正落到授权租户
-  // (phase=ready 且 tenantId 命中)后再跳 M1。
+  // 受控进入的等待态(仅驱动本组件渲染;跳转守卫在模块级 pendingEnterTarget,
+  // 修复轮 4:F1 —— 不依赖组件存活)。
   const [pendingEnter, setPendingEnter] = useState("");
 
   const load = useCallback(async () => {
@@ -144,22 +159,26 @@ function AgencyDesk({ session }: { session: MerchantSession }) {
       return;
     }
     setEnterError("");
+    pendingEnterTarget = tenantId;
     setPendingEnter(tenantId);
     session.switchTenant(tenantId);
   }
 
+  // 跳转守卫:挂载与 phase/租户变化时都检查模块标记(重挂后照样触发)。
   useEffect(() => {
-    if (!pendingEnter) return;
-    if (session.phase === "ready" && session.tenantId === pendingEnter) {
+    if (!pendingEnterTarget) return;
+    if (session.phase === "ready" && session.tenantId === pendingEnterTarget) {
+      pendingEnterTarget = "";
       setPendingEnter("");
       window.location.href = "/"; // M1:今天要做的事(已是授权租户上下文)
       return;
     }
     if (session.phase === "error") {
-      setEnterError("受控进入没有完成：会话没有落到该商户。请稍后重试，或联系商户确认授权。");
+      pendingEnterTarget = "";
       setPendingEnter("");
+      setEnterError("受控进入没有完成：会话没有落到该商户。请稍后重试，或联系商户确认授权。");
     }
-  }, [pendingEnter, session.phase, session.tenantId]);
+  }, [session.phase, session.tenantId]);
 
   // 门店配置入口:按该商户租户读门店(代理只读门槛),展开抽屉。
   async function openStores(tenantId: string, name: string) {

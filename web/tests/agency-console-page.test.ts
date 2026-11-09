@@ -58,10 +58,16 @@ describe("A1 控制台结构", () => {
     expect(desk).toContain('data-action="back-console"');
   });
 
-  it("修复轮 3/F1:进入必须等切换落地(phase=ready 且租户命中)再跳,不与硬跳竞速", () => {
-    expect(desk).toContain("setPendingEnter(tenantId)");
-    expect(desk).toContain('session.phase === "ready" && session.tenantId === pendingEnter');
+  it("修复轮 4/F1:跳转守卫是模块级单例,成功路径不依赖组件存活", () => {
+    // 模块级标记:switchTenant 的 loading 早退会卸载 AgencyDesk(连同本地
+    // pendingEnter),守卫必须活在模块层,任何一次重挂都检查并完成跳转
+    expect(desk).toContain("let pendingEnterTarget");
+    expect(desk).toContain("pendingEnterTarget = tenantId");
+    expect(desk).toContain('session.phase === "ready" && session.tenantId === pendingEnterTarget');
+    expect(desk).toContain("pendingEnterTarget = \"\"");
+    // 专用等待文案在 loading 早退分支同样稳定可见
     expect(desk).toContain('data-field="entering"');
+    expect(desk).toContain("正在受控进入商户工作台…");
     // enter() 内不得紧跟硬跳(竞速会让 localStorage 记忆停留在旧租户)
     expect(desk).not.toMatch(/switchTenant\(tenantId\);\s*window\.location/);
     // 切换失败要给出产品语句并退出等待态

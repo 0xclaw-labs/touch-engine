@@ -28,7 +28,14 @@ export default function StoresPage() {
       setPhase("error");
       return;
     }
-    const items = Array.isArray(res.data.items) ? (res.data.items as StoreRec[]) : [];
+    // 修复轮 4 守卫:行形态防御(非对象/缺 id 的行直接丢弃,任何上游脏数据都
+    // 不再把列表页打成白屏;正式重构归 2628)。
+    const raw = Array.isArray(res.data.items) ? (res.data.items as unknown[]) : [];
+    const items = raw.filter(
+      (it): it is StoreRec =>
+        typeof it === "object" && it !== null &&
+        typeof (it as StoreRec).id === "string" && (it as StoreRec).id !== "",
+    );
     setStores(items);
     setPhase(items.length === 0 ? "empty" : "ready");
   }, [session]);

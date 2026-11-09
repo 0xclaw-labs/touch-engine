@@ -784,3 +784,42 @@ func containsExact(list []string, v string) bool {
 	}
 	return false
 }
+
+// 修复轮 4(F2 复现揪出):带 store_scope 的店员门店列表 —— 授权后从入口进
+// /work/stores 必须能看到自己门店的配置入口,而不是 403 错误态;且只见本店。
+func TestScopedStaffStoreList(t *testing.T) {
+	f := newAuthzFixture(t, true)
+
+	// 造带 scope 店员并授权
+	status, members := f.do(t, "GET", "/api/v1/admin/members", "sess-owner-a", f.tenA, "")
+	staffID := ""
+	for _, m := range stringListAny(members["items"]) {
+		if m["principal_ref"] == "usr_staff_a" {
+			staffID, _ = m["id"].(string)
+		}
+	}
+	// 先给店员绑定 store_scope(显式建模),再授 storefront
+	if status, out := f.do(t, "PATCH", "/api/v1/admin/members/"+staffID, "sess-owner-a", f.tenA,
+		fmt.Sprintf(`{"store_scope":%q,"reason":"绑定门店"}`, f.st1)); status != 200 {
+		t.Fatalf("bind scope = %d %v", status, out)
+	}
+	if status, out := f.do(t, "PUT", "/api/v1/admin/members/"+staffID+"/permissions", "sess-owner-a", f.tenA,
+		`{"permissions":["storefront:configure"],"reason":"店员参与首页上新"}`); status != 200 {
+		t.Fatalf("grant = %d %v", status, out)
+	}
+
+	// scoped staff store list: 200 + 仅本店(不再是 403 错误态)
+	status, out := f.do(t, "GET", "/api/v1/stores", "sess-staff-a", f.tenA, "")
+	if status != 200 {
+		t.Fatalf("scoped staff store list = %d %v, want 200 (配置入口旅程)", status, out)
+	}
+	rows := stringListAny(out["items"])
+	if len(rows) != 1 || rows[0]["id"] != f.st1 {
+		t.Fatalf("scoped staff rows = %v, want only own store", out["items"])
+	}
+
+	// 旧语义对照:租户级 staff(无 scope)列表仍全量
+	if status, out = f.do(t, "GET", "/api/v1/stores", "sess-owner-a", f.tenA, ""); status != 200 || len(stringListAny(out["items"])) != 2 {
+		t.Fatalf("owner store list = %d %v, want 2", status, out["items"])
+	}
+}

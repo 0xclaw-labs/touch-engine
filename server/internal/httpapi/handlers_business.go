@@ -37,6 +37,21 @@ func callerStoreScope(c *caller) string {
 	return c.Member.StoreScope
 }
 
+// callerStoreLimited (HUI-4593 修复轮 4):成员行自带门店作用域、读列表必须按
+// 本店过滤的角色 —— 门店经理,以及 0064 起显式带 store_scope 的店员(业务动作
+// 仅本店语义)。租户级成员(含旧 staff)不是 store-limited。
+func callerStoreLimited(c *caller) bool {
+	if c == nil || c.Member == nil || c.Member.StoreScope == "" {
+		return false
+	}
+	switch authz.Role(c.Member.Role) {
+	case authz.RoleStoreManager, authz.RoleStaff:
+		return true
+	default:
+		return false
+	}
+}
+
 // requireScopedAction authorizes action on a record in rec. For denials on an
 // EXISTING record (mask404), out_of_scope is answered 404 not_found so
 // foreign-store records stay invisible (跨店 404 掩码);for target-parameter
@@ -157,16 +172,21 @@ func (s *Server) handleStoreCreate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleStoreList(w http.ResponseWriter, r *http.Request) {
 	c := callerFrom(r)
-	if !s.allowScopedList(c, w) {
-		return
+	// 修复轮 4:store-limited 成员(经理/带 scope 店员)对租户级列表的 out_of_scope
+	// 放行为「读后按本店过滤」,其余拒绝照旧;列表响应用服务端过滤收口,绝不外泄他店。
+	if d := authz.Authorize(s.authzMember(c), authz.ActionReadList, authz.RecordScope{TenantID: c.Member.TenantID}); !d.Allowed {
+		if !(d.Reason == authz.ReasonOutOfScope && callerStoreLimited(c)) {
+			fail(w, http.StatusForbidden, d.Reason, "action not allowed for this member")
+			return
+		}
 	}
 	items, err := s.St.ListStores(c.Member.TenantID)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "internal", "store list failed")
 		return
 	}
-	// 门店经理:仅本店(即便已停用——经理仍需看到自己门店的状态)
-	if callerIsStoreManager(c) {
+	// store-limited:仅本店(即便已停用——经理/店员仍需看到自己门店的状态)
+	if callerStoreLimited(c) {
 		scope := callerStoreScope(c)
 		filtered := make([]store.StoreRecord, 0, 1)
 		for _, it := range items {
