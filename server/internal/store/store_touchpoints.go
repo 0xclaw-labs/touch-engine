@@ -124,7 +124,7 @@ type TouchpointView struct {
 	TagStatus      string `json:"tag_status,omitempty"`
 	GroupName      string `json:"group_name,omitempty"`
 	StoreName      string `json:"store_name,omitempty"`
-	UIDHint        string `json:"uid_hint,omitempty"` // 管理面回填提示,公共面零泄漏
+	UIDHint        string `json:"uid_hint,omitempty"`       // 管理面回填提示,公共面零泄漏
 	CampaignTitle  string `json:"campaign_title,omitempty"` // store 根行可为空注记
 	CampaignStatus string `json:"campaign_status,omitempty"`
 	// StoreCode: B02 门店公共码(store_storefronts,store 根行的 /s 目标);
