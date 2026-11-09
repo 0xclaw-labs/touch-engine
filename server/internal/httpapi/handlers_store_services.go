@@ -511,6 +511,13 @@ func (s *Server) handlePublicStoreServiceEvents(w http.ResponseWriter, r *http.R
 		fail(w, http.StatusBadRequest, "bad_request", "service_id and event are required")
 		return
 	}
+	environment := strings.TrimSpace(body.Environment)
+	if environment != "" && !isAdmissionEnvironment(environment) {
+		// 事件是证据：environment 与 3535 六环境同口径，脏值不入证据表。
+		fail(w, http.StatusBadRequest, "param_invalid",
+			"environment must be one of desktop_browser|ios_safari|android_browser|ios_wechat|android_wechat|target_app")
+		return
+	}
 
 	// service_id 必须当帧在公共面可见（fail-closed：看不到的项不给记事件）。
 	var tenantID, storeID string
@@ -537,9 +544,9 @@ func (s *Server) handlePublicStoreServiceEvents(w http.ResponseWriter, r *http.R
 	}
 	var recordErr error
 	if isAction {
-		recordErr = s.St.RecordActionEvent(tenantID, storeID, serviceID, event, strings.TrimSpace(body.Environment))
+		recordErr = s.St.RecordActionEvent(tenantID, storeID, serviceID, event, environment)
 	} else {
-		recordErr = s.St.RecordServiceEvent(tenantID, storeID, serviceID, event, strings.TrimSpace(body.Environment))
+		recordErr = s.St.RecordServiceEvent(tenantID, storeID, serviceID, event, environment)
 	}
 	if recordErr != nil {
 		// 成功语义枚举（followed 等）与未知服务都在这里被拒绝。
