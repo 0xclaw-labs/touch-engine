@@ -68,18 +68,79 @@ type publicActionCapabilitiesPayload struct {
 	Routes        []publicCapabilityRoute `json:"routes"`
 }
 
-// handlePublicActionCapabilities resolves one catalog action into structured,
-// per-environment capability routes. 客户端以 reward=false 绕过的口子在这里
-// 不存在:公开投影恒 RewardPlay=false,奖励判定由消费方服务端按动作的奖励
-// 性质(server-derived)走 JudgeActionRoute。
+// PublicActionInstance is the minimal projection the public capability
+// surface needs from the action-catalog domain (HUI-4584 动作实例模型): the
+// instance's catalog code, its configured platform and the tenant it belongs
+// to (server-derived; 公共端点无会话上下文,租户只能从实例记录反查,绝不取自
+// 客户端参数).
+type PublicActionInstance struct {
+	CatalogCode string
+	Platform    string
+	TenantID    string
+}
+
+// PublicActionInstanceState is the resolver verdict: ok = enabled instance;
+// unknown = unregistered id; disabled = registered but not enabled.
+type PublicActionInstanceState string
+
+const (
+	PublicActionInstanceOK       PublicActionInstanceState = "ok"
+	PublicActionInstanceUnknown  PublicActionInstanceState = "unknown"
+	PublicActionInstanceDisabled PublicActionInstanceState = "disabled"
+)
+
+// actionInstancePrefix marks 4584 action instance ids (sa_*). Only these ids
+// take the instance path; 目录码直查保留为内部/管理面.
+const actionInstancePrefix = "sa_"
+
+// handlePublicActionCapabilities resolves one action into structured,
+// per-environment capability routes. Resolution order (Walk C 修复):
+//
+//	sa_* 实例 id → ResolvePublicActionInstance 缝合点(4584 域;nil=未接线的
+//	树 → 404 unknown action,不兜底) → catalog_code+tenant(反查)+platform
+//	→ 能力记录 best-match('*' 或实例租户定向行);
+//	目录码(A01–A30)直查保留为内部/管理面路径。
+//
+// 客户端以 reward=false 绕过的口子在这里不存在:公开投影恒 RewardPlay=false,
+// 奖励判定由消费方服务端按动作的奖励性质(server-derived)走 JudgeActionRoute。
 func (s *Server) handlePublicActionCapabilities(w http.ResponseWriter, r *http.Request) {
 	if !s.admissionGate(w) {
 		return
 	}
-	code := strings.ToUpper(strings.TrimSpace(r.PathValue("id")))
-	if code == "" {
+	rawID := strings.TrimSpace(r.PathValue("id"))
+	if rawID == "" {
 		fail(w, http.StatusBadRequest, "param_required", "action id path parameter is required")
 		return
+	}
+	catalogCode := rawID
+	tenantID := ""
+	platformFilter := ""
+	actionID := rawID
+	if strings.HasPrefix(rawID, actionInstancePrefix) {
+		// 实例路径:先按动作实例解析(4584 模型),unknown/未启用 → 404 同形。
+		if s.ResolvePublicActionInstance == nil {
+			// 未接线(本分支无 4584 合流)的树:诚实 404,绝不目录码兜底泄漏。
+			fail(w, http.StatusNotFound, "not_found", "unknown action")
+			return
+		}
+		inst, state := s.ResolvePublicActionInstance(rawID)
+		switch state {
+		case PublicActionInstanceOK:
+			catalogCode = inst.CatalogCode
+			tenantID = inst.TenantID
+			platformFilter = inst.Platform
+		case PublicActionInstanceDisabled:
+			fail(w, http.StatusNotFound, "not_found", "action disabled: 该动作实例已停用，能力面不可用")
+			return
+		default:
+			fail(w, http.StatusNotFound, "not_found", "unknown action")
+			return
+		}
+		actionID = rawID
+		catalogCode = strings.ToUpper(strings.TrimSpace(catalogCode))
+	} else {
+		actionID = strings.ToUpper(rawID)
+		catalogCode = actionID
 	}
 	q := r.URL.Query()
 	envFilter := strings.TrimSpace(q.Get("environment"))
@@ -91,7 +152,7 @@ func (s *Server) handlePublicActionCapabilities(w http.ResponseWriter, r *http.R
 	methodFilter := strings.TrimSpace(q.Get("method"))
 	scenarioFilter := strings.TrimSpace(q.Get("scenario"))
 
-	rows, err := s.St.GetActionCapabilitiesByCode(code, "")
+	rows, err := s.St.GetActionCapabilitiesByCode(catalogCode, tenantID)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "internal", "action capability lookup failed")
 		return
@@ -103,6 +164,9 @@ func (s *Server) handlePublicActionCapabilities(w http.ResponseWriter, r *http.R
 	}
 	routes := make([]publicCapabilityRoute, 0, len(rows)*len(channeladmission.Environments))
 	for _, row := range rows {
+		if platformFilter != "" && row.Platform != platformFilter {
+			continue
+		}
 		if methodFilter != "" && row.Method != methodFilter {
 			continue
 		}
@@ -135,7 +199,7 @@ func (s *Server) handlePublicActionCapabilities(w http.ResponseWriter, r *http.R
 	}
 	first := rows[0]
 	writeJSON(w, http.StatusOK, publicActionCapabilitiesPayload{
-		ActionID: first.CatalogCode, CatalogCode: first.CatalogCode,
+		ActionID: actionID, CatalogCode: first.CatalogCode,
 		ActionKind: first.ActionKind, Label: first.Label, SuggestedOnly: first.SuggestedOnly,
 		Environment: envFilter, Routes: routes,
 	})

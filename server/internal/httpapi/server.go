@@ -93,6 +93,14 @@ type Server struct {
 	// Nil means that supply is missing: only the matrix button is disabled.
 	Matrix *matrixconsume.Consumer
 
+	// ResolvePublicActionInstance (HUI-3535 Walk C 修复) resolves an action
+	// instance id (sa_*, HUI-4584 动作实例模型) for the public capability
+	// surface, deriving tenant/platform server-side from the instance record.
+	// Nil in trees without the action-catalog merge: sa_* ids then answer the
+	// honest 404 unknown action (目录码直查保留为内部/管理面). The central
+	// assembler wires it to the 4584 store lookup when both domains merge.
+	ResolvePublicActionInstance func(instanceID string) (PublicActionInstance, PublicActionInstanceState)
+
 	// PubCache / DashCache (HUI-2981 option C) are the bounded local read
 	// caches behind FEATURE_PUBLIC_CACHE / FEATURE_DASHBOARD_CACHE. They are
 	// always constructed (so the Disable() kill switch exists regardless) but

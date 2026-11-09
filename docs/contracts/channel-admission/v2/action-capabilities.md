@@ -44,7 +44,7 @@ emergency_disabled → channel_closed → not_admitted → pending_external
 
 | 端点 | 鉴权 | 用途 |
 |---|---|---|
-| `GET /api/v1/public/actions/{id}/capabilities?environment=&method=&scenario=` | 公开 | B04 投影：`{id}`=目录码（A01–A30，大小写不敏感）；按 `method×environment` 展开 routes；只答 `tenant_scope='*'` 平台真值，不接受客户端租户参数；白名单投影（无 seed_version/payload_hash/tenant_scope/id）；未知动作 404；非法环境 400 |
+| `GET /api/v1/public/actions/{id}/capabilities?environment=&method=&scenario=` | 公开 | B04 投影。`{id}` 解析顺序（Walk C 修复）：**`sa_*` 动作实例优先**（4584 动作实例模型；经装配缝合点 `Server.ResolvePublicActionInstance` 从实例记录服务端反查 catalog_code+platform+tenant，公共端点不接受客户端租户参数）→ 实例 unknown/未启用 → 404 同形（未启用带明确「已停用」说明；未接线 4584 的树里 `sa_*` 一律 404，不目录码兜底）；**目录码（A01–A30，大小写不敏感）直查保留**为内部/管理面路径。能力查询 best-match：同自然键（platform×method×scenario）实例租户定向行压过 `'*'` 平台真值，绝不同响应双路由。按 `method×environment` 展开 routes；白名单投影（无 seed_version/payload_hash/tenant_scope/id）；未知动作 404；非法环境 400。中央装配接线示例：`s.ResolvePublicActionInstance = func(id string) (httpapi.PublicActionInstance, httpapi.PublicActionInstanceState) { …4584 store GetStoreActionByID… }` |
 | `GET /api/v1/channel-actions` | 双模 | internal token 且无会话 → `scope=platform` 全量（含他租户定向行，O4/4592 读）；否则 requireSession → `scope=tenant`（'*'+本租户，1676 读缺项） |
 | `POST /api/v1/channel-actions` | internal token | 受控写入：整条记录 + `actor` + `reason`（必填）；模型层校验失败 422；响应 `created(201)/updated(200)/unchanged(200)`；审计动作由存储端派生（insert=create/update=update），哈希口径与迁移种子一致——不变的种子行重写=no-op 无审计 |
 | `POST /api/v1/channel-actions/{id}/emergency` | internal token | `{disabled, reason, actor?}`；独立否决开关，只停对应方法/动作；未知 id 404 |
