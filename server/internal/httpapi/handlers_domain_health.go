@@ -94,8 +94,8 @@ func (s *Server) handleDomainHealth(w http.ResponseWriter, r *http.Request) {
 			items = append(items, item)
 			continue
 		}
-		defer res.Body.Close()
 		_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 64<<10))
+		res.Body.Close()
 		item["http_status"] = res.StatusCode
 		if res.StatusCode >= 200 && res.StatusCode < 400 {
 			item["status"] = "reachable"

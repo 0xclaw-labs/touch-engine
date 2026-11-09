@@ -19,7 +19,9 @@
 package appjump
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -96,14 +98,17 @@ func (s *Service) now() time.Time {
 
 func rfc3339(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
+// newID is a plain random row id (hex), separate from the jtg_ credential
+// token discipline: ids appear in responses and audit rows and carry no
+// checksum dot and no duplicated token material.
 func newID(prefix string) string {
-	b, err := NewToken()
-	if err != nil {
-		// Entropy failure here is a construction bug; the mint path reports it
-		// as a grant error either way. Never fabricate a deterministic id.
-		return prefix + "entropy_failed"
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Entropy failure here is a construction bug (same discipline as
+		// participation.newID); the process cannot mint anything honest.
+		panic("appjump: entropy unavailable: " + err.Error())
 	}
-	return prefix + b
+	return prefix + hex.EncodeToString(b[:])
 }
 
 // Mint records a grant for a freshly minted shell launch. The caller has
