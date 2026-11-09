@@ -90,6 +90,9 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"reward_official_facts",
 		"reward_operations",
 		"schema_migrations",
+		// HUI-2222 (0105-0106): SSO 跨应用跳转短时单用途凭据 + 审计事件。
+		"sso_jump_events",
+		"sso_jump_grants",
 		// HUI-4584 (0043): 门店动作实例模型 + 配置修订 + 公共门店码。
 		"store_action_configs",
 		// HUI-3553 增量(0050-0055)
