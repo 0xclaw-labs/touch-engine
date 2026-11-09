@@ -81,7 +81,9 @@ func TestStoreServicesMigrationsIdempotent(t *testing.T) {
 	}
 	tables := []string{"store_services", "store_service_configs", "store_service_snapshots",
 		"store_service_events", "wecom_callback_log"}
-	count := func(db interface{ Query(string, ...any) (*sql.Rows, error) }, table string) int {
+	count := func(db interface {
+		Query(string, ...any) (*sql.Rows, error)
+	}, table string) int {
 		t.Helper()
 		rs, err := db.Query(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table)
 		if err != nil {
