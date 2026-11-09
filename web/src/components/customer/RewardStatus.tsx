@@ -41,9 +41,11 @@ export interface RewardStatusProps {
   benefit?: RewardBenefitPublic | null;
   /** 外部发布状态(unknown 不拖黑本系统已发放)。 */
   externalPublish?: string;
+  /** C5 地址化入口(/s/{code}/benefits);缺省不渲染,零行为变化。 */
+  benefitsHref?: string;
 }
 
-export function RewardStatus({ code, participation, benefit, externalPublish }: RewardStatusProps) {
+export function RewardStatus({ code, participation, benefit, externalPublish, benefitsHref }: RewardStatusProps) {
   const [summary, setSummary] = useState<PublicRewardSummary | null>(null);
   const [verifyToken, setVerifyToken] = useState("");
   const [verifyNote, setVerifyNote] = useState("");
@@ -146,6 +148,11 @@ export function RewardStatus({ code, participation, benefit, externalPublish }: 
       )}
       {verifyNote && <p className="tk-note" data-testid="reward-verify-note">{verifyNote}</p>}
       {stock && <p className="tk-note">{stock}</p>}
+      {benefitsHref && (
+        <p className="tk-gap">
+          <a className="tk-quiet" href={benefitsHref} data-testid="reward-benefits-link">查看我的权益与凭证</a>
+        </p>
+      )}
       <p className="tk-note">有问题请直接请店员确认,或联系门店。</p>
     </section>
   );
