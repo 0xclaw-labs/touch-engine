@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // SessionStatus is the session lifecycle. Sessions are lightweight: there is
@@ -321,6 +322,183 @@ func (s *Service) CancelActionSession(_ context.Context, id, visitorID string) (
 		return ActionSession{}, err
 	}
 	return sess, nil
+}
+
+// ---- resume credentials (cross-browser) -------------------------------------------
+//
+// 恢复凭据:ptx_ 令牌纪律复用(128-bit 随机 + 校验位;库内只存 SHA-256 全
+// token 哈希)。purpose 结构性只有 customer_resume(迁移 CHECK);店员码
+// (staff_verify)与参与交接凭据物理上在 handoff_credentials,进不了会话
+// 兑换面。明文只在 IssueResumeCredential 的响应出现一次。
+
+// SessionCredential is the safe-to-expose view of a resume credential.
+type SessionCredential struct {
+	ID        string
+	SessionID string
+	ExpiresAt string
+	UsedAt    string
+	RevokedAt string
+	CreatedAt string
+}
+
+// ResumeCredentialInput mints a cross-browser resume credential for the
+// caller's OWN session. purpose is fixed customer_resume by construction.
+type ResumeCredentialInput struct {
+	SessionID string
+	VisitorID string
+}
+
+// SessionResumeToken is the ONLY moment the plaintext token exists.
+type SessionResumeToken struct {
+	Credential SessionCredential
+	Token      string
+}
+
+// IssueResumeCredential: 只有当前合法访客能给自己 active 的会话签发;动作
+// 实时停用时拒绝(停用不再发放新的跨端凭据;同浏览器恢复与状态读不受影响)。
+func (s *Service) IssueResumeCredential(ctx context.Context, in ResumeCredentialInput) (SessionResumeToken, error) {
+	if !s.sessionsReady() {
+		return SessionResumeToken{}, ErrDirectoryUnavailable
+	}
+	sess, err := s.getSessionForVisitor(ctx, in.SessionID, in.VisitorID)
+	if err != nil {
+		return SessionResumeToken{}, err
+	}
+	if sess.Status != SessionActive {
+		return SessionResumeToken{}, ErrSessionEnded
+	}
+	if _, err := s.liveAction(ctx, sess.ActionID); err != nil {
+		return SessionResumeToken{}, err
+	}
+	token, err := NewToken()
+	if err != nil {
+		return SessionResumeToken{}, err
+	}
+	now := s.now()
+	cred := SessionCredential{
+		ID: newID("rsc_"), SessionID: sess.ID,
+		ExpiresAt: rfc3339(now.Add(s.opts.ResumeTTL)), CreatedAt: rfc3339(now),
+	}
+	if _, err := s.db.Exec(`INSERT INTO action_session_credentials
+		(id, tenant_id, session_id, purpose, target_scope, token_hash, expires_at, used_at, revoked_at, created_at)
+		VALUES (?,?,?,'customer_resume','h5',?,?, '','' ,?)`,
+		cred.ID, sess.TenantID, sess.ID, HashToken(token), cred.ExpiresAt, cred.CreatedAt); err != nil {
+		return SessionResumeToken{}, fmt.Errorf("participation: insert resume credential: %w", err)
+	}
+	if err := s.recordSessionEvent("resume_credential_issued", sess, cred.ID); err != nil {
+		return SessionResumeToken{}, err
+	}
+	return SessionResumeToken{Credential: cred, Token: token}, nil
+}
+
+// RevokeResumeCredential invalidates an unused credential owned by the
+// session's current visitor. Used credentials cannot be un-used.
+func (s *Service) RevokeResumeCredential(ctx context.Context, sessionID, visitorID, credentialID string) error {
+	sess, err := s.getSessionForVisitor(ctx, sessionID, visitorID)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.Exec(`UPDATE action_session_credentials SET revoked_at=?
+		WHERE id=? AND tenant_id=? AND session_id=? AND used_at='' AND revoked_at=''`,
+		rfc3339(s.now()), credentialID, sess.TenantID, sess.ID)
+	if err != nil {
+		return fmt.Errorf("participation: revoke resume credential: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return ErrNotFound
+	}
+	if err := s.recordSessionEvent("resume_credential_revoked", sess, credentialID); err != nil {
+		return err
+	}
+	return nil
+}
+
+// SessionExchangeInput consumes a resume credential: the presenting browser
+// (NewVisitorID) takes over the SAME session. All checks run before the
+// transactional claim — every rejection leaves the credential spendable, and
+// concurrent exchanges produce exactly one winner.
+type SessionExchangeInput struct {
+	Token        string
+	NewVisitorID string
+}
+
+// SessionExchangeResult reports the session the credential opened.
+type SessionExchangeResult struct {
+	Session ActionSession
+}
+
+// ExchangeResumeCredential: 形状 → 哈希查找(只在本表,店员码/参与凭据
+// 结构性查不到) → 过期 → 已用 → 撤销 → 会话 active → 动作实时可用 →
+// 事务性单次消费 → 换绑 visitor。全部凭据丢失不可认回:除凭据本身外
+// 没有任何认回路径。
+func (s *Service) ExchangeResumeCredential(_ context.Context, in SessionExchangeInput) (SessionExchangeResult, error) {
+	if !ValidTokenShape(in.Token) {
+		return SessionExchangeResult{}, ErrNotFound
+	}
+	if strings.TrimSpace(in.NewVisitorID) == "" {
+		return SessionExchangeResult{}, ErrNotEntitled
+	}
+	row := s.db.QueryRow(`SELECT id, tenant_id, session_id, purpose, target_scope,
+		expires_at, used_at, revoked_at, created_at FROM action_session_credentials
+		WHERE token_hash=?`, HashToken(in.Token))
+	var c SessionCredential
+	var tenantID string
+	var purpose, target string
+	err := row.Scan(&c.ID, &tenantID, &c.SessionID, &purpose, &target,
+		&c.ExpiresAt, &c.UsedAt, &c.RevokedAt, &c.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SessionExchangeResult{}, ErrNotFound
+	}
+	if err != nil {
+		return SessionExchangeResult{}, fmt.Errorf("participation: resume credential lookup: %w", err)
+	}
+	if purpose != string(PurposeCustomerResume) || target != "h5" {
+		return SessionExchangeResult{}, ErrTargetMismatch
+	}
+	now := s.now()
+	if expires, perr := time.Parse(time.RFC3339, c.ExpiresAt); perr != nil || !now.Before(expires) {
+		return SessionExchangeResult{}, ErrCredentialExpired
+	}
+	if c.UsedAt != "" {
+		return SessionExchangeResult{}, ErrCredentialUsed
+	}
+	if c.RevokedAt != "" {
+		return SessionExchangeResult{}, ErrCredentialRevoked
+	}
+	sess, err := s.getSession(c.SessionID, tenantID)
+	if err != nil {
+		return SessionExchangeResult{}, err
+	}
+	if sess.Status != SessionActive {
+		return SessionExchangeResult{}, ErrSessionEnded
+	}
+	// 实时停用检查:签发后动作被停用/下架,兑换一律拒绝(快照不掩盖现状)。
+	if s.sessionsReady() {
+		if _, err := s.liveAction(context.Background(), sess.ActionID); err != nil {
+			return SessionExchangeResult{}, err
+		}
+	} else {
+		return SessionExchangeResult{}, ErrDirectoryUnavailable
+	}
+	// 事务性单次消费:条件更新,0 行 = 并发已被用。
+	res, err := s.db.Exec(`UPDATE action_session_credentials SET used_at=?
+		WHERE id=? AND used_at='' AND revoked_at=''`, rfc3339(now), c.ID)
+	if err != nil {
+		return SessionExchangeResult{}, fmt.Errorf("participation: claim resume credential: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return SessionExchangeResult{}, ErrCredentialUsed
+	}
+	if _, err := s.db.Exec(`UPDATE action_sessions SET visitor_id=?, updated_at=?
+		WHERE id=? AND tenant_id=? AND status=?`,
+		in.NewVisitorID, rfc3339(now), sess.ID, sess.TenantID, string(SessionActive)); err != nil {
+		return SessionExchangeResult{}, fmt.Errorf("participation: rebind session visitor: %w", err)
+	}
+	sess.VisitorID = in.NewVisitorID
+	if err := s.recordSessionEvent("resume_credential_exchanged", sess, c.ID); err != nil {
+		return SessionExchangeResult{}, err
+	}
+	return SessionExchangeResult{Session: sess}, nil
 }
 
 // ---- session lookups ------------------------------------------------------------
