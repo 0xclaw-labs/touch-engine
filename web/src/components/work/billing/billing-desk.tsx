@@ -76,6 +76,8 @@ export function BillingDesk() {
   const [note, setNote] = useState("");
   const [expandStores, setExpandStores] = useState(1);
   const [attempt, setAttempt] = useState(0);
+  // 下单在飞闸:幂等键按一次明确的下单意图生成,双击不得变成两笔订单。
+  const [ordering, setOrdering] = useState(false);
 
   const loadAll = useCallback(async () => {
     setPhase("loading");
@@ -116,6 +118,8 @@ export function BillingDesk() {
 
   const placeOrder = useCallback(
     async (action: "new" | "renew" | "expand", planCode: string, additionalStores?: number) => {
+      if (ordering) return;
+      setOrdering(true);
       setNote("");
       const body: Record<string, unknown> = {
         action,
@@ -130,25 +134,29 @@ export function BillingDesk() {
       }
       const checkout = (res.data as { checkout?: CheckoutRef }).checkout;
       const order = (res.data as { order?: BillingOrderView }).order;
-      if (checkout && checkout.available && checkout.app_id) {
-        // 生态收银台跳转:复用 eco-nav switch(shell launch 铸造一次性 URL)。
-        const sw = await session.api("POST", "eco-nav/switch", {
-          app_id: checkout.app_id,
-          launch_target_id: checkout.launch_target_id,
-        });
-        const target = sw.data as { launch_url?: string };
-        if (sw.ok && target.launch_url) {
-          window.location.href = target.launch_url;
-          return;
+      try {
+        if (checkout && checkout.available && checkout.app_id) {
+          // 生态收银台跳转:复用 eco-nav switch(shell launch 铸造一次性 URL)。
+          const sw = await session.api("POST", "eco-nav/switch", {
+            app_id: checkout.app_id,
+            launch_target_id: checkout.launch_target_id,
+          });
+          const target = sw.data as { launch_url?: string };
+          if (sw.ok && target.launch_url) {
+            window.location.href = target.launch_url;
+            return;
+          }
+          setNote("订单已登记，但生态收银台跳转暂不可用；请稍后在本页「回查」订单状态。");
+        } else {
+          setNote("生态收银台未接入：订单已登记为处理中，开通以服务端支付事实为准。可用「回查」刷新状态。");
         }
-        setNote("订单已登记，但生态收银台跳转暂不可用；请稍后在本页「回查」订单状态。");
-      } else {
-        setNote("生态收银台未接入：订单已登记为处理中，开通以服务端支付事实为准。可用「回查」刷新状态。");
+        if (order) setDetail(null);
+        setAttempt((a) => a + 1);
+      } finally {
+        setOrdering(false);
       }
-      if (order) setDetail(null);
-      setAttempt((a) => a + 1);
     },
-    [session],
+    [session, ordering],
   );
 
   const lookupOrder = useCallback(
@@ -246,13 +254,13 @@ export function BillingDesk() {
               <h3>续费 / 扩店</h3>
               <p>未到期续费从服务期届满起算（剩余天数不丢）；扩店按现行目录加店价计差价；降档在当前服务期届满后生效，已承诺权益不追溯削减。</p>
               {monthly ? (
-                <button className="tk-quiet" type="button" data-action="order-renew-month"
+                <button className="tk-quiet" type="button" data-action="order-renew-month" disabled={ordering}
                   onClick={() => void placeOrder("renew", "store.plan.month")}>
                   续费 {planCodeText("store.plan.month")}
                 </button>
               ) : null}
               {yearly ? (
-                <button className="tk-quiet" type="button" data-action="order-renew-year"
+                <button className="tk-quiet" type="button" data-action="order-renew-year" disabled={ordering}
                   onClick={() => void placeOrder("renew", "store.plan.year")}>
                   续费 {planCodeText("store.plan.year")}
                 </button>
@@ -268,7 +276,7 @@ export function BillingDesk() {
                 />
               </label>
               {monthly ? (
-                <button className="tk-quiet" type="button" data-action="order-expand-month"
+                <button className="tk-quiet" type="button" data-action="order-expand-month" disabled={ordering}
                   onClick={() => void placeOrder("expand", "store.plan.month", expandStores)}>
                   按月付扩店 {expandStores} 家
                 </button>
