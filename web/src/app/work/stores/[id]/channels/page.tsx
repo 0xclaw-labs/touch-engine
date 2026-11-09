@@ -459,6 +459,8 @@ export default function StoreChannelsPage() {
       </div>
 
       <p className="tk-note">
+        <Link href={`/work/stores/${storeId}/services`} className="tk-quiet">Wi-Fi / 加微信 / 社群等连接类服务</Link>
+        {" · "}
         <Link href="/work/stores" className="tk-quiet">返回门店列表</Link>
       </p>
     </main>

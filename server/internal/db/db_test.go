@@ -101,6 +101,11 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"store_content_pack_versions",
 		"store_content_packs",
 		"store_motion_requests",
+		// HUI-4589 (0079-0081): 门店服务配置/行为事件/企微回调日志。
+		"store_service_configs",
+		"store_service_events",
+		"store_service_snapshots",
+		"store_services",
 		"store_storefronts",
 		"stores",
 		// HUI-4593 (0066) 连锁模板分发引用
@@ -113,6 +118,8 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"video_template_assignments",
 		"video_template_versions",
 		"video_templates",
+		// HUI-4589 (0081) 企微回调日志（digest-only）
+		"wecom_callback_log",
 	}
 	got, err := TableNames(d)
 	if err != nil {
