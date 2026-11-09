@@ -200,6 +200,11 @@ type Config struct {
 	PublishHandoffAppRef           string // PUBLISH_HANDOFF_APP_REF (本部署官方应用身份)
 	PublishHandoffH5EntryBase      string // PUBLISH_HANDOFF_H5_ENTRY_BASE (admitted H5 深链基)
 	PublishHandoffMiniappEntryBase string // PUBLISH_HANDOFF_MINIAPP_ENTRY_BASE (admitted 小程序路由基)
+	// PublishHandoffMerchantAppRef (PUBLISH_HANDOFF_MERCHANT_APP_REF) is this
+	// deployment's VERIFIED merchant-authorized app reference (HUI-1670 v2;
+	// 3535 合同 §6 指令①的服务端派生事实). Empty = merchant_authorized routes
+	// answer wrong_binding (fail-closed; 白标/多租户绝不借用他人 App).
+	PublishHandoffMerchantAppRef string
 
 	FeatureUpload           bool
 	FeatureNotify           bool
@@ -282,6 +287,7 @@ func Load(get func(string) string) Config {
 		PublishHandoffAppRef:           strings.TrimSpace(get("PUBLISH_HANDOFF_APP_REF")),
 		PublishHandoffH5EntryBase:      strings.TrimRight(strings.TrimSpace(get("PUBLISH_HANDOFF_H5_ENTRY_BASE")), "/"),
 		PublishHandoffMiniappEntryBase: strings.TrimSpace(get("PUBLISH_HANDOFF_MINIAPP_ENTRY_BASE")),
+		PublishHandoffMerchantAppRef:   strings.TrimSpace(get("PUBLISH_HANDOFF_MERCHANT_APP_REF")),
 		FeatureUpload:                  isTruthy(get(EnvFeatureUpload)),
 		FeatureNotify:                  isTruthy(get(EnvFeatureNotify)),
 		FeatureTask:                    isTruthy(get(EnvFeatureTask)),

@@ -80,31 +80,25 @@ func TestPlanDouyinH5NotAdmittedRefused(t *testing.T) {
 	}
 }
 
-// 3.2 unknown 路线 → manual_only:合规导出+手动指引+缺项原因;没有自动化入口。
-func TestPlanUnknownRouteManualOnly(t *testing.T) {
+// 3.2 unknown 路线 → pending_external（3535 合同 §6 指令②：unknown 永不
+// 自动当 manual 许可）——不承诺、不显示可完成态、无手工指引;缺项原因照透。
+func TestPlanUnknownRoutePendingExternal(t *testing.T) {
 	rec := seedRecord(t, nil)
 	plan := PlanRoute(planInput(rec), rec)
-	if plan.Kind != PlanManualOnly || plan.Allowed {
-		t.Fatalf("want manual_only, got %q allowed=%v", plan.Kind, plan.Allowed)
+	if plan.Kind != PlanPendingExternal || plan.Allowed {
+		t.Fatalf("want pending_external, got %q allowed=%v", plan.Kind, plan.Allowed)
 	}
 	if plan.Entry != nil {
 		t.Fatal("unknown route must not produce an automated entry")
 	}
-	if plan.Manual == nil || len(plan.Manual.Steps) == 0 {
-		t.Fatal("manual_only must carry compliance export steps")
+	if plan.Manual != nil {
+		t.Fatal("pending_external must NOT carry a manual guide (unknown is never a manual permission)")
 	}
 	if len(plan.Missing) == 0 {
-		t.Fatal("manual_only must carry the missing-item list from the admission record")
+		t.Fatal("pending_external must carry the missing-item list from the admission record")
 	}
-	if !strings.Contains(plan.Notice, "未确认") {
-		t.Fatalf("notice must explain the unknown honestly, got %q", plan.Notice)
-	}
-	// 导出包带文案与媒体引用(受控 URL),不带平台 post id。
-	if plan.Manual.ExportCaption == "" {
-		t.Fatal("manual export must carry the adopted caption")
-	}
-	if !strings.Contains(plan.Manual.MediaNote, "https://media.example.com/t1") {
-		t.Fatal("manual export must reference the controlled media URL")
+	if !strings.Contains(plan.Notice, "未确认") || strings.Contains(plan.Notice, "手动发布指引") {
+		t.Fatalf("notice must explain the unknown honestly without promising manual completion, got %q", plan.Notice)
 	}
 }
 
