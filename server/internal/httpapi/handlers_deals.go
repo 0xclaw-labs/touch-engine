@@ -186,7 +186,9 @@ func (s *Server) handleStoreDealOffersGet(w http.ResponseWriter, r *http.Request
 	now := time.Now().UTC()
 	items := make([]map[string]any, 0, len(offers))
 	for _, o := range offers {
-		items = append(items, dealItemDocument(o, perOffer[o.ID], now))
+		doc := dealItemDocument(o, now)
+		doc["click_total"] = perOffer[o.ID]
+		items = append(items, doc)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"store_id":   rec.ID,
@@ -201,7 +203,7 @@ func (s *Server) handleStoreDealOffersGet(w http.ResponseWriter, r *http.Request
 	})
 }
 
-func dealItemDocument(o store.StoreDealOffer, clickTotal int64, now time.Time) map[string]any {
+func dealItemDocument(o store.StoreDealOffer, now time.Time) map[string]any {
 	return map[string]any{
 		"id":                o.ID,
 		"platform":          o.Platform,
@@ -222,7 +224,6 @@ func dealItemDocument(o store.StoreDealOffer, clickTotal int64, now time.Time) m
 		"created_at":        o.CreatedAt,
 		"updated_at":        o.UpdatedAt,
 		"store_ids":         o.StoreIDs,
-		"click_total":       clickTotal,
 	}
 }
 
@@ -278,7 +279,7 @@ func (s *Server) handleStoreDealOfferUpdate(w http.ResponseWriter, r *http.Reque
 		dealsError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, dealItemDocument(off, -1, time.Now().UTC()))
+	writeJSON(w, http.StatusOK, dealItemDocument(off, time.Now().UTC()))
 }
 
 func optionalStr(v string) *string {
@@ -317,7 +318,7 @@ func (s *Server) handleStoreDealOfferStatus(w http.ResponseWriter, r *http.Reque
 		dealsError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, dealItemDocument(off, -1, time.Now().UTC()))
+	writeJSON(w, http.StatusOK, dealItemDocument(off, time.Now().UTC()))
 }
 
 // ---- 店员外部券 check / redeem -------------------------------------------------

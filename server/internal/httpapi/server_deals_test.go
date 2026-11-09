@@ -83,12 +83,16 @@ func TestStoreDealOffersCRUD(t *testing.T) {
 		t.Fatalf("deals note missing: %s", raw)
 	}
 
-	// 编辑 + 标记价格已核对（校验时间=服务端时钟）。
+	// 编辑 + 标记价格已核对（校验时间=服务端时钟）；编辑响应不携带 click_total
+	// （点击统计只在列表面出现，不在单条变更回执里编数）。
 	status, _, doc = af.f.do(t, "PATCH", "/api/v1/stores/"+af.stoA+"/deal-offers/"+offerID, af.sessOwner, af.tenA,
 		`{"title":"双人套餐（升级）","price_minor":9900,"mark_price_verified":true}`)
 	mustEqual(t, status, http.StatusOK)
 	if doc["title"] != "双人套餐（升级）" || doc["price_minor"] != float64(9900) {
 		t.Fatalf("patched = %v", doc)
+	}
+	if _, ok := doc["click_total"]; ok {
+		t.Fatalf("edit response must not fabricate click_total: %v", doc)
 	}
 	if v, _ := doc["price_verified_at"].(string); v == "" {
 		t.Fatalf("mark_price_verified must set the server verification time: %v", doc)
@@ -151,6 +155,26 @@ func TestStoreDealOffersScopes(t *testing.T) {
 	status, _, _ = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/deal-offers", af.sessOwner, af.tenA,
 		`{"platform":"meituan","provider_offer_id":"mt-scope2","product_url":"https://www.meituan.com/s2","title":"x","price_minor":1,"store_ids":["`+af.stoB+`"]}`)
 	mustEqual(t, status, http.StatusOK)
+
+	// owner 编辑适用面=完整替换：可把创建店摘下换挂他店；空列表 422。
+	status, _, doc = af.f.do(t, "POST", "/api/v1/stores/"+af.stoA+"/deal-offers", af.sessOwner, af.tenA,
+		`{"platform":"douyin","provider_offer_id":"dy-move","product_url":"https://www.douyin.com/m","title":"可移动","price_minor":1}`)
+	mustEqual(t, status, http.StatusOK)
+	moveID, _ := doc["id"].(string)
+	status, _, _ = af.f.do(t, "PATCH", "/api/v1/stores/"+af.stoA+"/deal-offers/"+moveID, af.sessOwner, af.tenA,
+		`{"store_ids":["`+af.stoB+`"]}`)
+	mustEqual(t, status, http.StatusOK)
+	status, _, doc = af.f.do(t, "GET", "/api/v1/stores/"+af.stoA+"/deal-offers", af.sessOwner, af.tenA, "")
+	items, _ := doc["items"].([]any)
+	for _, raw := range items {
+		m, _ := raw.(map[string]any)
+		if m["id"] == moveID {
+			t.Fatalf("moved offer must not list under store A anymore: %v", doc)
+		}
+	}
+	status, _, _ = af.f.do(t, "PATCH", "/api/v1/stores/"+af.stoB+"/deal-offers/"+moveID, af.sessOwner, af.tenA,
+		`{"store_ids":[]}`)
+	mustEqual(t, status, http.StatusUnprocessableEntity)
 }
 
 func TestPublicStoreOffersEndpoint(t *testing.T) {

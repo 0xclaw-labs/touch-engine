@@ -372,9 +372,24 @@ func (s *Store) UpdateStoreDealOffer(id, tenantID string, in UpdateStoreDealOffe
 	}
 	storeIDs := cur.StoreIDs
 	if in.StoreIDs != nil {
-		resolved, err := s.resolveDealStores(tenantID, firstStoreID(cur.StoreIDs), *in.StoreIDs)
-		if err != nil {
-			return StoreDealOffer{}, err
+		// 更新侧适用面是"完整替换"语义：列表内每店都必须在本租户内，且至少
+		// 一家（空=套餐挂不到任何门店，直接拒绝）。创建侧的"必含创建店"锚点
+		// 不在此处复用——总部可以把套餐从原创建店摘下换挂他店。
+		resolved := []string{}
+		seen := map[string]bool{}
+		for _, raw := range *in.StoreIDs {
+			id := strings.TrimSpace(raw)
+			if id == "" || seen[id] {
+				continue
+			}
+			if _, err := s.GetStore(id, tenantID); err != nil {
+				return StoreDealOffer{}, ErrNotFound
+			}
+			seen[id] = true
+			resolved = append(resolved, id)
+		}
+		if len(resolved) == 0 {
+			return StoreDealOffer{}, fmt.Errorf("%w: at least one applicable store is required", ErrDealInvalid)
 		}
 		storeIDs = resolved
 	}
@@ -413,13 +428,6 @@ func (s *Store) UpdateStoreDealOffer(id, tenantID string, in UpdateStoreDealOffe
 		return StoreDealOffer{}, err
 	}
 	return s.GetStoreDealOffer(id, tenantID)
-}
-
-func firstStoreID(ids []string) string {
-	if len(ids) > 0 {
-		return ids[0]
-	}
-	return ""
 }
 
 func pickStr(p *string, cur string) string {

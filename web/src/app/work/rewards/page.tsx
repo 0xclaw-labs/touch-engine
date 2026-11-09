@@ -755,8 +755,14 @@ function ExternalGroupBuyTab(props: {
 
   const editOffer = (offer: StoreDealOfferView, field: "title" | "price", raw: string) =>
     act(async () => {
+      if (field === "price") {
+        if (!/^\d+$/.test(raw.trim())) {
+          onNote("价格要是非负整数（分）。没有改成就不写。");
+          return;
+        }
+      }
       const body: Record<string, unknown> =
-        field === "title" ? { title: raw.trim() } : { price_minor: Number(raw) || 0 };
+        field === "title" ? { title: raw.trim() } : { price_minor: Number(raw.trim()) };
       const res = await session.api("PATCH", `stores/${storeId}/deal-offers/${offer.id}`, body);
       if (res.ok) onNote(field === "title" ? "标题已更新。" : "价格已更新（未重新核对前顾客仍看到「到平台查看」）。");
       else onNote(failureText(res.status, res.data));

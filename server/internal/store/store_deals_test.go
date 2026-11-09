@@ -407,3 +407,37 @@ func TestCouponTargetAuthorizationHelper(t *testing.T) {
 		t.Fatalf("paused offer must stay redeemable: %v", err)
 	}
 }
+
+func TestUpdateDealApplicabilityFullReplacement(t *testing.T) {
+	s, tenA, stoA, stoB, _, _ := seedDealsWorld(t)
+	off, err := s.CreateStoreDealOffer(tenA, stoA, dealInput(stoB))
+	must(t, err)
+
+	// 完整替换：可以把创建店摘下，换成其他本租户门店。
+	got, err := s.UpdateStoreDealOffer(off.ID, tenA, UpdateStoreDealOffer{
+		StoreIDs: &[]string{stoB},
+	})
+	must(t, err)
+	if len(got.StoreIDs) != 1 || got.StoreIDs[0] != stoB {
+		t.Fatalf("replacement = %v, want [stoB]", got.StoreIDs)
+	}
+	// 原创建店不再适用（换挂成功）。
+	forA, err := s.ListStoreDealOffers(tenA, stoA)
+	must(t, err)
+	if len(forA) != 0 {
+		t.Fatalf("store A must no longer see the offer: %v", forA)
+	}
+
+	// 空列表 → 拒（至少一家适用门店）。
+	if _, err := s.UpdateStoreDealOffer(off.ID, tenA, UpdateStoreDealOffer{
+		StoreIDs: &[]string{""},
+	}); !errors.Is(err, ErrDealInvalid) {
+		t.Fatalf("empty applicability must refuse: %v", err)
+	}
+	// 未知门店 → 404。
+	if _, err := s.UpdateStoreDealOffer(off.ID, tenA, UpdateStoreDealOffer{
+		StoreIDs: &[]string{"sto_missing"},
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown store in replacement must 404: %v", err)
+	}
+}
