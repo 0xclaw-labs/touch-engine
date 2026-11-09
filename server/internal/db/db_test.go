@@ -100,6 +100,11 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"store_content_pack_version_events",
 		"store_content_pack_versions",
 		"store_content_packs",
+		// HUI-4590 增量(0084-0087): 团购套餐目录/适用门店/点击归因/外部券核销事实。
+		"store_deal_click_stats",
+		"store_deal_coupon_redemptions",
+		"store_deal_offer_stores",
+		"store_deal_offers",
 		"store_motion_requests",
 		"store_storefronts",
 		"stores",
