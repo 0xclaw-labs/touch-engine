@@ -7,6 +7,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/bianjiefilm/touch-engine/server/internal/authz"
@@ -107,6 +108,59 @@ func (s *Server) handleLeadAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": rows})
+}
+
+// POST /api/v1/stores/{id}/lead-form — HUI-4594: enable/configure the store
+// level lead form (无活动留资的商家开关). Store-scoped mirror of the campaign
+// form upsert: the caller needs ActionCreate within this store's scope.
+func (s *Server) handleStoreLeadFormUpsert(w http.ResponseWriter, r *http.Request) {
+	c := callerFrom(r)
+	if _, ok := s.storeScoped(c, r.PathValue("id"), authz.ActionCreate, w); !ok {
+		return
+	}
+	if !s.leadsGate(w) {
+		return
+	}
+	var in struct {
+		NoticeVersion         string `json:"notice_version"`
+		MarketingOptinEnabled *bool  `json:"marketing_optin_enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		fail(w, http.StatusBadRequest, "bad_request", "invalid json body")
+		return
+	}
+	version := in.NoticeVersion
+	if version == "" {
+		version = "v1"
+	}
+	marketing := true
+	if in.MarketingOptinEnabled != nil {
+		marketing = *in.MarketingOptinEnabled
+	}
+	rec, err := s.St.UpsertLeadFormForStore(c.Member.TenantID, r.PathValue("id"), version, marketing, c.Member.PrincipalRef)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "lead form upsert failed")
+		return
+	}
+	writeJSON(w, http.StatusCreated, rec)
+}
+
+// storeScoped fetches the store within the caller's tenant and enforces the
+// member's scope on it (same masking contract as campaignScoped).
+func (s *Server) storeScoped(c *caller, id string, action authz.Action, w http.ResponseWriter) (store.StoreRecord, bool) {
+	rec, err := s.St.GetStore(id, c.Member.TenantID)
+	if errors.Is(err, store.ErrNotFound) {
+		fail(w, http.StatusNotFound, "not_found", "store not found")
+		return store.StoreRecord{}, false
+	}
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "store lookup failed")
+		return store.StoreRecord{}, false
+	}
+	if !s.requireScopedAction(c, action, authz.RecordScope{TenantID: c.Member.TenantID, StoreID: rec.ID}, false, w) {
+		return store.StoreRecord{}, false
+	}
+	return rec, true
 }
 
 // GET /api/v1/work/leads — HUI-4594 M11: the tenant-wide authorized-lead view

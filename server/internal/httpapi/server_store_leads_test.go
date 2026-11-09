@@ -211,3 +211,45 @@ func TestStoreLeadNegativeMatrix(t *testing.T) {
 		}
 	})
 }
+
+func TestStoreLeadFormAdminUpsertScoped(t *testing.T) {
+	f := newLeadsFixture(t)
+	code, storeID := storeLane(t, f)
+
+	t.Run("owner opens store-level capture", func(t *testing.T) {
+		status, _, out := f.admin(t, "POST", "/api/v1/stores/"+storeID+"/lead-form", `{"marketing_optin_enabled":true}`)
+		if status != 201 {
+			t.Fatalf("upsert = %d %v", status, out)
+		}
+		form, err := f.s.St.GetLeadFormByStore(storeID)
+		if err != nil || !form.Enabled {
+			t.Fatalf("form = %+v %v", form, err)
+		}
+	})
+
+	t.Run("guest lane sees the open form", func(t *testing.T) {
+		status, _, out := f.guest(t, "GET", "/api/v1/public/storefronts/"+code+"/lead-form", "")
+		if status != 200 || out["enabled"] != true {
+			t.Fatalf("public form = %d %v", status, out)
+		}
+	})
+
+	t.Run("scoped manager of another store is refused", func(t *testing.T) {
+		other, err := f.s.St.CreateStore(f.tenA, "别家门店", "", "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// session for the base-store manager cannot configure another store
+		status, _, _ := f.do(t, "POST", "/api/v1/stores/"+other.ID+"/lead-form", "sess-sm-a", f.tenA, `{"marketing_optin_enabled":true}`)
+		if status != 403 && status != 404 {
+			t.Fatalf("cross-store manager = %d", status)
+		}
+	})
+
+	t.Run("foreign tenant cannot configure", func(t *testing.T) {
+		status, _, _ := f.do(t, "POST", "/api/v1/stores/"+storeID+"/lead-form", "sess-owner-b", f.tenB, `{"marketing_optin_enabled":true}`)
+		if status != 404 && status != 403 {
+			t.Fatalf("foreign tenant = %d", status)
+		}
+	})
+}
