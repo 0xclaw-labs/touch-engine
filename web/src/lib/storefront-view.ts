@@ -318,3 +318,43 @@ export function offerEntry(offer: OfferItem): OfferEntry {
       return { kind: "stopped", text: "套餐状态未知:价格与库存以平台页面为准。" };
   }
 }
+
+// ---- 门店服务(4589 草案契约;提供者合流前生产面读不到 → 待办态) ---------------
+
+export interface ServicesPayload {
+  schema_version?: unknown;
+  store_code?: unknown;
+  items?: unknown;
+}
+
+export interface ServiceItemView {
+  actionId: string;
+  kind: string;
+  title: string;
+  note: string;
+  /** 按需取字段(ssid/password/wechat_id/group_number…);缺失返回空串。 */
+  field: (name: string) => string;
+}
+
+/** 4589 services 读取草案契约:按 action_id 索引;结构不完整返回 null。 */
+export function parseServices(payload: unknown): Map<string, ServiceItemView> | null {
+  if (payload === null || typeof payload !== "object") return null;
+  const rec = payload as Record<string, unknown>;
+  if (!Array.isArray(rec.items)) return null;
+  const out = new Map<string, ServiceItemView>();
+  for (const item of rec.items) {
+    if (item === null || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    const actionId = str(row.action_id);
+    if (actionId === "") continue;
+    const fields = (row.fields !== null && typeof row.fields === "object" ? row.fields : {}) as Record<string, unknown>;
+    out.set(actionId, {
+      actionId,
+      kind: str(row.kind),
+      title: str(row.title),
+      note: str(row.note),
+      field: (name: string) => str(fields[name]),
+    });
+  }
+  return out;
+}
