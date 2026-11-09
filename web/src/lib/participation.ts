@@ -134,3 +134,83 @@ export function isSafeQrPayload(payload: string | undefined): boolean {
   if (payload.includes("?") || payload.includes("#")) return false;
   return payload.includes("/p/ptx_");
 }
+
+// ---- 匿名动作会话(HUI-3546 增量轮 2026-11-09, B08) ------------------------------
+//
+// 服务端(Go /api/v1/public/actions|action-sessions|resume)是唯一权威;本模块
+// 只承载视图类型与判定。恢复凭据 token 只经内存传给 BFF(POST 体),永不进
+// URL 查询串、永不进 localStorage;会话快照以服务端冻结值为准,停用/撤权
+// 的实时状态以服务端实时位为准——客户端永不猜测。
+
+/** 匿名动作会话视图(白名单字段;visitor 键/幂等键/规则快照原文永不出响应)。 */
+export interface ActionSessionView {
+  action_session_id?: string;
+  /** active | ended;未知状态按终态处理,fail-closed。 */
+  status?: string;
+  storefront_revision?: number;
+  action_revision?: number;
+  rule_version?: number;
+  selected_content_pack_version?: string;
+  participation_id?: string;
+  /** 服务端实时位:动作当前可用。 */
+  action_available?: boolean;
+  /** 服务端实时位:当前浏览器可恢复(动作可用 + 会话未终态)。 */
+  resume_available?: boolean;
+  created_at?: string;
+  /** 权益引用(只读):仅显式办理权益后出现。 */
+  participation?: SessionParticipationRef;
+}
+
+export interface SessionParticipationRef {
+  id?: string;
+  status?: string;
+  benefit_reservation_state?: string;
+}
+
+/** 跨浏览器恢复凭据视图。明文 token 只在签发响应出现一次。 */
+export interface ResumeCredentialView {
+  credential_id?: string;
+  /** 结构性只有 customer_resume;店员码(staff_verify)进不了会话兑换面。 */
+  purpose?: string;
+  token?: string;
+  expires_at?: string;
+}
+
+const SESSION_OPEN_STATUSES: ReadonlySet<string> = new Set(["active"]);
+
+/**
+ * 当前浏览器能否恢复此会话。服务端实时位是权威;终态/未知状态一律
+ * fail-closed(双保险:服务端位异常为 true 时,客户端仍以终态拦截)。
+ */
+export function sessionResumeAvailable(view: ActionSessionView | null | undefined): boolean {
+  if (!view?.resume_available) return false;
+  return SESSION_OPEN_STATUSES.has(view.status ?? "");
+}
+
+/** 会话状态中文标签(不做布尔抹平;未知就是未知)。 */
+export function sessionStatusLabel(status: string | undefined): string {
+  switch (status) {
+    case "active":
+      return "进行中";
+    case "ended":
+      return "已结束";
+    default:
+      return "状态未知";
+  }
+}
+
+/**
+ * 会话携带的权益文案:复用参与的 benefitCopy 纪律——服务端未确认
+ * (not_requested/pending)或失败(failed)绝不出现「已保留」。
+ * 无关联参与返回 null(不可向顾客提及保留)。
+ */
+export function sessionBenefitCopy(view: ActionSessionView | null | undefined): string | null {
+  if (!view?.participation) return null; // 无关联参与:不可向顾客提及保留
+  return benefitCopy(view.participation.benefit_reservation_state);
+}
+
+/** 恢复凭据是否可发起兑换:形状 + purpose 白名单(客户端预检;权威在服务端)。 */
+export function resumeCredentialExchangeable(cred: ResumeCredentialView | null | undefined): boolean {
+  if (!cred?.token || !cred.credential_id) return false;
+  return cred.purpose === "customer_resume";
+}

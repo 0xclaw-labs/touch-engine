@@ -88,3 +88,70 @@ describe("交接凭据", () => {
     expect(isSafeQrPayload(undefined)).toBe(false);
   });
 });
+
+// HUI-3546 增量轮(2026-11-09): 匿名动作会话与跨端恢复的视图语义。
+// 红线:恢复位以服务端实时位为准(fail-closed);会话终态不可续;
+// 权益文案复用 benefitCopy 纪律(pending/failed 绝不出现「已保留」);
+// 恢复凭据 token 只经内存传给 BFF,永不进 URL 查询串/localStorage。
+import {
+  sessionResumeAvailable,
+  sessionStatusLabel,
+  sessionBenefitCopy,
+  resumeCredentialExchangeable,
+  type ActionSessionView,
+  type ResumeCredentialView,
+} from "../src/lib/participation";
+
+describe("匿名动作会话语义", () => {
+  const live: ActionSessionView = {
+    action_session_id: "as_1",
+    status: "active",
+    storefront_revision: 5,
+    action_revision: 12,
+    resume_available: true,
+    action_available: true,
+  };
+
+  it("恢复位以服务端实时位为准:缺省/未知一律不可恢复(fail-closed)", () => {
+    expect(sessionResumeAvailable(live)).toBe(true);
+    expect(sessionResumeAvailable({ ...live, resume_available: false })).toBe(false);
+    expect(sessionResumeAvailable({ ...live, resume_available: undefined })).toBe(false);
+    expect(sessionResumeAvailable({ status: "active" })).toBe(false);
+    expect(sessionResumeAvailable(null)).toBe(false);
+  });
+
+  it("终态会话不可恢复,即使服务端位异常为 true(客户端双保险)", () => {
+    expect(sessionResumeAvailable({ ...live, status: "ended", resume_available: true })).toBe(false);
+    expect(sessionResumeAvailable({ ...live, status: "weird", resume_available: true })).toBe(false);
+  });
+
+  it("状态标签不做布尔抹平", () => {
+    expect(sessionStatusLabel("active")).toContain("进行");
+    expect(sessionStatusLabel("ended")).toContain("结束");
+    expect(sessionStatusLabel(undefined)).toContain("未知");
+    expect(sessionStatusLabel("weird")).toContain("未知");
+  });
+
+  it("权益文案复用参与纪律:未确认绝不出现「已保留」", () => {
+    expect(sessionBenefitCopy(live)).toBeNull();
+    const attached: ActionSessionView = {
+      ...live,
+      participation: { id: "pt_1", status: "pending", benefit_reservation_state: "pending" },
+    };
+    const copy = sessionBenefitCopy(attached);
+    expect(copy === null || !copy.includes("已保留")).toBe(true);
+    const confirmed: ActionSessionView = {
+      ...live,
+      participation: { id: "pt_1", status: "awaiting_review", benefit_reservation_state: "confirmed" },
+    };
+    expect(sessionBenefitCopy(confirmed)).toContain("已保留");
+  });
+
+  it("恢复凭据视图形状校验:purpose 必须是 customer_resume(店员码结构性隔离)", () => {
+    const ok: ResumeCredentialView = { credential_id: "rsc_1", purpose: "customer_resume", token: "ptx_a.b", expires_at: "2026-11-10T12:10:00Z" };
+    const staff: ResumeCredentialView = { ...ok, purpose: "staff_verify" };
+    expect(resumeCredentialExchangeable(ok)).toBe(true);
+    expect(resumeCredentialExchangeable(staff)).toBe(false);
+    expect(resumeCredentialExchangeable({ ...ok, token: undefined })).toBe(false);
+  });
+});
