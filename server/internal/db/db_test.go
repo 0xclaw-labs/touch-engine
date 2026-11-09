@@ -100,6 +100,9 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"store_content_pack_version_events",
 		"store_content_pack_versions",
 		"store_content_packs",
+		// HUI-4595 (0091-0092): 门店真实制作交接与受信回流结果。
+		"store_content_production_handoffs",
+		"store_content_production_results",
 		"store_motion_requests",
 		"store_storefronts",
 		"stores",
