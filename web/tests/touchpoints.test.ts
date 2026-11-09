@@ -1,17 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
   campaignStateList,
+  entryFace,
   entryStateFace,
   featureEnabled,
   isStage,
   isValidEntryCode,
+  isValidStoreCode,
   nextStage,
   rebindImpactFace,
   sharedStopFace,
   stageFace,
   stageList,
+  targetFace,
   touchEntryFace,
   touchEntryRedirect,
+  type TouchEntryView,
 } from "../src/lib/touchpoints";
 
 describe("FEATURE 开关判定(与 Go isTruthy 同纪律:1/true/yes/on,默认 off)", () => {
@@ -66,7 +70,9 @@ describe("/t 稳定入口解析分支(白名单,绝不盲跳)", () => {
   it("非对象载荷一律不跳转", () => {
     expect(touchEntryRedirect(undefined)).toBeNull();
     expect(touchEntryRedirect(null)).toBeNull();
-    expect(touchEntryRedirect("available")).toBeNull();
+    // 历史遗留的字符串载荷(基线 tsc 就报 TS2559):运行时真会出现,测试照钉
+    expect(touchEntryRedirect("available" as unknown as TouchEntryView)).toBeNull();
+    expect(touchEntryRedirect(42 as unknown as TouchEntryView)).toBeNull();
   });
 });
 
@@ -176,5 +182,86 @@ describe("旧路径共享停用确认文案(传播影响必须先说清)", () =>
 
   it("单卡(1 张)仍如实说明", () => {
     expect(sharedStopFace(1)).toContain("1");
+  });
+});
+
+// ---- B02 store 根触点(2026-11-10):/s/{store_code} 白名单分支 ----
+
+const OK_STORE_CODE = "sf_0123456789abcdef"; // sf_ + 16 hex,与 Go randHex(8) 同源
+const BAD_STORE_CODES = [
+  "",
+  "sf_",
+  "sf_0123456789abcde", // 15 hex
+  "sf_0123456789abcdefg", // 17
+  "SF_0123456789abcdef", // 大写前缀
+  "sf_0123456789ABCDEF", // 大写 hex
+  "sf_0123456789abcdeg", // 非 hex
+  "store_0123456789abcdef",
+  "sf_0123456789abcdef extra",
+];
+
+describe("门店公共码形状闸(与 Go 端 store_storefronts.store_code 同源:sf_+16hex)", () => {
+  it("合法门店码通过", () => {
+    expect(isValidStoreCode(OK_STORE_CODE)).toBe(true);
+  });
+
+  it("长度不对/前缀错/大写/非 hex 一律拒绝", () => {
+    for (const bad of BAD_STORE_CODES) {
+      expect(isValidStoreCode(bad), bad).toBe(false);
+    }
+    expect(isValidStoreCode(undefined)).toBe(false);
+    expect(isValidStoreCode(42)).toBe(false);
+  });
+});
+
+describe("/t store 根分支(target_type=store → /s/{store_code},绝不盲跳)", () => {
+  it("store 目标 + available + 合法门店码才跳 /s/{store_code}", () => {
+    expect(
+      touchEntryRedirect({
+        schema_version: "touchpoint.v2",
+        state: "available",
+        target_type: "store",
+        store_code: OK_STORE_CODE,
+        binding_revision: 3,
+      }),
+    ).toBe(`/s/${OK_STORE_CODE}`);
+  });
+
+  it("store 目标缺 state 或 state 非 available 不跳转", () => {
+    expect(touchEntryRedirect({ target_type: "store", store_code: OK_STORE_CODE })).toBeNull();
+    expect(touchEntryRedirect({ state: "paused", target_type: "store", store_code: OK_STORE_CODE })).toBeNull();
+    expect(touchEntryRedirect({ state: "not_found", target_type: "store", store_code: OK_STORE_CODE })).toBeNull();
+  });
+
+  it("store 目标门店码缺失或形状非法不跳转(防注入式跳转)", () => {
+    for (const code of [undefined, "", "javascript:alert(1)", "/s/evil", "../x", ...BAD_STORE_CODES]) {
+      expect(touchEntryRedirect({ state: "available", target_type: "store", store_code: code }), String(code)).toBeNull();
+    }
+  });
+
+  it("legacy 目标(target_type=legacy_campaign 或缺失/未知)保持 /c 兼容", () => {
+    expect(
+      touchEntryRedirect({ state: "available", target_type: "legacy_campaign", code: OK_CODE, campaign_code: OK_CODE }),
+    ).toBe(`/c/${OK_CODE}`);
+    // 旧载荷无 target_type:原行为零破坏
+    expect(touchEntryRedirect({ state: "available", code: OK_CODE })).toBe(`/c/${OK_CODE}`);
+    expect(touchEntryRedirect({ state: "paused", target_type: "who knows", code: OK_CODE })).toBe(`/c/${OK_CODE}`);
+  });
+});
+
+describe("目标类型文案(M8 目标列)", () => {
+  it("store/legacy/未知各有一句", () => {
+    expect(targetFace("store")).toContain("门店");
+    expect(targetFace("legacy_campaign")).toContain("活动");
+    expect(targetFace(undefined)).toContain("未知");
+    expect(targetFace("surprise")).toContain("未知");
+  });
+
+  it("entryFace 按目标类型区分 available 语气:store 是门店首页,legacy 是活动", () => {
+    expect(entryFace("store", "available")).toContain("门店首页");
+    expect(entryFace("store", "available")).not.toContain("进入活动");
+    expect(entryFace("legacy_campaign", "available")).toContain("进入活动");
+    expect(entryFace("store", "touchpoint_disabled")).toContain("停用");
+    expect(entryFace("store", "not_found")).toContain("不存在");
   });
 });

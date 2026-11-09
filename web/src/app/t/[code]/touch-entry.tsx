@@ -5,8 +5,10 @@ import { useEffect, useState } from "react";
 
 import { touchEntryFace, touchEntryRedirect } from "@/lib/touchpoints";
 
-// HUI-1665 /t/{code} 稳定入口面:查公共解析端点,拿到活动码就临时跳到既有 /c 页。
-// 纪律:location.replace 是客户端临时跳转,绝不声称为永久重定向;
+// HUI-1665 /t/{code} 稳定入口面:查公共解析端点,按白名单目标临时跳转 ——
+// B02 store 根跳门店首页 /s/{store_code}(1896 承接的 C1 契约),legacy 卡照旧
+// 跳既有 /c/{code} 活动页。路径一律来自 touchEntryRedirect 白名单,本地不拼。
+// 纪律:location.replace 是客户端临时跳转,绝不声称为永久重定向,不用长缓存锁死;
 // 只有服务端白名单状态 + 合法码形才跳;别名停用/不存在给本地文案,不冒充成功;
 // 公开面不携带任何后台凭据,后台字段名一律不出现。
 export function TouchEntry() {

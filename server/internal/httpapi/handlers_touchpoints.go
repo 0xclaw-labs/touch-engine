@@ -1,26 +1,34 @@
 package httpapi
 
 // HUI-1665 增量(2026-10-14): 触点管理与稳定入口(管理面 + 公共解析)。
+// HUI-1665 Wave2(2026-11-10): B02 门店稳定触点 —— store 根目标/换绑 target 契约。
 //
 // 纪律:
 //   - 管理面 /api/v1/touchpoints 不加 FEATURE 开关(仓内惯例);鉴权与 NFC 面同
 //     一矩阵:org_owner 全租户、store_manager 本店(requireTagFace/记录级 store
 //     scope),跨租户 404 掩码;
 //   - 停用/恢复只动别名自身(SetTouchpointStatus 绝不级联 campaign_links)——
-//     单卡停用不误停共享 link 的其他卡;旧 /nfc/tags/{id}/status 传播语义零改动;
-//   - 换绑 = 换别名目标活动:预览(当前→新+已开始参与数只读统计)→ 确认
-//     (expected 乐观并发,409 rebind_conflict);URL(别名码)永不变化;
+//     单卡停用不误停共享的其他卡;旧 /nfc/tags/{id}/status 传播语义零改动;
+//   - 换绑 = 换别名目标(B02:target_type=store 根 / legacy_campaign):预览
+//     (当前→新目标事实+已开始参与数只读统计+binding_revision)→ 确认
+//     (expected_binding_revision 乐观并发,409 rebind_conflict;旧
+//     expected_campaign_id 请求体保留兼容);store 目标经 storeTargetScoped
+//     (存在/未停用/越店 404 掩码);URL(别名码)永不变化;
 //   - 部署五态只经显式 /stage 单步推进;CSV/二维码/检查路径零推进;
 //   - QR/CSV 载荷 = 纯不透明 /t/{code} URL(PUBLIC_BASE_URL 缺失 503 fail-closed),
 //     复用 qrentry/tagcsv 既有纪律(白名单尺寸/注入转义/固定六列);
 //   - 公共解析 /api/v1/public/touchpoints/{code} 走 FEATURE_TOUCHPOINT_ENTRY
-//     (默认 off,handler gate 统一 404 双保险):available 交既有 /c/{code} 呈现,
-//     别名停用/未知/形状非法同形 404;载荷白名单 {state}/{state,code};
+//     (默认 off,handler gate 统一 404 双保险):redirect 载荷白名单
+//     {schema_version,state,target_type,binding_revision,store_code?(store 根,
+//     零活动门控) | code+campaign_code(legacy,五态交 /c/{code} 呈现)};
+//     别名停用/未知/形状非法同形 404;跳转路径只由前端按白名单目标构造;
 //   - uid_hint 是管理面提示:只出现在本面与导出列,公共面零泄漏。
 
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -189,8 +197,110 @@ func (s *Server) handleTouchpointGet(w http.ResponseWriter, r *http.Request) {
 
 // ---- rebind ----------------------------------------------------------------------
 
-// handleTouchpointRebindPreview: 当前→新活动预览 + 影响范围(已开始参与数,
-// 3546 只读统计——这些参与继续绑定原活动,换绑不能挪动已承诺权益)。
+// touchpointTargetFacts is the preview projection of one binding target: the
+// fields the confirm dialog shows, keyed by target type. Legacy targets carry
+// campaign facts; store targets carry store facts (public code included).
+func (s *Server) touchpointTargetFacts(tenantID string, t store.TouchpointTarget) map[string]any {
+	out := map[string]any{"target_type": t.Type, "id": ""}
+	switch t.Type {
+	case store.TargetStore:
+		out["id"] = t.StoreID
+		if sto, err := s.St.GetStore(t.StoreID, tenantID); err == nil {
+			out["title"] = sto.Name
+			out["status"] = sto.Status
+		}
+		if sf, err := s.St.StorefrontForStore(tenantID, t.StoreID); err == nil {
+			out["store_code"] = sf.StoreCode
+		}
+	default:
+		out["id"] = t.CampaignID
+		if camp, err := s.St.GetCampaign(t.CampaignID, tenantID); err == nil {
+			out["title"] = camp.Title
+			out["status"] = camp.Status
+			out["campaign_id"] = camp.ID
+		}
+	}
+	return out
+}
+
+// parseTouchpointTarget reads a preview/rebind request body into a target plus
+// the concurrency guard. New contract: {target_type, store_id|campaign_id?,
+// expected_binding_revision}. Legacy bodies ({campaign_id,
+// expected_campaign_id}) keep working unchanged (增量演进不砸旧调用方).
+func parseTouchpointTarget(body io.Reader) (store.TouchpointTarget, store.TouchpointRebindExpectation, error) {
+	var in struct {
+		TargetType              string `json:"target_type"`
+		StoreID                 string `json:"store_id"`
+		CampaignID              string `json:"campaign_id"`
+		ExpectedBindingRevision int64  `json:"expected_binding_revision"`
+		ExpectedCampaignID      string `json:"expected_campaign_id"`
+	}
+	if err := json.NewDecoder(body).Decode(&in); err != nil {
+		return store.TouchpointTarget{}, store.TouchpointRebindExpectation{}, err
+	}
+	guard := store.TouchpointRebindExpectation{Revision: in.ExpectedBindingRevision, CampaignID: in.ExpectedCampaignID}
+	switch strings.TrimSpace(in.TargetType) {
+	case store.TargetStore:
+		if strings.TrimSpace(in.StoreID) == "" {
+			return store.TouchpointTarget{}, store.TouchpointRebindExpectation{}, fmt.Errorf("store_id is required for a store target")
+		}
+		return store.TouchpointTarget{Type: store.TargetStore, StoreID: strings.TrimSpace(in.StoreID)}, guard, nil
+	case store.TargetLegacyCampaign:
+		if strings.TrimSpace(in.CampaignID) == "" {
+			return store.TouchpointTarget{}, store.TouchpointRebindExpectation{}, fmt.Errorf("campaign_id is required for a campaign target")
+		}
+		return store.TouchpointTarget{Type: store.TargetLegacyCampaign, CampaignID: strings.TrimSpace(in.CampaignID)}, guard, nil
+	case "":
+		// 兼容路径:只有 campaign_id + expected_campaign_id 的旧请求体。
+		if strings.TrimSpace(in.CampaignID) == "" {
+			return store.TouchpointTarget{}, store.TouchpointRebindExpectation{}, fmt.Errorf("target_type or campaign_id is required")
+		}
+		return store.TouchpointTarget{Type: store.TargetLegacyCampaign, CampaignID: strings.TrimSpace(in.CampaignID)}, guard, nil
+	default:
+		return store.TouchpointTarget{}, store.TouchpointRebindExpectation{}, fmt.Errorf("target_type must be store or legacy_campaign")
+	}
+}
+
+// storeTargetScoped validates a store rebind target: exists in tenant, not
+// disabled, inside the caller's store scope. Out-of-scope masks as 404
+// (与 campaignScoped 同形;目标输入永不放宽经理视野).
+func (s *Server) storeTargetScoped(c *caller, storeID string, w http.ResponseWriter) (store.StoreRecord, bool) {
+	sto, err := s.St.GetStore(storeID, c.Member.TenantID)
+	if errors.Is(err, store.ErrNotFound) {
+		fail(w, http.StatusNotFound, "not_found", "store not found")
+		return store.StoreRecord{}, false
+	}
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "store lookup failed")
+		return store.StoreRecord{}, false
+	}
+	if sto.Status == store.StoreStatusDisabled {
+		fail(w, http.StatusBadRequest, "store_disabled", "store is disabled; rebinding into it is refused")
+		return store.StoreRecord{}, false
+	}
+	if !s.requireScopedAction(c, authz.ActionManageTags, authz.RecordScope{TenantID: c.Member.TenantID, StoreID: sto.ID}, true, w) {
+		return store.StoreRecord{}, false
+	}
+	return sto, true
+}
+
+// touchpointPreviewImpact counts participations bound to the CURRENT target's
+// campaign (read-only, 3546 domain): 换绑不能挪动已承诺权益,统计只描述影响面。
+// 查询失败如实报错(不显示 0 冒充无影响);确认侧不依赖该统计。
+func (s *Server) touchpointPreviewImpact(tenantID, campaignID string) (int64, error) {
+	if strings.TrimSpace(campaignID) == "" {
+		return 0, nil
+	}
+	started, err := s.St.CountStartedParticipations(tenantID, campaignID)
+	if err != nil {
+		return 0, err
+	}
+	return started, nil
+}
+
+// handleTouchpointRebindPreview: 当前→新目标预览 + 影响范围(已开始参与数只读
+// 统计——这些参与继续绑定原活动,换绑不能挪动已承诺权益)+ binding_revision
+// (确认时回传作 expected)。
 func (s *Server) handleTouchpointRebindPreview(w http.ResponseWriter, r *http.Request) {
 	c := callerFrom(r)
 	if _, ok := s.requireTagFace(c, w); !ok {
@@ -200,31 +310,40 @@ func (s *Server) handleTouchpointRebindPreview(w http.ResponseWriter, r *http.Re
 	if !ok {
 		return
 	}
-	var in struct {
-		CampaignID string `json:"campaign_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || strings.TrimSpace(in.CampaignID) == "" {
-		fail(w, http.StatusBadRequest, "bad_request", "campaign_id is required")
-		return
-	}
-	next, ok := s.campaignScoped(c, in.CampaignID, authz.ActionManageTags, w)
-	if !ok {
-		return
-	}
-	current, err := s.St.GetCampaign(v.CampaignID, c.Member.TenantID)
+	target, _, err := parseTouchpointTarget(r.Body)
 	if err != nil {
-		fail(w, http.StatusNotFound, "not_found", "current campaign not found")
+		fail(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	started, err := s.St.CountStartedParticipations(c.Member.TenantID, v.CampaignID)
+	switch target.Type {
+	case store.TargetStore:
+		if _, ok := s.storeTargetScoped(c, target.StoreID, w); !ok {
+			return
+		}
+	default:
+		if _, ok := s.campaignScoped(c, target.CampaignID, authz.ActionManageTags, w); !ok {
+			return
+		}
+		// 无短码目标无法落地访客,预览与确认同拒。
+		if ok, err := s.St.CampaignHasEntryLink(c.Member.TenantID, target.CampaignID); err != nil {
+			fail(w, http.StatusInternalServerError, "internal", "entry lookup failed")
+			return
+		} else if !ok {
+			fail(w, http.StatusBadRequest, "campaign_without_entry", "target campaign has no short code entry")
+			return
+		}
+	}
+	current := store.TouchpointTarget{Type: v.TargetType, StoreID: v.StoreID, CampaignID: v.CampaignID}
+	started, err := s.touchpointPreviewImpact(c.Member.TenantID, v.CampaignID)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "internal", "impact lookup failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"current":                map[string]any{"id": current.ID, "title": current.Title, "status": current.Status},
-		"next":                   map[string]any{"id": next.ID, "title": next.Title, "status": next.Status},
+		"current":                s.touchpointTargetFacts(c.Member.TenantID, current),
+		"next":                   s.touchpointTargetFacts(c.Member.TenantID, target),
 		"started_participations": started,
+		"binding_revision":       v.BindingRevision,
 	})
 }
 
@@ -236,28 +355,36 @@ func (s *Server) handleTouchpointRebind(w http.ResponseWriter, r *http.Request) 
 	if _, ok := s.touchpointScoped(c, r.PathValue("id"), w); !ok {
 		return
 	}
-	var in struct {
-		CampaignID         string `json:"campaign_id"`
-		ExpectedCampaignID string `json:"expected_campaign_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil ||
-		strings.TrimSpace(in.CampaignID) == "" || strings.TrimSpace(in.ExpectedCampaignID) == "" {
-		fail(w, http.StatusBadRequest, "bad_request", "campaign_id and expected_campaign_id are required")
+	target, guard, err := parseTouchpointTarget(r.Body)
+	if err != nil {
+		fail(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	// 目标必须本租户 + 本店 scope。
-	if _, ok := s.campaignScoped(c, in.CampaignID, authz.ActionManageTags, w); !ok {
+	// 确认必须带并发闸:new 是 expected_binding_revision;旧请求体退化 expected_campaign_id。
+	// 无闸请求体 = 400(显式坏请求),不是模糊的并发冲突。
+	if guard.Revision <= 0 && strings.TrimSpace(guard.CampaignID) == "" {
+		fail(w, http.StatusBadRequest, "bad_request", "expected_binding_revision (or legacy expected_campaign_id) is required")
 		return
 	}
-	// 无短码目标无法落地访客,预览与确认同拒。
-	if ok, err := s.St.CampaignHasEntryLink(c.Member.TenantID, in.CampaignID); err != nil {
-		fail(w, http.StatusInternalServerError, "internal", "entry lookup failed")
-		return
-	} else if !ok {
-		fail(w, http.StatusBadRequest, "campaign_without_entry", "target campaign has no short code entry")
-		return
+	switch target.Type {
+	case store.TargetStore:
+		if _, ok := s.storeTargetScoped(c, target.StoreID, w); !ok {
+			return
+		}
+	default:
+		if _, ok := s.campaignScoped(c, target.CampaignID, authz.ActionManageTags, w); !ok {
+			return
+		}
+		// 无短码目标无法落地访客,预览与确认同拒。
+		if ok, err := s.St.CampaignHasEntryLink(c.Member.TenantID, target.CampaignID); err != nil {
+			fail(w, http.StatusInternalServerError, "internal", "entry lookup failed")
+			return
+		} else if !ok {
+			fail(w, http.StatusBadRequest, "campaign_without_entry", "target campaign has no short code entry")
+			return
+		}
 	}
-	a, err := s.St.RebindTouchpoint(r.PathValue("id"), c.Member.TenantID, in.CampaignID, in.ExpectedCampaignID, c.Member.PrincipalRef)
+	a, err := s.St.RebindTouchpointTarget(r.PathValue("id"), c.Member.TenantID, target, guard, c.Member.PrincipalRef)
 	switch {
 	case err == nil:
 	case errors.Is(err, store.ErrRebindConflict):
@@ -457,9 +584,17 @@ func (s *Server) handleTouchpointExportCSV(w http.ResponseWriter, r *http.Reques
 
 // ---- public stable-entry resolution ---------------------------------------------------
 
+// touchpointSchemaVersion freezes the public payload shape (票面兼容扩展契约:
+// schema_version/state/target_type/store_code?/campaign_code?/binding_revision;
+// 旧响应 code 按兼容约定保留在 legacy 分支).
+const touchpointSchemaVersion = "touchpoint.v2"
+
 // handlePublicTouchpoint: 无会话 GET-only 白名单解析。别名停用/未知/形状非法
-// 同形 404;活动级状态(暂停/过期等)带码 200,由既有 /c/{code} 页呈现五态文案
-// ——本端点零呈现职责,公共载荷不出现 uid_hint/角色/租户/门店内部字段。
+// 同形 404;redirect 分目标类型产出白名单载荷:store 根带门店公共码(零活动
+// 门控——无活动/暂停/结束不关闭门店基础服务,门店面自身状态由 /s 页经
+// GET /api/v1/public/storefronts/{storeCode} 呈现),legacy 带规范短码与其五态
+// (由既有 /c/{code} 页呈现)——本端点零呈现职责,公共载荷不出现 uid_hint/
+// 角色/租户/门店内部字段;跳转路径只由前端按白名单目标构造,不接受外链。
 func (s *Server) handlePublicTouchpoint(w http.ResponseWriter, r *http.Request) {
 	if !s.Cfg.FeatureTouchpointEntry {
 		// handler gate:与路由不注册双保险,off 永远统一 404。
@@ -491,7 +626,19 @@ func (s *Server) handlePublicTouchpoint(w http.ResponseWriter, r *http.Request) 
 
 	switch res.Outcome {
 	case store.TpRedirect:
-		writeJSON(w, http.StatusOK, map[string]any{"state": string(res.State), "code": res.Code})
+		payload := map[string]any{
+			"schema_version":   touchpointSchemaVersion,
+			"state":            string(res.State),
+			"target_type":      res.TargetType,
+			"binding_revision": res.BindingRevision,
+		}
+		if res.TargetType == store.TargetStore {
+			payload["store_code"] = res.StoreCode
+		} else {
+			payload["code"] = res.Code          // 兼容约定保留(旧 /t 前端只认 state+code)
+			payload["campaign_code"] = res.Code // 票面契约:显式活动短码字段
+		}
+		writeJSON(w, http.StatusOK, payload)
 	case store.TpDisabled:
 		writeJSON(w, http.StatusNotFound, map[string]any{"state": string(store.TpDisabled)})
 	default:

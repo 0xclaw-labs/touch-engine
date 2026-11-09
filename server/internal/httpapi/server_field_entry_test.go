@@ -450,7 +450,7 @@ func fieldTPCSVURLs(t *testing.T, f *fixture) []string {
 // 「写入→回读→真机验证」三阶段显式走完(与贴卡检查表阶段一一对应)。
 func TestFieldStableEntryChainTouchpointToCampaign(t *testing.T) {
 	f := newTPFixture(t, map[string]string{"FEATURE_TOUCHPOINT_ENTRY": "on"})
-	_, _, code1, _, _, _, tp1, _ := tpSeedScene(t, f)
+	camp1, _, code1, _, _, _, tp1, _ := tpSeedScene(t, f)
 
 	// 取号:触点 CSV 的 url 列 = https://h5.test/t/{别名码},short_code 列 = 别名码
 	urls := fieldTPCSVURLs(t, f.fixture)
@@ -467,6 +467,12 @@ func TestFieldStableEntryChainTouchpointToCampaign(t *testing.T) {
 	if !found {
 		t.Fatalf("csv urls %v missing stable entry %q", urls, entryURL)
 	}
+
+	// B02(2026-11-10):provision 落 store 根(解析→/s/{store_code});本测试钉的
+	// 「/t → /c 正确活动」旧卡链用 legacy 目标表达 —— 同 URL 换绑到活动目标。
+	status, _, _ := f.do(t, "POST", "/api/v1/touchpoints/"+tp1+"/rebind", "sess-owner-a", f.tenA,
+		`{"target_type":"legacy_campaign","campaign_id":"`+camp1+`","expected_binding_revision":1}`)
+	mustEqual(t, status, http.StatusOK)
 
 	// 部署五态随现场阶段显式单步推进(写卡→回读→真机验证),不冒充跳级
 	for _, want := range []string{"awaiting_write", "written_awaiting_readback", "readback_done", "device_verified"} {
@@ -517,6 +523,14 @@ func TestFieldRebindStableURLKeepsOriginalParticipation(t *testing.T) {
 	if stableURL == "" {
 		t.Fatalf("detail url missing: %v", before)
 	}
+
+	// B02(2026-11-10):provision 落 store 根(解析→/s/{store_code},活动注记零门控,
+	// 另有 TestTouchpointStoreRootPublicAndRebindAPI 锁该链)。本测试钉的 /t → /c 链
+	// 与换绑语义用 legacy 目标表达 —— 同 URL 换绑到活动目标(URL 逐字节不变),
+	// 后续断言与 1663 原意一致。
+	status, _, _ := f.do(t, "POST", "/api/v1/touchpoints/"+tp1+"/rebind", "sess-owner-a", f.tenA,
+		`{"target_type":"legacy_campaign","campaign_id":"`+camp1+`","expected_binding_revision":1}`)
+	mustEqual(t, status, http.StatusOK)
 
 	// 顾客经稳定入口解析到旧目标并开始参与(/t → code1 → /c 链)
 	got, _, view := f.do(t, "GET", "/api/v1/public/touchpoints/"+tpAliasCode(t, f, tp1), "", "", "")
