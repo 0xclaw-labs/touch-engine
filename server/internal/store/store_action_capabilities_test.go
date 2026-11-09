@@ -239,3 +239,208 @@ func TestControlLogEmpty(t *testing.T) {
 		t.Fatalf("control log rows = %d, want 0 (种子初值不经审计表)", n)
 	}
 }
+
+// ---- Task 3: 持久层行为（扫描/租户作用域/受控 upsert+审计/紧急停用） ---------
+
+func actionCapFixture(mut func(*channeladmission.ActionCapability)) channeladmission.ActionCapability {
+	caps := channeladmission.EnvCapabilities{
+		Navigation: "supported", MediaHandoff: "supported",
+		PlatformReceipt: "unknown", RewardEligibility: "unknown",
+	}
+	envs := make(map[string]channeladmission.EnvCapabilities, 6)
+	for _, e := range channeladmission.Environments {
+		envs[e] = caps
+	}
+	r := channeladmission.ActionCapability{
+		ID: "cap_t_x_h5_share", CatalogCode: "A99", Platform: "test",
+		Method: "h5_share", Scenario: "store_promo", ActionKind: "publish",
+		Label: "测试动作", AppBinding: "none", TenantScope: "*", Status: "admitted",
+		Environments:   envs,
+		FieldSupport:   map[string]string{"media": "supported"},
+		RequiredInputs: []string{"content_pack_version"},
+		EvidenceGrade:  "official_doc", OfficialSources: []string{"https://example.test"},
+		CheckedAt: "2026-11-09", ValidUntil: "2027-02-07",
+		Missing: []string{"缺项"}, ReasonCode: "admitted", ReasonText: "说明", SeedVersion: 1,
+	}
+	if mut != nil {
+		mut(&r)
+	}
+	return r
+}
+
+func countAudit(t *testing.T, s *Store, code string) int {
+	t.Helper()
+	n, err := s.CountActionCapabilityAudit(code)
+	if err != nil {
+		t.Fatalf("count audit: %v", err)
+	}
+	return n
+}
+
+// TestActionCapScanRoundTrip: JSON 列往返一致;坏 environments JSON 扫描报错
+// (fail-closed,不让脏行静默通过)。
+func TestActionCapScanRoundTrip(t *testing.T) {
+	_, s := openMigratedDB(t)
+	r := actionCapFixture(func(x *channeladmission.ActionCapability) { x.TenantScope = "t_rt" })
+	created, err := s.UpsertActionCapability(r, ControlAudit{Actor: "ops", Reason: "初始", Action: "create"})
+	if err != nil || !created {
+		t.Fatalf("upsert: created=%v err=%v", created, err)
+	}
+	got, err := s.GetActionCapabilitiesByCode("A99", "")
+	if err != nil || len(got) != 0 {
+		t.Fatalf("empty tenant must match nothing: got=%v err=%v", got, err)
+	}
+	got, err = s.GetActionCapabilitiesByCode("A99", "t_rt")
+	if err != nil || len(got) != 1 {
+		t.Fatalf("get by code: got=%d err=%v", len(got), err)
+	}
+	g := got[0]
+	if g.CatalogCode != "A99" || g.Platform != "test" || g.Method != "h5_share" ||
+		g.Status != "admitted" || g.TenantScope != "t_rt" || len(g.Environments) != 6 ||
+		g.Environments["ios_safari"].Navigation != "supported" ||
+		len(g.RequiredInputs) != 1 || g.FieldSupport["media"] != "supported" {
+		t.Fatalf("round trip mismatch: %+v", g)
+	}
+	// Corrupt row: scan must fail closed.
+	if _, err := s.DB.Exec(`UPDATE channel_action_capabilities SET environments='{"bogus":{}}' WHERE catalog_code='A99'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetActionCapabilitiesByCode("A99", "t_rt"); err == nil {
+		t.Fatal("corrupted environments JSON must fail the scan")
+	}
+}
+
+// TestActionCapTenantScope: '*' 平台真值对每租户可见;定向行只在自己租户可见。
+func TestActionCapTenantScope(t *testing.T) {
+	_, s := openMigratedDB(t)
+	if _, err := s.UpsertActionCapability(actionCapFixture(func(x *channeladmission.ActionCapability) {
+		x.TenantScope = "t_x"
+	}), ControlAudit{Actor: "ops", Reason: "定向行", Action: "create"}); err != nil {
+		t.Fatal(err)
+	}
+	lx, err := s.ListActionCapabilities("t_x")
+	if err != nil || len(lx) != 46 { // 45 platform rows + 1 scoped
+		t.Fatalf("t_x list = %d err=%v, want 46", len(lx), err)
+	}
+	ly, err := s.ListActionCapabilities("t_y")
+	if err != nil || len(ly) != 45 {
+		t.Fatalf("t_y list = %d err=%v, want 45 (never sees t_x's row)", len(ly), err)
+	}
+	all, err := s.ListActionCapabilitiesAll()
+	if err != nil || len(all) != 46 {
+		t.Fatalf("all list = %d err=%v, want 46 (ops sees scoped rows)", len(all), err)
+	}
+}
+
+// TestUpsertAuditIdempotent: hash 未变的重复装载是 no-op(不追加审计);
+// 内容变化才 update+审计;create/update 动作分类正确。
+func TestUpsertAuditIdempotent(t *testing.T) {
+	_, s := openMigratedDB(t)
+	r := actionCapFixture(func(x *channeladmission.ActionCapability) { x.TenantScope = "t_u" })
+	created, err := s.UpsertActionCapability(r, ControlAudit{Actor: "ops-a", Reason: "初值", Action: "create"})
+	if err != nil || !created {
+		t.Fatalf("first upsert: created=%v err=%v", created, err)
+	}
+	if n := countAudit(t, s, "A99"); n != 1 {
+		t.Fatalf("audit after create = %d, want 1", n)
+	}
+	created, err = s.UpsertActionCapability(r, ControlAudit{Actor: "ops-a", Reason: "重复", Action: "create"})
+	if err != nil || created {
+		t.Fatalf("identical re-load: created=%v err=%v, want false/nil", created, err)
+	}
+	if n := countAudit(t, s, "A99"); n != 1 {
+		t.Fatalf("audit after no-op = %d, want 1 (unchanged re-load writes nothing)", n)
+	}
+	r.Status = "unknown"
+	r.ReasonCode = "pending_external"
+	created, err = s.UpsertActionCapability(r, ControlAudit{Actor: "ops-b", Reason: "资格复核", Action: "update"})
+	if err != nil || created {
+		t.Fatalf("changed re-load: created=%v err=%v, want false (update path)", created, err)
+	}
+	if n := countAudit(t, s, "A99"); n != 2 {
+		t.Fatalf("audit after update = %d, want 2", n)
+	}
+	got, _ := s.GetActionCapabilitiesByCode("A99", "t_u")
+	if got[0].Status != "unknown" || got[0].ReasonCode != "pending_external" {
+		t.Fatalf("update not applied: %+v", got[0])
+	}
+	rows, err := s.ListActionCapabilityAudit("A99", 10)
+	if err != nil || len(rows) != 2 || rows[0].Actor != "ops-a" || rows[1].Actor != "ops-b" || rows[1].Action != "update" {
+		t.Fatalf("audit trail = %+v err=%v", rows, err)
+	}
+	if rows[0].Reason != "初值" || rows[0].PayloadHash == "" || rows[0].CreatedAt == "" {
+		t.Fatalf("audit fields incomplete: %+v", rows[0])
+	}
+}
+
+// TestEmergencyToggleAudit: 紧急停用=独立否决,写必留审计;未知 id 拒绝且无审计。
+func TestEmergencyToggleAudit(t *testing.T) {
+	_, s := openMigratedDB(t)
+	r := actionCapFixture(func(x *channeladmission.ActionCapability) { x.TenantScope = "t_e" })
+	if _, err := s.UpsertActionCapability(r, ControlAudit{Actor: "ops", Reason: "初值", Action: "create"}); err != nil {
+		t.Fatal(err)
+	}
+	found, err := s.SetActionCapabilityEmergency(r.ID, true, ControlAudit{Actor: "ops-oncall", Reason: "平台故障停用", Action: "emergency_disable"})
+	if err != nil || !found {
+		t.Fatalf("emergency disable: found=%v err=%v", found, err)
+	}
+	got, _ := s.GetActionCapabilitiesByCode("A99", "t_e")
+	if !got[0].EmergencyDisabled {
+		t.Fatal("emergency_disabled not persisted")
+	}
+	if n := countAudit(t, s, "A99"); n != 2 {
+		t.Fatalf("audit = %d, want 2 (create + emergency_disable)", n)
+	}
+	rows, _ := s.ListActionCapabilityAudit("A99", 10)
+	if rows[1].Action != "emergency_disable" || rows[1].Actor != "ops-oncall" {
+		t.Fatalf("disable audit = %+v", rows[1])
+	}
+	found, err = s.SetActionCapabilityEmergency("cap_nope", true, ControlAudit{Actor: "ops", Reason: "x", Action: "emergency_disable"})
+	if found || err == nil {
+		t.Fatalf("unknown id: found=%v err=%v, want false/ErrNotFound", found, err)
+	}
+	if n := countAudit(t, s, "A99"); n != 2 {
+		t.Fatalf("failed toggle must not audit: %d", n)
+	}
+}
+
+// TestSeedHashParity: 迁移种子行的 payload_hash 与 Go 端 ActionCapabilityPayloadHash
+// 一致(同 13 规范字段 canonical JSON)——种子行的首次受控重写若内容不变必须
+// 是 no-op(不产生 update 审计),哈希口径漂移会让每次启动后的首次写都假更新。
+func TestSeedHashParity(t *testing.T) {
+	_, s := openMigratedDB(t)
+	rows, err := s.ListActionCapabilitiesAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 45 {
+		t.Fatalf("rows = %d, want 45", len(rows))
+	}
+	for _, r := range rows {
+		var stored string
+		if err := s.DB.QueryRow(`SELECT payload_hash FROM channel_action_capabilities WHERE id=?`, r.ID).Scan(&stored); err != nil {
+			t.Fatalf("%s: %v", r.IdentityKey(), err)
+		}
+		if got := ActionCapabilityPayloadHash(r); got != stored {
+			t.Fatalf("%s hash drift: go=%s stored=%s", r.IdentityKey(), got, stored)
+		}
+	}
+	// 不变更的种子行受控重写 = no-op,无审计。
+	a01, err := s.GetActionCapabilitiesByCode("A01", "")
+	if err != nil || len(a01) == 0 {
+		t.Fatalf("A01: %v", err)
+	}
+	var target channeladmission.ActionCapability
+	for _, r := range a01 {
+		if r.Method == "h5_share" {
+			target = r
+		}
+	}
+	created, err := s.UpsertActionCapability(target, ControlAudit{Actor: "ops", Reason: "复核", Action: "update"})
+	if err != nil || created {
+		t.Fatalf("unchanged seed rewrite: created=%v err=%v, want false", created, err)
+	}
+	if n := countAudit(t, s, "A01"); n != 0 {
+		t.Fatalf("audit after unchanged rewrite = %d, want 0", n)
+	}
+}
