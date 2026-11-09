@@ -91,6 +91,13 @@ const (
 	// on = 访客稳定别名解析可用:available 交既有 /c/{code} 呈现,别名停用/未知
 	// 同形 404;缓存沿 FEATURE_PUBLIC_CACHE 既有策略(epoch 结构失效)。
 	EnvFeatureTouchpointEntry = "FEATURE_TOUCHPOINT_ENTRY"
+	// EnvFeatureStorefront (HUI-4584 门店动作目录 G1): 公共门店面
+	// GET /api/v1/public/storefronts/{storeCode} 的登记制开关,默认 off。
+	// off = 公共读路由不注册(404 不可见)且 handler gate 再答统一 404(双保险,
+	// 同 FEATURE_TOUCHPOINT_ENTRY 写法);管理面 /api/v1/stores/{id}/actions
+	// 不加开关(仓内惯例)。on = 数据面读端点可用:只含已映射+启用的动作实例,
+	// storefront_revision 本票恒 0(发布版本归 HUI-1676)。
+	EnvFeatureStorefront = "FEATURE_STOREFRONT"
 )
 
 // Config is the resolved server configuration.
@@ -203,6 +210,7 @@ type Config struct {
 	FeatureServiceDesk      bool
 	FeaturePublishHandoff   bool
 	FeatureTouchpointEntry  bool
+	FeatureStorefront       bool
 
 	// Brand registry read client (HUI-2049). Touch never writes this registry
 	// and never treats a brand host as a tenant or a payer.
@@ -281,6 +289,7 @@ func Load(get func(string) string) Config {
 		FeatureServiceDesk:             isTruthy(get(EnvFeatureServiceDesk)),
 		FeaturePublishHandoff:          isTruthy(get(EnvFeaturePublishHandoff)),
 		FeatureTouchpointEntry:         isTruthy(get(EnvFeatureTouchpointEntry)),
+		FeatureStorefront:              isTruthy(get(EnvFeatureStorefront)),
 		BrandBaseURL:                   strings.TrimSpace(get("PLATFORM_BRAND_BASE_URL")),
 		BrandToken:                     get("PLATFORM_BRAND_TOKEN"),
 		SubscriptionStatus:             firstNonEmpty(get("TOUCH_SUBSCRIPTION_STATUS"), "unconfirmed"),

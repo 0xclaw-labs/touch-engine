@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { failureText, useSession } from "@/components/work/merchant-session";
 import { surfaceLabel } from "@/lib/product-finish";
 
@@ -102,6 +103,8 @@ export default function StoresPage() {
                 <strong>{store.name}</strong>
                 <span className="tk-note"> {store.address || "无地址"} </span>
                 {store.status === "disabled" ? <span className="tk-unknown">已停用</span> : <span className="tk-note">启用</span>}
+                {/* HUI-4584 M4: 门店渠道动作配置入口。 */}
+                <Link className="tk-quiet" href={`/work/stores/${store.id}/channels`}>渠道动作</Link>
                 {owner ? (
                   <div className="tk-row tk-gap">
                     <button className="tk-quiet" type="button" onClick={() => setEdit({ id: store.id, name: store.name, address: store.address })}>编辑</button>
