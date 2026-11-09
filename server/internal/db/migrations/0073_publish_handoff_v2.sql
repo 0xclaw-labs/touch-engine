@@ -31,7 +31,9 @@ CREATE TABLE publish_handoff_events_v2 (
          'receipt_rejected','canceled',
         -- v2 六层事实(HUI-1670 touch-handoff/v2 冻结命名,4585-4588 消费)
          'customer_click','wake_attempt','media_handoff',
-         'customer_self_report','staff_confirm','platform_confirm')),
+         'customer_self_report','staff_confirm','platform_confirm',
+        -- v2 回查留痕(adapter Query 结果;照录不确认)
+         'platform_query')),
     actor           TEXT NOT NULL DEFAULT '',
     evidence_source TEXT NOT NULL DEFAULT '',
     receipt_id      TEXT NOT NULL DEFAULT '',

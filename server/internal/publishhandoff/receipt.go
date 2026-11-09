@@ -34,9 +34,14 @@ type Receipt struct {
 	ParticipationID string // 参与绑定
 	AttemptID       string // 尝试绑定
 	ContentVersion  string // 内容版本绑定(换稿后旧回执不认)
-	PostID          string
-	Outcome         string // published | other
-	SignedAt        time.Time
+	// HandoffID is the opaque handoff reference (v2 adapter contract: the
+	// callback must echo our id so the pipeline can resolve the row; the
+	// binding check applies only when the ROW carries a handoff id — v1 /c
+	// rows never set it, keeping their receipts binding-compatible).
+	HandoffID string
+	PostID    string
+	Outcome   string // published | other
+	SignedAt  time.Time
 }
 
 // ReceiptWire is what arrives on the wire: payload + signature.
@@ -52,13 +57,15 @@ type ReceiptVerifier interface {
 }
 
 // ReceiptBinding is what the receipt must match: 五绑定
-// (app/tenant/participation/attempt/content_version)。
+// (app/tenant/participation/attempt/content_version)+ v2 交接 id 绑定(行带
+// handoff id 时强制)。
 type ReceiptBinding struct {
 	AppRef          string
 	TenantID        string
 	ParticipationID string
 	AttemptID       string
 	ContentVersion  string
+	HandoffID       string
 }
 
 // ErrReceiptUnverified is returned for every signature failure (含未配置密钥).
@@ -73,7 +80,7 @@ const receiptDomain = "publishhandoff/official-receipt/v1"
 func canonicalReceipt(r Receipt) string {
 	return strings.Join([]string{
 		r.ReceiptID, r.Platform, r.AppRef, r.TenantID, r.ParticipationID,
-		r.AttemptID, r.ContentVersion, r.PostID, r.Outcome,
+		r.AttemptID, r.ContentVersion, r.HandoffID, r.PostID, r.Outcome,
 		r.SignedAt.UTC().Format(time.RFC3339Nano),
 	}, "\x1f")
 }
@@ -126,8 +133,9 @@ func (v *HMACVerifier) Verify(wire ReceiptWire) (Receipt, error) {
 	return r, nil
 }
 
-// BindReceipt enforces the five bindings. Any mismatch names "binding" so
-// callers can record a precise receipt_rejected reason.
+// BindReceipt enforces the five bindings (plus the v2 handoff-id binding when
+// the row carries one). Any mismatch names "binding" so callers can record a
+// precise receipt_rejected reason.
 func BindReceipt(r Receipt, want ReceiptBinding) error {
 	bad := ""
 	switch {
@@ -141,6 +149,8 @@ func BindReceipt(r Receipt, want ReceiptBinding) error {
 		bad = "attempt"
 	case r.ContentVersion != want.ContentVersion:
 		bad = "content_version"
+	case want.HandoffID != "" && r.HandoffID != want.HandoffID:
+		bad = "handoff"
 	}
 	if bad != "" {
 		return fmt.Errorf("publishhandoff: receipt %s binding mismatch", bad)

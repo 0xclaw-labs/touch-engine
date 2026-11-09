@@ -167,7 +167,7 @@ func (s *Server) handlePublicPublishHandoffRoutes(w http.ResponseWriter, r *http
 			DeepLinkBase: s.Cfg.PublishHandoffH5EntryBase,
 			MiniappBase:  s.Cfg.PublishHandoffMiniappEntryBase,
 			// 服务端派生事实(3535 合同 §6 指令①):客户端标记不可信。
-			RewardPlay:     rec.Scenario == channeladmission.ScenarioRewardTask,
+			RewardPlay:     rec.Scenario == channeladmission.ActionScenarioRewardTask,
 			MerchantAppRef: s.Cfg.PublishHandoffMerchantAppRef,
 		}, rec)
 		plans = append(plans, map[string]any{
@@ -280,7 +280,7 @@ func (s *Server) handlePublicPublishHandoffStart(w http.ResponseWriter, r *http.
 		Now:          time.Now().UTC(),
 		DeepLinkBase: s.Cfg.PublishHandoffH5EntryBase, MiniappBase: s.Cfg.PublishHandoffMiniappEntryBase,
 		// 服务端派生事实(§6 指令①):奖励性质按记录场景,App 绑定按部署配置。
-		RewardPlay:     record.Scenario == channeladmission.ScenarioRewardTask,
+		RewardPlay:     record.Scenario == channeladmission.ActionScenarioRewardTask,
 		MerchantAppRef: s.Cfg.PublishHandoffMerchantAppRef,
 	}, record); plan.Kind == publishhandoff.PlanRefused || plan.Kind == publishhandoff.PlanPendingExternal {
 		s.writePublishHandoffError(w, &publishhandoff.HandoffRefusedError{
@@ -515,7 +515,7 @@ func (s *Server) handlePublicPublishHandoffGet(w http.ResponseWriter, r *http.Re
 		TenantID: h.TenantID, Platform: h.Platform, EntryMode: h.EntryMode, Scenario: h.Scenario,
 		Now: time.Now().UTC(), Text: text,
 		DeepLinkBase: s.Cfg.PublishHandoffH5EntryBase, MiniappBase: s.Cfg.PublishHandoffMiniappEntryBase,
-		RewardPlay:     record.Scenario == channeladmission.ScenarioRewardTask,
+		RewardPlay:     record.Scenario == channeladmission.ActionScenarioRewardTask,
 		MerchantAppRef: s.Cfg.PublishHandoffMerchantAppRef,
 	}, record)
 	refs, err := s.PublishHandoff.MediaForVisitor(r.Context(), h.ID, mustVisitor(r))
