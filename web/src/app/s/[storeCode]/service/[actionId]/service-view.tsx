@@ -147,7 +147,7 @@ function ServiceViewInner() {
             {routePick && routePick.kind !== "ok" && (
               <p className="tk-warn" data-testid="service-route-note">{routePick.face}</p>
             )}
-            {routePick?.kind === "ok" && (
+            {routePick !== null && routePick.kind === "ok" && routePick.route !== null && (
               <p className="tk-note" data-testid="service-route-method">当前设备路线:{methodLabel(routePick.route.method)}。</p>
             )}
 

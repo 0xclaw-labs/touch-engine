@@ -194,7 +194,7 @@ const OFFERS_FIXTURE = {
 
 describe("offersView(4590 草案契约):售罄/失效停购买入口", () => {
   it("解析条目并保留平台/标题/价格说明", () => {
-    const offers = offersView(OFFERS_FIXTURE);
+    const offers = offersView(OFFERS_FIXTURE)!;
     expect(offers).toHaveLength(4);
     expect(offers[0]).toMatchObject({ offerId: "of_1", platform: "meituan", title: "双人咖啡券", priceNote: "¥68" });
   });

@@ -536,7 +536,7 @@ function ContentViewInner() {
             <section className="tk-section" data-testid="content-handoff">
               <h2 className="tk-section-title">发布交接</h2>
               {routePick && routePick.kind !== "ok" && <p className="tk-warn" data-testid="route-note">{routePick.face}</p>}
-              {routePick?.kind === "ok" && (
+              {routePick !== null && routePick.kind === "ok" && routePick.route !== null && (
                 <p className="tk-note" data-testid="route-method">当前设备路线:{methodLabel(routePick.route.method)}。</p>
               )}
               {handoff === "unavailable" ? (

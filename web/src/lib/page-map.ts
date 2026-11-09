@@ -75,6 +75,13 @@ const recorded: readonly { route: string; id: PatternId; regions: readonly strin
   { route: "/c/[code]/contact", id: "public_consumer", regions: ["primary_action", "status", "empty"] },
   // HUI-1665 稳定入口 /t/{code}:公开消费者面,off 时整页 404。
   { route: "/t/[code]", id: "public_consumer", regions: ["primary_action", "status", "empty"] },
+  // HUI-1896 顾客六视图(C1-C6):门店首页/内容预览与交接/服务详情/权益凭证/隐私授权。
+  // 全部公开消费者面;无生态导航;未配置动作不渲染,空/待办态由各页声明。
+  { route: "/s/[storeCode]", id: "public_consumer", regions: ["primary_action", "status", "empty"] },
+  { route: "/s/[storeCode]/content/[actionId]", id: "public_consumer", regions: ["primary_action", "status", "empty"] },
+  { route: "/s/[storeCode]/service/[actionId]", id: "public_consumer", regions: ["primary_action", "status", "empty"] },
+  { route: "/s/[storeCode]/benefits", id: "public_consumer", regions: ["primary_action", "status", "empty"] },
+  { route: "/s/[storeCode]/privacy", id: "public_consumer", regions: ["primary_action", "status", "empty"] },
   // HUI-1665 触点管理台:一卡一稳定链接的日常操作列表页。
   { route: "/work/touchpoints", id: "list", regions: ["primary_action", "status", "empty"] },
   // HUI-4584 M4 门店渠道动作页:门店级动作实例配置(列表/启停/排序/测试入口)。

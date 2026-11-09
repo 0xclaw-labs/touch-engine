@@ -17,9 +17,9 @@
 
 import { Suspense, useCallback, useEffect, useState, type ChangeEvent } from "react";
 import { useParams, useSearchParams } from "next/navigation";
-import { publicVisitorColumns } from "@/lib/visitor-experience";
+import { publicVisitorColumns, leadOutcomeCopy } from "@/lib/visitor-experience";
 import { failureText } from "@/lib/failure-copy";
-import { LEAD_REVOKED_COPY, leadOutcomeCopy, leadOutcomeState } from "@/lib/lead-outcome";
+import { LEAD_REVOKED_COPY, leadOutcomeState } from "@/lib/lead-outcome";
 
 type PrivacyState = "loading" | "form" | "submitted" | "not_open" | "network_error";
 

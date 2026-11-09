@@ -94,7 +94,7 @@ describe("pickRoute:环境过滤与诚实分级", () => {
     })!;
     const pick = pickRoute(caps.routes, "ios_safari");
     expect(pick?.kind).toBe("ok");
-    expect(pick?.route.method).toBe("h5_share");
+    expect(pick?.route?.method).toBe("h5_share");
   });
 
   it("pending_external=true → pending 文案,绝不写「可以发布/完成」", () => {

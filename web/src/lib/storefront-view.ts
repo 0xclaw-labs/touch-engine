@@ -36,6 +36,16 @@ export interface StorefrontSectionView {
   actionIds: string[];
 }
 
+export interface StorefrontPayload {
+  schema_version?: unknown;
+  store_code?: unknown;
+  storefront_revision?: unknown;
+  store?: unknown;
+  sections?: unknown;
+  actions?: unknown;
+  activity_cards?: unknown;
+}
+
 export interface StorefrontView {
   storeCode: string;
   storefrontRevision: number;
@@ -311,11 +321,11 @@ export function offerEntry(offer: OfferItem): OfferEntry {
     case "unverified":
       return { kind: "view", text: "到平台查看", href: null };
     case "sold_out":
-      return { kind: "stopped", text: "已售罄:可看看其他套餐,或到平台查看门店商品。" };
+      return { kind: "stopped", text: "已售罄:可看看其他套餐,或到平台查看门店商品。", href: null };
     case "expired":
-      return { kind: "stopped", text: "这个套餐已过期:可看看其他套餐,或到平台查看门店商品。" };
+      return { kind: "stopped", text: "这个套餐已过期:可看看其他套餐,或到平台查看门店商品。", href: null };
     default:
-      return { kind: "stopped", text: "套餐状态未知:价格与库存以平台页面为准。" };
+      return { kind: "stopped", text: "套餐状态未知:价格与库存以平台页面为准。", href: null };
   }
 }
 

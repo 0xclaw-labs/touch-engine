@@ -33,7 +33,7 @@ describe("账上路由恰好一条普查", () => {
   it("和账本同一组路由，一条不多一条不少", () => {
     const ledger = pageLedger().map((page) => page.route);
     const census = pageCensus();
-    expect(ledger).toHaveLength(18); // 基线15 + HUI-4584 渠道页 + HUI-4593 设置页/代理台
+    expect(ledger).toHaveLength(23); // 基线15 + HUI-4584 渠道页 + HUI-4593 设置页/代理台 + HUI-1896 六视图5页
     expect(census.map((page) => page.route)).toEqual(ledger);
     expect(new Set(census.map((page) => page.route)).size).toBe(census.length);
     expect(census.some((page) => page.route === "/login" || page.route.startsWith("/api"))).toBe(false);
@@ -124,8 +124,14 @@ describe("surface 归类", () => {
       ["/c/[code]/contact", "public"],
       // HUI-1665:/t 稳定入口是公开消费者面。
       ["/t/[code]", "public"],
+      // HUI-1896:顾客六视图全部公开消费者面。
+      ["/s/[storeCode]", "public"],
+      ["/s/[storeCode]/content/[actionId]", "public"],
+      ["/s/[storeCode]/service/[actionId]", "public"],
+      ["/s/[storeCode]/benefits", "public"],
+      ["/s/[storeCode]/privacy", "public"],
     ]);
-    expect(want.size).toBe(18); // 基线15 + HUI-4584 渠道页 + HUI-4593 设置页/代理台
+    expect(want.size).toBe(23); // 基线15 + HUI-4584 渠道页 + HUI-4593 设置页/代理台 + HUI-1896 六视图5页
     for (const page of pageCensus()) {
       expect(page.surface).toBe(classifySurface(page.route, page.id));
       expect(page.surface).toBe(want.get(page.route));
@@ -249,9 +255,15 @@ describe("半成品标记", () => {
       ["/work/settings", []],
       // HUI-4593:A1 代理工作台页面是薄壳,交互全部在组件里,页面源零标记。
       ["/agency", []],
+      // HUI-1896:顾客六视图页面是薄壳,交互全部在视图组件里,页面源零标记。
+      ["/s/[storeCode]", []],
+      ["/s/[storeCode]/content/[actionId]", []],
+      ["/s/[storeCode]/service/[actionId]", []],
+      ["/s/[storeCode]/benefits", []],
+      ["/s/[storeCode]/privacy", []],
     ]);
     const census = pageCensus();
-    expect(want.size).toBe(18); // 基线15 + HUI-4584 渠道页 + HUI-4593 设置页/代理台
+    expect(want.size).toBe(23); // 基线15 + HUI-4584 渠道页 + HUI-4593 设置页/代理台 + HUI-1896 六视图5页
     expect(census).toHaveLength(want.size);
     for (const page of census) {
       const source = readPage(page.file);
