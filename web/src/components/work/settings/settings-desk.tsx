@@ -173,6 +173,7 @@ export function SettingsDesk() {
     return (
       <>
         <h1 className="tk-title">成员与权限</h1>
+        <OrgSwitchSection options={session.options} currentTenantId={session.tenantId} switchTenant={session.switchTenant} />
         <section className="tk-section" data-state="restricted">
           <p className="tk-state tk-danger" data-field="restricted-403">
             当前账号没有成员与权限的管理能力（403）。这个页面只对有配置权限的账号开放；
@@ -188,6 +189,7 @@ export function SettingsDesk() {
       <h1 className="tk-title">成员与权限</h1>
       <p className="tk-lead">谁进来、能做什么、代理替谁做——每一次授权和撤回都留痕可查。</p>
       {notice && phase === "ready" ? <p className="tk-warn" data-role="notice">{notice}</p> : null}
+      <OrgSwitchSection options={session.options} currentTenantId={session.tenantId} switchTenant={session.switchTenant} />
       <MyAccessSection role={session.role} access={access} tenantName={session.tenantName} />
       {agent ? <AgentBanner tenantName={session.tenantName} access={access} backHref="/agency" /> : null}
       {owner ? <OwnerSection members={members} /> : null}
@@ -247,6 +249,42 @@ export function AgentBanner({ tenantName, access, backHref }: { tenantName: stri
           <a className="tk-quiet" href={backHref} data-action="back-agency">返回代理台</a>
         </p>
       ) : null}
+    </section>
+  );
+}
+
+// 修复轮 5(F②):组织切换 = 身份级能力。principal 在 >1 租户有 membership 即可
+// 切换,不受当前租户内权限门控 —— 受限视图(403 语义)也必须保留本入口。
+// 切换走既有 switchTenant 单缝;切到目标租户后按那里的 membership+role 授权
+// (跨租户 scope 检查照旧,本票既有语义)。
+function OrgSwitchSection({
+  options, currentTenantId, switchTenant,
+}: {
+  options: { tenant_id: string; display_name: string; role: string; enabled: boolean; source: string }[];
+  currentTenantId: string;
+  switchTenant: (tenantId: string) => void;
+}) {
+  const others = options.filter(
+    (o) => o.enabled && o.source === "membership" && o.tenant_id !== currentTenantId,
+  );
+  if (others.length === 0) return null;
+  return (
+    <section className="tk-section" data-section="org-switch">
+      <h2 className="tk-section-title">切换组织</h2>
+      <p className="tk-note">你有多个组织的身份。切换与当前组织的权限无关；切过去之后按那边的角色授权。</p>
+      <div className="tk-row tk-gap" data-field="org-options">
+        {others.map((o) => (
+          <button
+            key={o.tenant_id}
+            className="tk-button"
+            type="button"
+            data-action="switch-org"
+            onClick={() => switchTenant(o.tenant_id)}
+          >
+            进入{ROLE_LABELS[o.role] ?? o.role}身份:{o.display_name}
+          </button>
+        ))}
+      </div>
     </section>
   );
 }

@@ -149,6 +149,20 @@ describe("其余区域与纪律", () => {
     expect(desk).toContain("<MyAccessSection");
   });
 
+  it("修复轮 5/F②:组织切换=身份级能力,受限视图保留切换入口不受租户内权限门控", () => {
+    expect(desk).toContain('data-section="org-switch"');
+    expect(desk).toContain('data-field="org-options"');
+    expect(desk).toContain('data-action="switch-org"');
+    // 身份级判据:>1 个 enabled membership;当前租户排除
+    expect(desk).toContain("o.enabled && o.source === \"membership\" && o.tenant_id !== currentTenantId");
+    // 切换走既有 switchTenant 单缝(目标租户按那边 membership+role 授权)
+    expect(desk).toContain("switchTenant(o.tenant_id)");
+    // 受限视图分支里也渲染(403 语义不挡身份功能)
+    expect(desk).toContain("<OrgSwitchSection options={session.options} currentTenantId={session.tenantId} switchTenant={session.switchTenant} />");
+    // 受限分支内出现两次 OrgSwitchSection(受限视图与正常视图各一,组件同源)
+    expect((desk.match(/<OrgSwitchSection /g) ?? []).length).toBe(2);
+  });
+
   it("修复轮 3/F2②:被授 storefront 后有「前往门店首页配置」直达入口(既有门店配置面)", () => {
     expect(desk).toContain('data-field="page-config-entry"');
     expect(desk).toContain('data-action="goto-page-config"');
