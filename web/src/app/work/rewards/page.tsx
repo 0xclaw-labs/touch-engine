@@ -12,6 +12,7 @@ import {
   canReverseRewards,
   confirmRequestBody,
   evidenceText,
+  externalStateText,
   faceAndCostText,
   inventoryKindText,
   inventoryLine,
@@ -41,6 +42,18 @@ interface Ruleset {
 
 type LoadPhase = "loading" | "error" | "empty" | "ready";
 
+// HUI-1671: 门店券库存为主页签;外部团购是诚实占位 tab(配置与授权核销归
+// HUI-4590,本页只显示事实状态,不代发也不本地核销)。
+type RewardTab = "store" | "external";
+
+interface ExternalIssuanceView {
+  id: string;
+  participation_id: string;
+  offer_id: string;
+  state: string; // issued | pending_unknown | failed
+  provider?: string;
+}
+
 // HUI-1671 B3: /work/rewards 从只读说明页升级为真实奖励管理页。
 // 纪律不变:未知不是已发放;核销没有事实时保持未知;内部 token 不进页面;
 // 券码默认掩码,店员点开才看;预算与更正撤销只归 org_owner。
@@ -55,26 +68,30 @@ export default function RewardsPage() {
   const [separation, setSeparation] = useState("");
   const [attempt, setAttempt] = useState(0);
 
+  const [tab, setTab] = useState<RewardTab>("store");
   const [inventory, setInventory] = useState<RewardInventoryView[]>([]);
   const [benefits, setBenefits] = useState<RewardBenefitView[]>([]);
   const [summary, setSummary] = useState<RewardSummaryView | null>(null);
   const [reviewQueue, setReviewQueue] = useState<RewardReviewRequestView[]>([]);
+  const [externalIssuances, setExternalIssuances] = useState<ExternalIssuanceView[]>([]);
   const [revealed, setRevealed] = useState<Record<string, boolean>>({});
   const [actionNote, setActionNote] = useState("");
 
   const loadLedger = useCallback(
     async (cid: string) => {
       if (!cid) return;
-      const [invRes, benRes, sumRes, revRes] = await Promise.all([
+      const [invRes, benRes, sumRes, revRes, extRes] = await Promise.all([
         session.api("GET", `campaigns/${cid}/reward-inventory`),
         session.api("GET", `campaigns/${cid}/reward-benefits`),
         session.api("GET", `campaigns/${cid}/reward-summary`),
         session.api("GET", `campaigns/${cid}/reward-review-requests`),
+        session.api("GET", `campaigns/${cid}/reward-external-issuances`),
       ]);
       setInventory(invRes.ok && Array.isArray(invRes.data.items) ? (invRes.data.items as RewardInventoryView[]) : []);
       setBenefits(benRes.ok && Array.isArray(benRes.data.items) ? (benRes.data.items as RewardBenefitView[]) : []);
       setSummary(sumRes.ok ? (sumRes.data as unknown as RewardSummaryView) : null);
       setReviewQueue(revRes.ok && Array.isArray(revRes.data.items) ? (revRes.data.items as RewardReviewRequestView[]) : []);
+      setExternalIssuances(extRes.ok && Array.isArray(extRes.data.items) ? (extRes.data.items as ExternalIssuanceView[]) : []);
       if (!invRes.ok && invRes.status !== 404) {
         setActionNote(failureText(invRes.status, invRes.data));
       }
@@ -233,6 +250,36 @@ export default function RewardsPage() {
             </select>
           </label>
 
+          <div role="tablist" aria-label="奖励管理页签" data-field="reward-tabs">
+            <button role="tab" type="button" data-action="tab-store" aria-selected={tab === "store"} onClick={() => setTab("store")}>门店券库存</button>
+            <button role="tab" type="button" data-action="tab-external" aria-selected={tab === "external"} onClick={() => setTab("external")}>外部团购（HUI-4590）</button>
+          </div>
+
+          {tab === "external" ? (
+            <section aria-label="外部团购（占位）">
+              <h2 className="tk-subtitle">外部团购（外部平台券）</h2>
+              <p className="tk-note" data-field="external-placeholder">
+                外部团购的配置与授权核销由 HUI-4590 的授权适配器提供；本页只显示事实状态，不代发也不本地核销。
+                外部券的本地账没有核销权限，待确认不是已发放。
+              </p>
+              {externalIssuances.length === 0 ? (
+                <p className="tk-note" data-field="external-empty">还没有外部券发放登记。没有事实不写成功。</p>
+              ) : (
+                <ul className="tk-list" data-field="external-list">
+                  {externalIssuances.map((item) => (
+                    <li key={item.id} data-external-id={item.id} data-external-state={item.state}>
+                      <span data-field="external-state">{externalStateText(item.state)}</span>
+                      {" · "}
+                      {item.provider || "外部平台"}
+                      {" · 参与/尝试引用 "}
+                      {item.participation_id}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          ) : (
+            <>
           <section aria-label="奖励汇总">
             <h2 className="tk-subtitle">奖励汇总</h2>
             {summary ? (
@@ -364,6 +411,8 @@ export default function RewardsPage() {
           ) : null}
           <p className="tk-note">{separation}</p>
           <p className="tk-gap"><a href={campaignId ? `/work/campaigns/${campaignId}` : "/work/campaigns"}>回到活动</a></p>
+          </>
+          )}
         </>
       ) : null}
     </main>

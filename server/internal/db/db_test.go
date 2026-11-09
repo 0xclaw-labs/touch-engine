@@ -47,6 +47,8 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"copy_jobs",
 		"copy_versions",
 		"customer_publish_attempts",
+		// HUI-1671 增量(0068-0072)
+		"deal_offers",
 		"extra_jump_actions",
 		"extra_jump_clicks",
 		"handoff_credentials",
@@ -78,6 +80,10 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"publish_reward_subjects",
 		"reward_benefits",
 		"reward_code_pool",
+		// HUI-1671 增量(0068-0072)
+		"reward_display_codes",
+		"reward_expiry_facts",
+		"reward_external_issuances",
 		"reward_inventory",
 		"reward_official_facts",
 		"reward_operations",

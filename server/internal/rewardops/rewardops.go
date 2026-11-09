@@ -36,7 +36,23 @@ const (
 	ReasonCampaignMismatch         = "campaign_mismatch"
 	ReasonSlotUnknown              = "slot_unknown"
 	ReasonVersionMismatch          = "rule_version_mismatch"
+	// ReasonRewardNotEligible (HUI-1671): the bound action is a review-type
+	// action or its admission-side reward eligibility is false. Review actions
+	// (点评) never fund rewards — customer self-reports, screenshots, and staff
+	// confirmations all stop here, on both rule creation and grant execution.
+	ReasonRewardNotEligible = "reward_not_eligible"
 )
+
+// Action eligibility values carried on rule bindings and grant inputs.
+const (
+	ActionEligibleUnknown = ""    // no binding: legacy rows keep working
+	ActionEligibleYes     = "yes" // admission side says the action may fund
+	ActionEligibleNo      = "no"  // admission side (HUI-3535) says it may not
+)
+
+// ActionKindReview is the review/点评 action kind. It is banned as a reward
+// trigger at creation AND at grant time (double insurance).
+const ActionKindReview = "review"
 
 // ReceiptOfficialQuery is the only receipt source this system trusts for an
 // official confirmation. It mirrors the HUI-1670 confirm path.
@@ -46,6 +62,8 @@ var (
 	ErrMissingField       = errors.New(ReasonMissingField)
 	ErrUnknownEvidence    = errors.New(ReasonUnknownEvidence)
 	ErrEvidenceNotAllowed = errors.New(ReasonEvidenceNotAllowed)
+	ErrRewardNotEligible  = errors.New(ReasonRewardNotEligible)
+	ErrInvalidBinding     = errors.New("rewardops: action binding invalid")
 )
 
 // OfficialRef is the anchor of an official confirmation. The caller may only
@@ -74,7 +92,9 @@ type Snapshot struct {
 
 // Input is one staff confirmation choice. EventID is the caller's idempotency
 // key for this confirmation event (replays are answered from the ledger,
-// not re-executed).
+// not re-executed). ActionKind / ActionEligible carry the bound action's kind
+// and its admission-side reward eligibility; a review kind or an explicit
+// not-eligible refuses before any evidence is examined.
 type Input struct {
 	TenantID        string
 	CampaignID      string
@@ -87,6 +107,8 @@ type Input struct {
 	Actor           string
 	StoreID         string
 	Note            string
+	ActionKind      string
+	ActionEligible  string
 }
 
 // Verdict is the adjudication result. At most one of Proceed / PendingReview
@@ -103,6 +125,11 @@ type Verdict struct {
 func Adjudicate(snap Snapshot, in Input) Verdict {
 	if missing(in.TenantID, in.CampaignID, in.ParticipationID, in.Slot, in.EventID, in.Actor, in.StoreID) || in.RuleVersion < 1 {
 		return Verdict{Reason: ReasonMissingField}
+	}
+	// HUI-1671 双保险第一道(发放侧): 点评类动作或准入侧 reward_eligibility=false
+	// 的动作不触发奖励。顾客自报、截图、店员确认都止步于此。
+	if v := ActionEligibilityVerdict(in.ActionKind, in.ActionEligible); v != "" {
+		return Verdict{Reason: v}
 	}
 	if snap.CampaignID != strings.TrimSpace(in.CampaignID) {
 		return Verdict{Reason: ReasonCampaignMismatch}
@@ -141,6 +168,24 @@ func SelfReportVerdict() Verdict {
 	return Verdict{PendingReview: true, Reason: ReasonSelfReportPending}
 }
 
+// ActionEligibilityVerdict returns ReasonRewardNotEligible when the bound
+// action may not fund a reward (review kind, or admission-side not-eligible),
+// or "" when the binding imposes no refusal. Unknown/legacy bindings (no
+// kind, no eligibility) impose nothing.
+func ActionEligibilityVerdict(actionKind, actionEligible string) string {
+	switch strings.TrimSpace(actionKind) {
+	case ActionKindReview:
+		return ReasonRewardNotEligible
+	case "":
+	default:
+		// non-review kinds are governed by the admission-side eligibility only
+	}
+	if strings.TrimSpace(actionEligible) == ActionEligibleNo {
+		return ReasonRewardNotEligible
+	}
+	return ""
+}
+
 // ValidateSnapshot refuses a snapshot that could not adjudicate anything:
 // empty campaign, no evidence classes, or no slots.
 func ValidateSnapshot(snap Snapshot) error {
@@ -166,6 +211,21 @@ func ValidateSnapshot(snap Snapshot) error {
 		}
 	}
 	return nil
+}
+
+// ValidateActionBinding refuses a rule binding that names a review-type
+// action or an admission-side not-eligible action. Called at rule/batch
+// creation (第一道); Adjudicate re-checks at grant time (第二道).
+func ValidateActionBinding(actionKind, actionEligible string) error {
+	if ActionEligibilityVerdict(actionKind, actionEligible) == ReasonRewardNotEligible {
+		return ErrRewardNotEligible
+	}
+	switch strings.TrimSpace(actionEligible) {
+	case ActionEligibleUnknown, ActionEligibleYes:
+		return nil
+	default:
+		return ErrInvalidBinding
+	}
 }
 
 func officialRefComplete(ref OfficialRef) bool {

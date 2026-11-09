@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPublicClaimDoesNotCreateUserOrCash(t *testing.T) {
@@ -182,8 +183,13 @@ func activePublicCode(t *testing.T, f *fixture) string {
 
 func activePublicCampaign(t *testing.T, f *fixture) (string, string) {
 	t.Helper()
+	// HUI-1671 根因修复: 旧夹具硬编码 2026-10-31 已成过去时,ResolveLink 按
+	// 活动窗口诚实判 expired(实现正确,数据过期)。窗口改为相对 now,测试
+	// 不再随日历漂移;到期语义由 TestExpiryKeepsCampaignAndRewardWithoutRecharge
+	// 用订阅状态翻转单独覆盖。
+	now := time.Now().UTC()
 	status, _, cmp := f.do(t, "POST", "/api/v1/campaigns", "sess-owner-a", f.tenA,
-		`{"title":"到店礼","public_content":"到店可领","starts_at":"2026-09-01T00:00:00Z","ends_at":"2026-10-31T00:00:00Z"}`)
+		`{"title":"到店礼","public_content":"到店可领","starts_at":"`+now.Add(-24*time.Hour).Format(time.RFC3339)+`","ends_at":"`+now.Add(48*time.Hour).Format(time.RFC3339)+`"}`)
 	if status != 201 {
 		t.Fatalf("campaign = %d %v", status, cmp)
 	}

@@ -53,66 +53,87 @@ const rewardOccupiedStatuses = `('reserved','issued','redeemed')`
 // RewardInventory is one batch (券批次): system store coupons, a legally
 // imported code pool, or on-site gifts/discounts.
 type RewardInventory struct {
-	ID              string   `json:"id"`
-	TenantID        string   `json:"tenant_id"`
-	CampaignID      string   `json:"campaign_id"`
-	StoreID         string   `json:"store_id"`
-	Kind            string   `json:"kind"`
-	Name            string   `json:"name"`
-	BenefitSlot     string   `json:"benefit_slot"`
-	RuleVersion     int      `json:"rule_version"`
-	AllowedEvidence []string `json:"allowed_evidence"`
-	RuleRef         string   `json:"rule_ref"`
-	TotalQty        int      `json:"total_qty"`
-	AvailableQty    int      `json:"available_qty"`
-	FaceValueMinor  int64    `json:"face_value_minor"`
-	CostMinor       int64    `json:"cost_minor"`
-	Currency        string   `json:"currency"`
-	ValidFrom       string   `json:"valid_from"`
-	ValidUntil      string   `json:"valid_until"`
-	Status          string   `json:"status"`
-	Note            string   `json:"note"`
-	CreatedBy       string   `json:"created_by"`
-	CreatedAt       string   `json:"created_at"`
+	ID                   string   `json:"id"`
+	TenantID             string   `json:"tenant_id"`
+	CampaignID           string   `json:"campaign_id"`
+	StoreID              string   `json:"store_id"`
+	Kind                 string   `json:"kind"`
+	Name                 string   `json:"name"`
+	BenefitSlot          string   `json:"benefit_slot"`
+	RuleVersion          int      `json:"rule_version"`
+	AllowedEvidence      []string `json:"allowed_evidence"`
+	RuleRef              string   `json:"rule_ref"`
+	TotalQty             int      `json:"total_qty"`
+	AvailableQty         int      `json:"available_qty"`
+	FaceValueMinor       int64    `json:"face_value_minor"`
+	CostMinor            int64    `json:"cost_minor"`
+	Currency             string   `json:"currency"`
+	ValidFrom            string   `json:"valid_from"`
+	ValidUntil           string   `json:"valid_until"`
+	Status               string   `json:"status"`
+	Note                 string   `json:"note"`
+	CreatedBy            string   `json:"created_by"`
+	CreatedAt            string   `json:"created_at"`
+	OfferID              string   `json:"offer_id,omitempty"`
+	ActionID             string   `json:"action_id,omitempty"`
+	ActionRevision       int      `json:"action_revision,omitempty"`
+	ActionKind           string   `json:"action_kind,omitempty"`
+	RewardEligibilityRef string   `json:"reward_eligibility_ref,omitempty"`
+	RewardEligible       string   `json:"reward_eligible,omitempty"`
+	RuleFreezeRef        string   `json:"rule_freeze_ref,omitempty"`
 }
 
 // NewRewardInventory is the creation input. For imported code batches Codes
 // is required (1..500) and the batch quantity equals the pool size; the
-// codes are never logged.
+// codes are never logged. ActionKind/ActionEligible are the HUI-1671 rule
+// binding: a review kind or admission-side not-eligible refuses here (第一道).
 type NewRewardInventory struct {
-	CampaignID      string
-	StoreID         string
-	Kind            string
-	Name            string
-	BenefitSlot     string
-	RuleVersion     int
-	AllowedEvidence []string
-	RuleRef         string
-	TotalQty        int
-	Codes           []string
-	FaceValueMinor  int64
-	CostMinor       int64
-	Currency        string
-	ValidFrom       string
-	ValidUntil      string
-	Note            string
-	CreatedBy       string
+	CampaignID           string
+	StoreID              string
+	Kind                 string
+	Name                 string
+	BenefitSlot          string
+	RuleVersion          int
+	AllowedEvidence      []string
+	RuleRef              string
+	TotalQty             int
+	Codes                []string
+	FaceValueMinor       int64
+	CostMinor            int64
+	Currency             string
+	ValidFrom            string
+	ValidUntil           string
+	Note                 string
+	CreatedBy            string
+	OfferID              string
+	ActionID             string
+	ActionRevision       int
+	ActionKind           string
+	RewardEligibilityRef string
+	RewardEligible       string
+	RuleFreezeRef        string
 }
 
-const rewardInventoryCols = `id,tenant_id,campaign_id,store_id,kind,name,benefit_slot,rule_version,allowed_evidence,rule_ref,total_qty,face_value_minor,cost_minor,currency,valid_from,valid_until,status,note,created_by,created_at`
+const rewardInventoryCols = `id,tenant_id,campaign_id,store_id,kind,name,benefit_slot,rule_version,allowed_evidence,rule_ref,total_qty,face_value_minor,cost_minor,currency,valid_from,valid_until,status,note,created_by,created_at,offer_id,action_id,action_revision,action_kind,reward_eligibility_ref,reward_eligible,rule_freeze_ref`
 
 func scanRewardInventory(allowed string, sc interface{ Scan(...any) error }) (RewardInventory, error) {
 	var r RewardInventory
 	var storeID, ruleRef, currency, from, until, note sql.NullString
+	var offerID, actionID, actionKind, eligRef, eligible, freezeRef sql.NullString
+	var actionRevision sql.NullInt64
 	err := sc.Scan(&r.ID, &r.TenantID, &r.CampaignID, &storeID, &r.Kind, &r.Name, &r.BenefitSlot,
 		&r.RuleVersion, &allowed, &ruleRef, &r.TotalQty, &r.FaceValueMinor, &r.CostMinor,
-		&currency, &from, &until, &r.Status, &note, &r.CreatedBy, &r.CreatedAt)
+		&currency, &from, &until, &r.Status, &note, &r.CreatedBy, &r.CreatedAt,
+		&offerID, &actionID, &actionRevision, &actionKind, &eligRef, &eligible, &freezeRef)
 	if err != nil {
 		return RewardInventory{}, err
 	}
 	r.StoreID, r.RuleRef, r.Currency, r.ValidFrom, r.ValidUntil, r.Note =
 		storeID.String, ruleRef.String, currency.String, from.String, until.String, note.String
 	r.AllowedEvidence = strings.Split(allowed, ",")
+	r.OfferID, r.ActionID, r.ActionKind = offerID.String, actionID.String, actionKind.String
+	r.ActionRevision, r.RewardEligibilityRef, r.RewardEligible, r.RuleFreezeRef =
+		int(actionRevision.Int64), eligRef.String, eligible.String, freezeRef.String
 	return r, nil
 }
 
@@ -137,6 +158,11 @@ func (s *Store) CreateRewardInventory(tenantID string, in NewRewardInventory) (R
 	ev := dedupeEvidence(in.AllowedEvidence)
 	if len(ev) == 0 {
 		return inv, fmt.Errorf("%w: no allowed evidence", ErrRewardInvalid)
+	}
+	// HUI-1671 双保险第一道(创建侧): 点评类动作或准入侧 reward_eligibility=no
+	// 的绑定在这里拒绝,库存一行都不落。
+	if err := rewardops.ValidateActionBinding(in.ActionKind, in.RewardEligible); err != nil {
+		return inv, fmt.Errorf("%w: %v", ErrRewardInvalid, err)
 	}
 	if err := rewardops.ValidateSnapshot(rewardops.Snapshot{
 		CampaignID: in.CampaignID, Version: in.RuleVersion, AllowedEvidence: ev, Slots: []string{slot},
@@ -183,6 +209,22 @@ func (s *Store) CreateRewardInventory(tenantID string, in NewRewardInventory) (R
 		Currency: strings.TrimSpace(in.Currency), ValidFrom: strings.TrimSpace(in.ValidFrom),
 		ValidUntil: strings.TrimSpace(in.ValidUntil), Status: RewardInventoryActive,
 		Note: strings.TrimSpace(in.Note), CreatedBy: in.CreatedBy, CreatedAt: now(),
+		OfferID: strings.TrimSpace(in.OfferID), ActionID: strings.TrimSpace(in.ActionID),
+		ActionRevision: in.ActionRevision, ActionKind: strings.TrimSpace(in.ActionKind),
+		RewardEligibilityRef: strings.TrimSpace(in.RewardEligibilityRef),
+		RewardEligible:       strings.TrimSpace(in.RewardEligible),
+		RuleFreezeRef:        strings.TrimSpace(in.RuleFreezeRef),
+	}
+	// 引用的优惠供给必须在租户内且真实存在;外部供给(external_product)的
+	// 批次所发权益由 T6 的核销边界保护。
+	if inv.OfferID != "" {
+		offer, err := s.GetDealOffer(inv.OfferID, tenantID)
+		if err != nil {
+			return inv, fmt.Errorf("%w: offer not found in tenant", ErrNotFound)
+		}
+		if offer.CampaignID != inv.CampaignID {
+			return inv, fmt.Errorf("%w: offer belongs to another campaign", ErrRewardInvalid)
+		}
 	}
 	tx, err := s.DB.Begin()
 	if err != nil {
@@ -190,11 +232,12 @@ func (s *Store) CreateRewardInventory(tenantID string, in NewRewardInventory) (R
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(
-		`INSERT INTO reward_inventory(`+rewardInventoryCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO reward_inventory(`+rewardInventoryCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		inv.ID, inv.TenantID, inv.CampaignID, inv.StoreID, inv.Kind, inv.Name, inv.BenefitSlot,
 		inv.RuleVersion, strings.Join(ev, ","), inv.RuleRef, inv.TotalQty, inv.FaceValueMinor,
 		inv.CostMinor, inv.Currency, inv.ValidFrom, inv.ValidUntil, inv.Status, inv.Note,
-		inv.CreatedBy, inv.CreatedAt); err != nil {
+		inv.CreatedBy, inv.CreatedAt, inv.OfferID, inv.ActionID, inv.ActionRevision,
+		inv.ActionKind, inv.RewardEligibilityRef, inv.RewardEligible, inv.RuleFreezeRef); err != nil {
 		return RewardInventory{}, err
 	}
 	for _, c := range codes {
@@ -701,7 +744,8 @@ const (
 // RewardReserveInput is a trusted participation-service call: the user
 // explicitly started participating and the campaign promised this slot at
 // this rule version. TTLSeconds is mandatory and shown to the user before
-// the operation.
+// the operation. Expiry (HUI-1671) is the six-deadline promise context the
+// caller assembled; new promises are judged, in-flight reservations are not.
 type RewardReserveInput struct {
 	TenantID        string
 	CampaignID      string
@@ -712,7 +756,13 @@ type RewardReserveInput struct {
 	Actor           string
 	TTLSeconds      int
 	Note            string
+	Expiry          *rewardops.GrantDeadlines
 }
+
+// ErrPromiseBlocked marks a NEW commitment refused by one of the six
+// independent deadlines. The wrapped text carries the machine reasons so the
+// HTTP layer can surface the exact cause (e.g. subscription_expired).
+var ErrPromiseBlocked = errors.New("store: promise blocked by expiry")
 
 func addSeconds(ts string, sec int) (string, error) {
 	t, err := time.Parse(time.RFC3339Nano, ts)
@@ -740,7 +790,8 @@ func (s *Store) ReserveRewardBenefit(in RewardReserveInput, nowTS string) (Rewar
 	if _, err := time.Parse(time.RFC3339Nano, nowTS); err != nil {
 		return ben, RewardOutcome{}, fmt.Errorf("%w: bad now", ErrRewardInvalid)
 	}
-	if _, err := s.GetCampaign(in.CampaignID, in.TenantID); err != nil {
+	camp, err := s.GetCampaign(in.CampaignID, in.TenantID)
+	if err != nil {
 		return ben, RewardOutcome{}, ErrNotFound
 	}
 	tx, err := s.beginRewardTx()
@@ -775,6 +826,13 @@ func (s *Store) ReserveRewardBenefit(in RewardReserveInput, nowTS string) (Rewar
 	if err != nil {
 		return ben, RewardOutcome{}, err
 	}
+	// HUI-1671 六到期 promise gate: 新承诺(首次预留/过期后重预留)按六期限
+	// 判定;进行中预留、活跃事实回读不是新承诺,不受影响。
+	if existing == nil || existing.Status == RewardStatusExpired {
+		if err := expiryPromiseGate(in.Expiry, inv, nowTS); err != nil {
+			return ben, RewardOutcome{}, err
+		}
+	}
 	switch {
 	case existing == nil:
 		if occupied, _ := occupiedInTx(tx, inv.ID); occupied >= inv.TotalQty {
@@ -794,6 +852,9 @@ func (s *Store) ReserveRewardBenefit(in RewardReserveInput, nowTS string) (Rewar
 		if err := postOpInTx(tx, in.TenantID, ben.ID, "reserve", in.EventID, in.Actor, "", "", "{}", nowTS); err != nil {
 			return ben, RewardOutcome{}, err
 		}
+		if err := saveExpiryFactsInTx(tx, ben.ID, in.TenantID, inv, camp, nil, until, nowTS); err != nil {
+			return ben, RewardOutcome{}, err
+		}
 		if err := tx.Commit(); err != nil {
 			return ben, RewardOutcome{}, err
 		}
@@ -810,6 +871,9 @@ func (s *Store) ReserveRewardBenefit(in RewardReserveInput, nowTS string) (Rewar
 			return ben, RewardOutcome{}, err
 		}
 		if err := postOpInTx(tx, in.TenantID, existing.ID, "reserve", in.EventID, in.Actor, "", "resume", "{}", nowTS); err != nil {
+			return ben, RewardOutcome{}, err
+		}
+		if err := saveExpiryFactsInTx(tx, existing.ID, in.TenantID, inv, camp, nil, until, nowTS); err != nil {
 			return ben, RewardOutcome{}, err
 		}
 		if err := tx.Commit(); err != nil {
@@ -875,6 +939,13 @@ type RewardConfirmInput struct {
 	FulfillNow      bool
 	RedeemEventID   string
 	Now             string
+	// ActionKind / ActionEligible (HUI-1671): the caller's view of the bound
+	// action. The batch's stored binding wins when it has one.
+	ActionKind     string
+	ActionEligible string
+	// Expiry (HUI-1671): the six-deadline snapshot taken at grant time. When
+	// nil the store derives campaign/benefit/reservation deadlines itself.
+	Expiry *rewardops.GrantDeadlines
 }
 
 // ConfirmRewardBenefit runs adjudication, dedup, and the state machine in one
@@ -890,7 +961,8 @@ func (s *Store) ConfirmRewardBenefit(in RewardConfirmInput) (RewardBenefit, Rewa
 	if in.FulfillNow && strings.TrimSpace(in.RedeemEventID) == "" {
 		return ben, RewardOutcome{}, fmt.Errorf("%w: missing redeem event id", ErrRewardInvalid)
 	}
-	if _, err := s.GetCampaign(in.CampaignID, in.TenantID); err != nil {
+	camp, err := s.GetCampaign(in.CampaignID, in.TenantID)
+	if err != nil {
 		return ben, RewardOutcome{}, ErrNotFound
 	}
 	tx, err := s.beginRewardTx()
@@ -923,10 +995,18 @@ func (s *Store) ConfirmRewardBenefit(in RewardConfirmInput) (RewardBenefit, Rewa
 	}
 	// Adjudicate against this batch's rule snapshot (in-flight participations
 	// keep their original version: the caller names the version it promised).
+	// HUI-1671 双保险第二道(发放侧): 批次落库的动作绑定是权威——存量行即使
+	// 调用方不传,review 动作/准入侧 not-eligible 在此仍被硬拒。
+	storedKind, storedEligible := inv.ActionKind, inv.RewardEligible
+	inputKind, inputEligible := in.ActionKind, in.ActionEligible
+	if storedKind != "" || storedEligible != "" {
+		inputKind, inputEligible = storedKind, storedEligible
+	}
 	if v := rewardops.Adjudicate(inv.RewardSnapshot(), rewardops.Input{
 		TenantID: in.TenantID, CampaignID: in.CampaignID, ParticipationID: in.ParticipationID,
 		Slot: in.Slot, RuleVersion: in.RuleVersion, EventID: in.EventID, Evidence: in.Evidence,
 		Official: in.Official, Actor: in.Actor, StoreID: in.StoreID, Note: in.Note,
+		ActionKind: inputKind, ActionEligible: inputEligible,
 	}); !v.Proceed {
 		if v.PendingReview {
 			return ben, RewardOutcome{}, fmt.Errorf("%w: %s", ErrRewardConflict, v.Reason)
@@ -944,6 +1024,13 @@ func (s *Store) ConfirmRewardBenefit(in RewardConfirmInput) (RewardBenefit, Rewa
 	}
 	if existing != nil && existing.CampaignID != in.CampaignID {
 		return *existing, RewardOutcome{}, fmt.Errorf("%w: slot_belongs_to_other_campaign", ErrRewardConflict)
+	}
+	// HUI-1671 六到期 promise gate: 首次发放/过期重发是新承诺;已发事实的
+	// 回读(already_issued/redeemed)与进行中预留不受影响。
+	if existing == nil || existing.Status == RewardStatusExpired {
+		if err := expiryPromiseGate(in.Expiry, inv, in.Now); err != nil {
+			return ben, RewardOutcome{}, err
+		}
 	}
 	if existing != nil {
 		switch existing.Status {
@@ -1020,6 +1107,10 @@ func (s *Store) ConfirmRewardBenefit(in RewardConfirmInput) (RewardBenefit, Rewa
 		if err := postOpInTx(tx, in.TenantID, ben.ID, "redeem", "", in.Actor, in.StoreID, "fulfilled_on_confirmation", "{}", in.Now); err != nil {
 			return ben, RewardOutcome{}, err
 		}
+	}
+	// HUI-1671: 六种到期字段落库(发放时快照,此后配置变化不改已发权益判定)。
+	if err := saveExpiryFactsInTx(tx, ben.ID, in.TenantID, inv, camp, in.Expiry, "", in.Now); err != nil {
+		return ben, RewardOutcome{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return ben, RewardOutcome{}, err
@@ -1104,6 +1195,12 @@ func (s *Store) RedeemRewardBenefit(tenantID, campaignID, benefitID, actor, stor
 		return ben, RewardOutcome{}, ErrNotFound
 	}
 	if err != nil {
+		return ben, RewardOutcome{}, err
+	}
+	// HUI-1671 核销边界: 券本身过期拒绝(benefit_expired);绑定外部供给的权益
+	// 本地账无权核销(external_redeem_local_forbidden)。订阅/活动/参与到期
+	// 不拦核销——已发未过期权益按原承诺兑现(T16)。
+	if err := s.redeemGuardInTx(tx, tenantID, cur, nowTS); err != nil {
 		return ben, RewardOutcome{}, err
 	}
 	switch cur.Status {
