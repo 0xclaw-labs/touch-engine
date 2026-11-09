@@ -348,6 +348,10 @@ func (s *Service) frozenPlan(h ActionHandoff) ActionPlan {
 	return plan
 }
 
+// FrozenPlanOf exposes the row-frozen plan to readers (HTTP GET) — 冻结面:
+// 既有交接保留其计划与入口,不随准入变化重判。
+func (s *Service) FrozenPlanOf(h ActionHandoff) ActionPlan { return s.frozenPlan(h) }
+
 // GetActionForVisitor reads the caller's OWN v2 handoff (visitor binding is
 // the access secret; mismatch answers ErrNotFound, 防枚举).
 func (s *Service) GetActionForVisitor(_ context.Context, id, visitorID string) (ActionHandoff, error) {

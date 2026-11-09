@@ -740,8 +740,15 @@ func (s *Service) RecordStaffEvent(_ context.Context, tenantID, handoffID string
 		}
 		h.Status = StateAwaitingReview
 	}
-	if err := s.appendEvent(tenantID, handoffID, fact, who.Name, EvidenceStaffObservation, "", map[string]any{
-		"staff_id": who.ID, "note": strings.TrimSpace(note),
+	// 人工事实 kind 按行形态分记:v1 /c 行 staff_saw_submit/staff_verified_work
+	// (历史语义不变);v2 行统一 staff_confirm(六层之第 5 层),具体事实在
+	// payload.fact 区分。人工永不转官方(状态机结构性保证)。
+	kind := fact
+	if h.PayloadKind != "" {
+		kind = EventStaffConfirm
+	}
+	if err := s.appendEvent(tenantID, handoffID, kind, who.Name, EvidenceStaffObservation, "", map[string]any{
+		"fact": fact, "staff_id": who.ID, "note": strings.TrimSpace(note),
 	}); err != nil {
 		return Handoff{}, err
 	}

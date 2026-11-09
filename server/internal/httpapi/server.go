@@ -795,6 +795,19 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("POST /api/v1/public/links/{code}/publish-handoff/{id}/editor-opened", http.HandlerFunc(s.handlePublicPublishHandoffEditorOpened))
 		mux.Handle("POST /api/v1/public/publish-receipts/{id}", http.HandlerFunc(s.handlePublicPublishReceipt))
 		mux.Handle("POST /api/v1/publish-handoffs/{id}/staff-events", s.requireSession(s.handlePublishHandoffStaffEvent))
+
+		// HUI-1670 touch-handoff/v2 (2026-11-10 增量): 动作实例统一交接面
+		// (同一开关;会话权威 3546/gate 服务端冻结 3535/payload 分流/六层事件/
+		// Adapter Prepare-Submit-Query-VerifyCallback)。顾客面 visitor cookie
+		// 反枚举;回调面服务端到服务端,验签在 adapter,未配置一律拒绝。
+		mux.Handle("GET /api/v1/public/actions/{id}/handoffs/plan", http.HandlerFunc(s.handlePublicActionHandoffPlan))
+		mux.Handle("POST /api/v1/public/actions/{actionId}/handoffs", http.HandlerFunc(s.handlePublicActionHandoffStart))
+		mux.Handle("GET /api/v1/public/handoffs/{id}", http.HandlerFunc(s.handlePublicActionHandoffGet))
+		mux.Handle("POST /api/v1/public/handoffs/{id}/facts", http.HandlerFunc(s.handlePublicActionHandoffFact))
+		mux.Handle("POST /api/v1/public/handoffs/{id}/submit", http.HandlerFunc(s.handlePublicActionHandoffSubmit))
+		mux.Handle("POST /api/v1/public/handoffs/{id}/query", http.HandlerFunc(s.handlePublicActionHandoffQuery))
+		mux.Handle("POST /api/v1/public/handoffs/{id}/cancel", http.HandlerFunc(s.handlePublicActionHandoffCancel))
+		mux.Handle("POST /api/v1/public/handoff-callbacks/{platform}", http.HandlerFunc(s.handlePublicHandoffCallback))
 	}
 
 	return s.withRequestLog(mux)

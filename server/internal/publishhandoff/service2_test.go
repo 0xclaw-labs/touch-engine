@@ -528,3 +528,33 @@ type verifierStub struct {
 func (v *verifierStub) VerifyCallback(_ context.Context, _ CallbackPayload) (Receipt, error) {
 	return v.receipt, nil
 }
+
+// 店员确认(六层之第 5 层):v2 行落 staff_confirm(fact 区分 见提交/核对作品),
+// 人工永不转官方;官方晚到仍由验签回执确认。
+func TestStaffConfirmOnV2Row(t *testing.T) {
+	s, _ := newV2Service(t)
+	rec := linkShareAction(t)
+	res, err := s.StartAction(context.Background(), startInputV2(rec, PayloadKindLinkShare, "https://store.example.com/page"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := s.RecordStaffEvent(context.Background(), res.Handoff.TenantID, res.Handoff.ID, StaffActor{ID: "stf_1", Name: "店员甲"}, FactStaffVerifiedWork, "看过作品")
+	if err != nil {
+		t.Fatalf("staff event: %v", err)
+	}
+	if next.Status != StateAwaitingReview {
+		t.Fatalf("staff event must reach awaiting_review, got %s", next.Status)
+	}
+	kinds, _ := s.eventKinds(t, res.Handoff.ID)
+	if !contains(kinds, EventStaffConfirm) {
+		t.Fatalf("v2 rows must record staff_confirm, got %v", kinds)
+	}
+	// 非法 kind 拒绝。
+	if _, err := s.RecordStaffEvent(context.Background(), res.Handoff.TenantID, res.Handoff.ID, StaffActor{ID: "stf_1"}, "made_up", ""); !errors.Is(err, ErrBadInput) {
+		t.Fatalf("unknown staff kind must be bad input, got %v", err)
+	}
+	// 人工事实到不了 platform_confirm:同一交接只能等官方回执。
+	if next.Status == StatePlatformConfirmed {
+		t.Fatal("staff observation must never confirm")
+	}
+}
