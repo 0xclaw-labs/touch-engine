@@ -98,6 +98,12 @@ const (
 	// 不加开关(仓内惯例)。on = 数据面读端点可用:只含已映射+启用的动作实例,
 	// storefront_revision 本票恒 0(发布版本归 HUI-1676)。
 	EnvFeatureStorefront = "FEATURE_STOREFRONT"
+	// EnvFeatureAuthz (HUI-4593 连锁与代管 B11): 登记制开关,默认 off。
+	// off = access/effective、template-assignments、ops-grants、授权审计读面
+	// 路由不注册且 handler gate 再答统一 404(双保险,同 FEATURE_AGENCY 写法);
+	// 成员/代理既有面(/admin/members、/agency/*)不加开关,审计为 additive 常开。
+	// on = B11 公共权限契约面可用(GET /api/v1/access/effective 等)。
+	EnvFeatureAuthz = "FEATURE_AUTHZ"
 )
 
 // Config is the resolved server configuration.
@@ -211,6 +217,7 @@ type Config struct {
 	FeaturePublishHandoff   bool
 	FeatureTouchpointEntry  bool
 	FeatureStorefront       bool
+	FeatureAuthz            bool
 
 	// Brand registry read client (HUI-2049). Touch never writes this registry
 	// and never treats a brand host as a tenant or a payer.
@@ -290,6 +297,7 @@ func Load(get func(string) string) Config {
 		FeaturePublishHandoff:          isTruthy(get(EnvFeaturePublishHandoff)),
 		FeatureTouchpointEntry:         isTruthy(get(EnvFeatureTouchpointEntry)),
 		FeatureStorefront:              isTruthy(get(EnvFeatureStorefront)),
+		FeatureAuthz:                   isTruthy(get(EnvFeatureAuthz)),
 		BrandBaseURL:                   strings.TrimSpace(get("PLATFORM_BRAND_BASE_URL")),
 		BrandToken:                     get("PLATFORM_BRAND_TOKEN"),
 		SubscriptionStatus:             firstNonEmpty(get("TOUCH_SUBSCRIPTION_STATUS"), "unconfirmed"),

@@ -207,9 +207,19 @@ func Authorize(member *Member, action Action, rec RecordScope) Decision {
 		}
 	case ActionCreate, ActionReadList, ActionReadRecord, ActionUpdate:
 		switch member.Role {
-		case RoleOrgOwner, RoleStaff:
-			// org_owner 看全门店;staff 保留 T0 租户级语义(存量兼容)。
+		case RoleOrgOwner:
 			return allow()
+		case RoleStaff:
+			// HUI-4593 门店店员 scope 显式建模:带 scope 的 staff 行(0064 起显式
+			// 授权路径)业务动作只在本店;存量 staff 行(scope="")保留 T0 租户级
+			// 语义,行为逐字节不变 —— 绝不把租户级店员静默等同「仅本店」。
+			if member.StoreScope == "" {
+				return allow()
+			}
+			if member.inOwnStore(rec.StoreID) {
+				return allow()
+			}
+			return deny(ReasonOutOfScope)
 		case RoleAgent:
 			// FEAT-0176 白名单:名下商家数据只读(read_list/read_record,租户级
 			// 全量;可见性由成员行+激活关系双门槛限定)。写动作不在白名单,

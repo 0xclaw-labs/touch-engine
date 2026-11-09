@@ -19,6 +19,8 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"agency_subaccount_trail",
 		"authorized_return_clicks",
 		"authorized_returns",
+		// HUI-4593 (0065) 授权域审计
+		"authz_audit_log",
 		"campaign_assets",
 		"campaign_links",
 		"campaign_publish_config_revisions",
@@ -52,6 +54,8 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"members",
 		"nfc_tag_groups",
 		"nfc_tags",
+		// HUI-4593 (0067) 受信服务端 ops grant
+		"ops_grants",
 		"participation_attempts",
 		"participations",
 		"private_domain_clicks",
@@ -77,6 +81,8 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"store_motion_requests",
 		"store_storefronts",
 		"stores",
+		// HUI-4593 (0066) 连锁模板分发引用
+		"template_assignment",
 		"tenant_exports",
 		"tenants",
 		// HUI-1665 增量(0040/0041)

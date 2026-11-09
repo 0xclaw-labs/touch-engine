@@ -26,6 +26,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/bianjiefilm/touch-engine/server/internal/authz"
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
@@ -157,7 +158,18 @@ func (s *Server) handleAgencyRelationRevoke(w http.ResponseWriter, r *http.Reque
 		fail(w, http.StatusNotFound, "not_found", "agency relation not found in this tenant")
 		return
 	}
-	rev, err := s.St.RevokeAgencyRelation(rel.ID, c.Member.TenantID, c.Member.PrincipalRef)
+	// HUI-4593: 撤销原因可选入体(M13 撤回操作带原因留审计;legacy 空原因
+	// 调用保持兼容,审计行仍然必落)。
+	reason := ""
+	if r.Body != nil {
+		var in struct {
+			Reason string `json:"reason"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err == nil {
+			reason = strings.TrimSpace(in.Reason)
+		}
+	}
+	rev, err := s.St.RevokeAgencyRelationReasoned(rel.ID, c.Member.TenantID, c.Member.PrincipalRef, reason)
 	if err != nil {
 		if errors.Is(err, store.ErrAgencyAlreadyRevoked) {
 			fail(w, http.StatusConflict, "agency_already_revoked", "this agency relation is already revoked")
@@ -172,6 +184,85 @@ func (s *Server) handleAgencyRelationRevoke(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, rev)
+}
+
+// ---- scope(代管范围显式授权/变更,HUI-4593,org_owner 专属)-----------------------
+//
+// 契约:allowed_actions ⊆ {storefront, action, channel_target, renewal};
+// store_scope_set 必须全是本租户真实门店(空 = 全门店);valid_until RFC3339
+// (空 = 不过期,到期与撤销同待遇);payer_grant_ref 缺省空(不可代付,资金
+// 裁决归公共 payer 权威);grant_revision 乐观并发(STALE_VERSION 拒绝);
+// reason 必填(审计:操作者/时间/前后值/原因)。旧关系(空 scope)不会被本
+// 接口静默升级 —— 每次扩权都是 owner 的显式确认并留痕。
+func (s *Server) handleAgencyRelationScopeSet(w http.ResponseWriter, r *http.Request) {
+	if !s.agencyGate(w) {
+		return
+	}
+	c := callerFrom(r)
+	if !s.requireAction(c, authz.ActionManageAgency, authz.RecordScope{TenantID: c.Member.TenantID}, w) {
+		return
+	}
+	var in struct {
+		AllowedActions []string `json:"allowed_actions"`
+		StoreScopeSet  []string `json:"store_scope_set"`
+		ValidUntil     string   `json:"valid_until"`
+		PayerGrantRef  string   `json:"payer_grant_ref"`
+		GrantRevision  *int64   `json:"grant_revision"`
+		Reason         string   `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		fail(w, http.StatusBadRequest, "bad_request", "invalid json body")
+		return
+	}
+	if strings.TrimSpace(in.Reason) == "" {
+		fail(w, http.StatusBadRequest, "reason_required", "a reason is required for agency scope changes")
+		return
+	}
+	if in.GrantRevision == nil {
+		fail(w, http.StatusBadRequest, "bad_request", "grant_revision is required (optimistic concurrency)")
+		return
+	}
+	for _, a := range in.AllowedActions {
+		switch a {
+		case authz.AgencyActionStorefront, authz.AgencyActionAction, authz.AgencyActionChannelTarget, authz.AgencyActionRenewal:
+		default:
+			fail(w, http.StatusBadRequest, "bad_scope", "allowed_actions must be storefront/action/channel_target/renewal")
+			return
+		}
+	}
+	for _, sto := range in.StoreScopeSet {
+		if _, err := s.St.GetStore(sto, c.Member.TenantID); err != nil {
+			fail(w, http.StatusBadRequest, "bad_scope", "store_scope_set must reference existing stores of this tenant")
+			return
+		}
+	}
+	if in.ValidUntil != "" {
+		if _, err := time.Parse(time.RFC3339, in.ValidUntil); err != nil {
+			fail(w, http.StatusBadRequest, "bad_scope", "valid_until must be RFC3339 (or empty = never expires)")
+			return
+		}
+	}
+
+	rel, err := s.St.SetAgencyRelationScope(r.PathValue("id"), c.Member.TenantID, store.SetAgencyScopeInput{
+		AllowedActions: in.AllowedActions, StoreScopeSet: in.StoreScopeSet,
+		ValidUntil: in.ValidUntil, PayerGrantRef: strings.TrimSpace(in.PayerGrantRef),
+		ExpectRevision: *in.GrantRevision,
+		ActorPrincipal: c.Member.PrincipalRef, Reason: strings.TrimSpace(in.Reason),
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrStaleGrantRevision):
+			fail(w, http.StatusConflict, "stale_version", "grant_revision is stale; re-read and retry")
+		case errors.Is(err, store.ErrAgencyAlreadyRevoked):
+			fail(w, http.StatusConflict, "agency_already_revoked", "this agency relation is already revoked")
+		case errors.Is(err, store.ErrAgencyGrantInvalid):
+			fail(w, http.StatusBadRequest, "bad_scope", "agency scope is invalid")
+		default:
+			fail(w, http.StatusNotFound, "not_found", "agency relation not found in this tenant")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, rel)
 }
 
 // ---- sub-accounts(开子账号 + 留痕回查)----------------------------------------

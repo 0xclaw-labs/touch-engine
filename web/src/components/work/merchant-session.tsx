@@ -57,6 +57,11 @@ export function useSession(): MerchantSession {
   return value;
 }
 
+// HUI-4593 A1 窄补丁:/agency 代理控制台需要在「选择组织」阶段之前就能拿到
+// 会话(代理的商户列表本身就是选择器),因此暴露原始会话钩子;语义与
+// MerchantGate 内部完全同一实现,不复制会话逻辑。
+export { useMerchantSession };
+
 // failureText 已收口到 lib/failure-copy（fix2：错误面产品语句，不泄漏状态码/机器码）。
 // 这里 re-export 保持页面既有 import 路径不变。
 

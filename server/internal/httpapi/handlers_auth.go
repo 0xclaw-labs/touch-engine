@@ -9,6 +9,7 @@ import (
 	"github.com/bianjiefilm/touch-engine/server/internal/brandctx"
 	"github.com/bianjiefilm/touch-engine/server/internal/brandhost"
 	"github.com/bianjiefilm/touch-engine/server/internal/redact"
+	"github.com/bianjiefilm/touch-engine/server/internal/store"
 )
 
 // ---- auth handlers (identity is the only path; no stub mode) ----------------
@@ -120,8 +121,12 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 		"store_scope":   c.Member.StoreScope, // HUI-1674: "" = 总部/全门店;非空 = 仅该门店
 		"enabled":       c.Member.Enabled,
 		// HUI-2222: feature 开关下发 web 的单缝。恒存在,web 靠布尔值区分
-		// off 与缺省;当前只有 service_desk(/work/service 页面本体归 HUI-3562)。
-		"features": map[string]any{"service_desk": s.Cfg.FeatureServiceDesk},
+		// off 与缺省;service_desk(/work/service 页面本体归 HUI-3562)与
+		// authz(HUI-4593 /work/settings 成员与权限页)按开关下发。
+		"features": map[string]any{
+			"service_desk": s.Cfg.FeatureServiceDesk,
+			"authz":        s.Cfg.FeatureAuthz,
+		},
 	}
 	if s.Cfg.FeatureBrand {
 		t, err := s.St.GetTenant(c.Member.TenantID)
@@ -175,12 +180,19 @@ func parseMemberRole(in string) (string, bool) {
 
 // validateMemberScope enforces the role↔scope invariant against the tenant's
 // stores. Returns the validated scope ("" for non-manager roles).
+//
+// HUI-4593 门店店员 scope 显式建模:staff 行也允许显式携带 store_scope
+// (新语义 = 仅本店;authz 侧业务动作按本店收窄)。存量 staff 行(scope="")
+// 保持 T0 租户级语义,绝不静默等同「仅本店」。org_owner 仍永不携带 scope。
 func (s *Server) validateMemberScope(c *caller, role, storeScope string, w http.ResponseWriter) (string, bool) {
 	storeScope = strings.TrimSpace(storeScope)
-	if role == "store_manager" {
+	if role == "store_manager" || role == "staff" {
 		if storeScope == "" {
-			fail(w, http.StatusBadRequest, "bad_scope", "store_manager requires store_scope (a store of this tenant)")
-			return "", false
+			if role == "store_manager" {
+				fail(w, http.StatusBadRequest, "bad_scope", "store_manager requires store_scope (a store of this tenant)")
+				return "", false
+			}
+			return "", true // legacy staff: tenant-level semantics
 		}
 		if _, err := s.St.GetStore(storeScope, c.Member.TenantID); err != nil {
 			fail(w, http.StatusBadRequest, "bad_scope", "store_scope must reference an existing store of this tenant")
@@ -189,10 +201,41 @@ func (s *Server) validateMemberScope(c *caller, role, storeScope string, w http.
 		return storeScope, true
 	}
 	if storeScope != "" {
-		fail(w, http.StatusBadRequest, "bad_scope", "store_scope is only allowed for store_manager")
+		fail(w, http.StatusBadRequest, "bad_scope", "store_scope is only allowed for store_manager or staff")
 		return "", false
 	}
 	return "", true
+}
+
+// appendMemberAudit writes the authorization-domain audit row for a member
+// write (操作者/时间/前后值/原因). Best-effort persistence of the trail must
+// never mask the business result: audit errors are logged, not surfaced.
+func (s *Server) appendMemberAudit(c *caller, action, targetID, reason string, before, after map[string]any) {
+	_, err := s.St.AppendAuthzAudit(store.AuthzAuditEntry{
+		TenantID: c.Member.TenantID, ActorPrincipal: c.Member.PrincipalRef,
+		ActorMemberID: c.Member.ID, ActorRole: c.Member.Role,
+		Action: action, TargetType: "member", TargetID: targetID,
+		BeforeJSON: memberSnapshotJSON(before), AfterJSON: memberSnapshotJSON(after),
+		Reason: reason,
+	})
+	if err != nil && s.Log != nil {
+		s.Log.Printf("authz_audit_write_failed action=%s target=%s err=%v", action, targetID, err)
+	}
+}
+
+func memberSnapshotJSON(m map[string]any) string {
+	if m == nil {
+		return "{}"
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
+func memberSnapshot(m store.Member) map[string]any {
+	return map[string]any{"role": m.Role, "store_scope": m.StoreScope, "enabled": m.Enabled, "display_name": m.DisplayName}
 }
 
 func (s *Server) handleMemberList(w http.ResponseWriter, r *http.Request) {
@@ -221,6 +264,7 @@ func (s *Server) handleMemberCreate(w http.ResponseWriter, r *http.Request) {
 		Role         string `json:"role"`
 		DisplayName  string `json:"display_name"`
 		StoreScope   string `json:"store_scope"`
+		Reason       string `json:"reason"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		fail(w, http.StatusBadRequest, "bad_request", "invalid json body")
@@ -245,6 +289,8 @@ func (s *Server) handleMemberCreate(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, "member_exists", "principal already a member of this tenant (or storage error)")
 		return
 	}
+	// HUI-4593: 授权留痕(操作者/时间/前值空对象/后值/原因)。
+	s.appendMemberAudit(c, "member_create", m.ID, strings.TrimSpace(in.Reason), nil, memberSnapshot(m))
 	writeJSON(w, http.StatusCreated, m)
 }
 
@@ -258,6 +304,7 @@ func (s *Server) handleMemberPatch(w http.ResponseWriter, r *http.Request) {
 		Enabled     *bool   `json:"enabled"`
 		DisplayName *string `json:"display_name"`
 		StoreScope  *string `json:"store_scope"`
+		Reason      string  `json:"reason"`
 		// PrincipalRef is accepted only to be refused: it is immutable.
 		PrincipalRef *string `json:"principal_ref"`
 	}
@@ -309,6 +356,13 @@ func (s *Server) handleMemberPatch(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, "not_found", "member not found in this tenant scope")
 		return
 	}
+	// HUI-4593: 授权变更留痕(动作按事实命名:停用/角色调整都落 member_update,
+	// 前后值快照可查;agent 停用走代理撤销面,另有 agency_revoke 审计行)。
+	action := "member_update"
+	if in.Enabled != nil && !*in.Enabled {
+		action = "member_disable"
+	}
+	s.appendMemberAudit(c, action, m.ID, strings.TrimSpace(in.Reason), memberSnapshot(m), memberSnapshot(updated))
 	writeJSON(w, http.StatusOK, updated)
 }
 
