@@ -411,10 +411,10 @@ func (s *Server) handleRewardConfirm(w http.ResponseWriter, r *http.Request) {
 		},
 		Actor: c.Member.PrincipalRef, StoreID: body.StoreID, Note: body.Note,
 		FulfillNow: body.FulfillNow, RedeemEventID: body.RedeemEventID,
-		Now:           nowRFC3339(),
-		ActionKind:    body.ActionKind,
+		Now:            nowRFC3339(),
+		ActionKind:     body.ActionKind,
 		ActionEligible: body.ActionEligible,
-		Expiry:        s.rewardPromiseDeadlines(camp, participationUntil),
+		Expiry:         s.rewardPromiseDeadlines(camp, participationUntil),
 	})
 	if err != nil {
 		rewardError(w, err)
