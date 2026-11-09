@@ -382,7 +382,8 @@ var ErrUnknownCatalogCode = errors.New("store: unknown catalog_code")
 // RestoreActionBindingRefs is the HUI-4584×HUI-3553 wiring rollback (中央集成
 // 2026-11-10): after ReplaceStoreActions has committed but BindActionContent
 // failed, the transitional content_binding_ref column goes back to the
-// PRE-ROUND value per action. ids missing from refs are reset to '' — a row
+// PRE-ROUND value per action. ids missing from refs are reset to the empty
+// string — a row
 // born in the failed round must not keep a reference that was never validated.
 // Deliberately no revision bump and no snapshot: the replace-level revision
 // already recorded the round; only the transitional read copy is reverted
