@@ -4,8 +4,10 @@ import { describe, expect, it } from "vitest";
 import { pageLedger } from "../src/lib/page-map";
 
 // HUI-4593 M13 /work/settings 成员与权限页:源码级断言(node 环境无 DOM)。
-// 锁住:census 账本同步、薄壳、四区结构、代理横幅(正在为谁工作/权限/付款主体)、
-// 特权操作必填原因、403 权限不足产品语句、FEATURE off 诚实空态、移动优先。
+// 修复轮 2(F2):布局按裁定书四区(组织负责人/门店经理/店员动作授权/代理协作)
+// 呈现;店员动作级授予/撤回操作面(授权→访问→撤回→同会话 403 旅程的写面);
+// my-access 展示当前有效授权(旅程的「访问」一侧)。
+// 另锁:census 账本同步、薄壳、代理横幅、原因必填、403 产品语句、off 诚实空态、移动优先。
 
 const root = path.resolve(process.cwd(), "src");
 
@@ -39,17 +41,43 @@ describe("census 账本同步", () => {
   });
 });
 
-describe("四区结构(移动优先)", () => {
+describe("裁定书四区(按角色维度)", () => {
   const desk = read(deskRel);
 
-  it("成员与权限区:列表/授权表单/停用带原因", () => {
-    expect(desk).toContain('data-section="members"');
-    expect(desk).toContain('data-action="grant-member"');
-    expect(desk).toContain('data-action="disable-member"');
-    expect(desk).toContain("admin/members");
+  it("区一 组织负责人:治理面清单只读展示", () => {
+    expect(desk).toContain('data-section="owner"');
+    expect(desk).toContain('data-role="owner-row"');
+    expect(desk).toContain('data-field="owner-scope"');
   });
 
-  it("代理协作区:建立/scope 授权(动作+门店+期限+代付开关)/撤销", () => {
+  it("区二 门店经理授权:授予(带门店+原因)/停用带原因", () => {
+    expect(desk).toContain('data-section="store-manager"');
+    expect(desk).toContain('data-role="manager-row"');
+    expect(desk).toContain('data-action="grant-manager"');
+    expect(desk).toContain('data-action="disable-manager"');
+    expect(desk).toContain("store_manager");
+    expect(desk).toContain("门店经理必须指定负责的门店");
+  });
+
+  it("区三 店员动作授权:对现有店员授予/撤回 storefront/action 权限(同会话即时生效)", () => {
+    expect(desk).toContain('data-section="staff-action"');
+    expect(desk).toContain('data-role="staff-row"');
+    expect(desk).toContain("granted_permissions");
+    expect(desk).toContain('data-action="save-staff-perms"');
+    expect(desk).toContain('data-action="disable-staff"');
+    // 权限白名单与后端一一对应(仅 storefront/action 两维;billing/ops 不出现)
+    expect(desk).toContain('"storefront:configure"');
+    expect(desk).toContain('"action:configure"');
+    expect(desk).toContain('"action:channel_target"');
+    expect(desk).toContain('"action:manage_deal"');
+    expect(desk).toContain('"action:manage_voucher"');
+    expect(desk).not.toContain('"billing:view"');
+    // 走授权端点,撤回即时生效口径
+    expect(desk).toContain("/permissions");
+    expect(desk).toContain("撤回后,店员的下一次请求立即失去对应能力");
+  });
+
+  it("区四 代理协作授权:建立/scope 授权(动作+门店+期限+代付开关)/撤销", () => {
     expect(desk).toContain('data-section="agency"');
     expect(desk).toContain('data-action="establish-agency"');
     expect(desk).toContain('data-action="save-scope"');
@@ -59,11 +87,24 @@ describe("四区结构(移动优先)", () => {
     expect(desk).toContain("grant_revision");
   });
 
-  it("模板下发区:选店/覆盖字段白名单/幂等 request_key/撤回;门店经理只读", () => {
+  it("my-access:当前身份与有效授权展示(旅程的「访问」一侧)", () => {
+    expect(desk).toContain('data-section="my-access"');
+    expect(desk).toContain('data-field="my-role"');
+    expect(desk).toContain('data-field="my-perms"');
+    expect(desk).toContain('data-field="my-scope"');
+  });
+});
+
+describe("其余区域与纪律", () => {
+  const desk = read(deskRel);
+
+  it("模板下发区:选店/覆盖字段白名单/幂等 request_key/原因透传审计/撤回;门店经理只读", () => {
     expect(desk).toContain('data-section="templates"');
     expect(desk).toContain('data-action="distribute-template"');
     expect(desk).toContain('data-action="cancel-template"');
-    expect(desk).toContain("request_key");
+    expect(desk).toContain("request_key: draft.key");
+    // F3:业务原因独立于幂等键,原样透传进审计
+    expect(desk).toContain("reason: draft.reason.trim()");
     expect(desk).toContain("template-assignments");
     expect(desk).toContain("模板下发由总部操作");
   });
@@ -84,10 +125,9 @@ describe("四区结构(移动优先)", () => {
     expect(desk).toContain("正在为");
   });
 
-  it("特权操作必填原因(授权/停用/scope/撤销/下发都先挡空原因)", () => {
+  it("特权操作必填原因(授权/停用/scope/撤销/下发/动作授权都先挡空原因)", () => {
     const reasonChecks = desk.match(/必须填写原因/g) ?? [];
     expect(reasonChecks.length).toBeGreaterThanOrEqual(4);
-    // 原因留痕口径出现在操作语境(代理撤销文案)
     expect(desk).toContain("留痕可查");
   });
 

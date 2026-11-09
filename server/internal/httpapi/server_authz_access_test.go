@@ -88,6 +88,9 @@ func newAuthzFixture(t *testing.T, authzOn bool) *authzFixture {
 		{tenA.ID, "usr_staff_a", "staff"},
 		{tenB.ID, "usr_owner_b", "org_owner"},
 		{tenA.ID, "usr_ag1", "agent"},
+		// 修复轮 2(F1):同一主体 = A 租户 owner + B 租户代理(走查场景)
+		{tenA.ID, "usr_dual", "org_owner"},
+		{tenB.ID, "usr_dual", "agent"},
 	} {
 		if _, err := st.CreateMember(m.tenant, m.principal, m.role, m.principal, "test", true); err != nil {
 			t.Fatalf("seed %s: %v", m.principal, err)
@@ -100,6 +103,16 @@ func newAuthzFixture(t *testing.T, authzOn bool) *authzFixture {
 	if err != nil {
 		t.Fatalf("seed relation: %v", err)
 	}
+	relDual, err := st.CreateAgencyRelation(tenB.ID, "usr_dual", "usr_owner_b", "B租户代运营")
+	if err != nil {
+		t.Fatalf("seed dual relation: %v", err)
+	}
+	if _, err := st.SetAgencyRelationScope(relDual.ID, tenB.ID, store.SetAgencyScopeInput{
+		AllowedActions: []string{"storefront", "action"}, StoreScopeSet: []string{},
+		ActorPrincipal: "usr_owner_b", Reason: "seed",
+	}); err != nil {
+		t.Fatalf("seed dual scope: %v", err)
+	}
 
 	idsrv := fakeIdentity(t, map[string]identitySession{
 		"sess-owner-a": {"usr_owner_a", "owner-a@example.com"},
@@ -107,6 +120,7 @@ func newAuthzFixture(t *testing.T, authzOn bool) *authzFixture {
 		"sess-sm-a":    {"usr_sm_a", "sm-a@example.com"},
 		"sess-owner-b": {"usr_owner_b", "owner-b@example.com"},
 		"sess-agent1":  {"usr_ag1", "agent1@example.com"},
+		"sess-dual":    {"usr_dual", "dual@example.com"},
 	})
 	idc := &identity.Client{BaseURL: idsrv.URL, Token: "identity-token", AppID: "touch-engine", HTTP: idsrv.Client()}
 	upc := &upload.Client{BaseURL: upSrv.URL, Token: "upload-token", AppID: "touch-engine", HTTP: upSrv.Client()}
@@ -340,7 +354,7 @@ func TestTemplateAssignmentDistribution(t *testing.T) {
 	f := newAuthzFixture(t, true)
 
 	// multi-store distribution with per-store report
-	body := fmt.Sprintf(`{"template_ref":"tpl_hero","source_version":"v3","store_ids":[%q,%q,"sto_missing"],"allowed_override_fields":["hero_title"],"request_key":"req_1"}`, f.st1, f.st2)
+	body := fmt.Sprintf(`{"template_ref":"tpl_hero","source_version":"v3","store_ids":[%q,%q,"sto_missing"],"allowed_override_fields":["hero_title"],"request_key":"req_1","reason":"新版头图上线"}`, f.st1, f.st2)
 	status, out := f.do(t, "POST", "/api/v1/template-assignments", "sess-owner-a", f.tenA, body)
 	if status != http.StatusMultiStatus && status != 200 && status != 201 {
 		t.Fatalf("distribute = %d %v", status, out)
@@ -382,14 +396,14 @@ func TestTemplateAssignmentDistribution(t *testing.T) {
 	}
 
 	// pure replay (all stores exist now): 200 + top-level replayed
-	body = fmt.Sprintf(`{"template_ref":"tpl_hero","source_version":"v3","store_ids":[%q,%q],"allowed_override_fields":["hero_title"],"request_key":"req_1"}`, f.st1, f.st2)
+	body = fmt.Sprintf(`{"template_ref":"tpl_hero","source_version":"v3","store_ids":[%q,%q],"allowed_override_fields":["hero_title"],"request_key":"req_1","reason":"新版头图上线"}`, f.st1, f.st2)
 	status, out = f.do(t, "POST", "/api/v1/template-assignments", "sess-owner-a", f.tenA, body)
 	if status != 200 || out["replayed"] != true {
 		t.Fatalf("pure replay = %d %v, want 200 replayed", status, out)
 	}
 
 	// reserved fields refused (门店目标/账号/二维码/Wi-Fi 密码永不跨店复制)
-	body = fmt.Sprintf(`{"template_ref":"tpl","source_version":"v1","store_ids":[%q],"allowed_override_fields":["wifi_password"],"request_key":"req_2"}`, f.st1)
+	body = fmt.Sprintf(`{"template_ref":"tpl","source_version":"v1","store_ids":[%q],"allowed_override_fields":["wifi_password"],"request_key":"req_2","reason":"r"}`, f.st1)
 	status, out = f.do(t, "POST", "/api/v1/template-assignments", "sess-owner-a", f.tenA, body)
 	if status != http.StatusBadRequest || out["error"] != "reserved_field" {
 		t.Fatalf("reserved field = %d %v, want 400 reserved_field", status, out)
@@ -397,7 +411,7 @@ func TestTemplateAssignmentDistribution(t *testing.T) {
 
 	// manager: own-store read only, distribution denied
 	status, _ = f.do(t, "POST", "/api/v1/template-assignments", "sess-sm-a", f.tenA,
-		fmt.Sprintf(`{"template_ref":"tpl","source_version":"v1","store_ids":[%q],"request_key":"m1"}`, f.st1))
+		fmt.Sprintf(`{"template_ref":"tpl","source_version":"v1","store_ids":[%q],"request_key":"m1","reason":"r"}`, f.st1))
 	if status != http.StatusForbidden {
 		t.Fatalf("manager distribute = %d, want 403", status)
 	}
@@ -569,6 +583,202 @@ func stringListAny(v any) []map[string]any {
 func contains(list []string, v string) bool {
 	for _, s := range list {
 		if strings.HasPrefix(s, v) {
+			return true
+		}
+	}
+	return false
+}
+
+// ---- 修复轮 2 ----------------------------------------------------------------------
+
+// F1:主体视角跨租户代管关系全集 —— 代理同时是 A 租户 owner + B 租户代理时,
+// 在 A 上下文里也必须看到 B 的卡片(走查 Walk B 缺陷)。
+func TestAgencyGrantedListCrossTenant(t *testing.T) {
+	f := newAuthzFixture(t, true)
+
+	// A 上下文(该主体是 owner):granted 必须仍列出 B 的代管卡片
+	status, out := f.do(t, "GET", "/api/v1/agency/relations/granted", "sess-dual", f.tenA, "")
+	if status != 200 {
+		t.Fatalf("granted list = %d %v", status, out)
+	}
+	items := stringListAny(out["items"])
+	if len(items) != 1 {
+		t.Fatalf("granted items = %d, want 1 (跨租户全集)", len(items))
+	}
+	card := items[0]
+	if card["tenant_id"] != f.tenB {
+		t.Fatalf("card tenant = %v, want tenB", card["tenant_id"])
+	}
+	if card["tenant_name"] != "商家B" {
+		t.Fatalf("card tenant_name = %v, want 商家B (grantor 租户名直显)", card["tenant_name"])
+	}
+	actions := stringList(card["allowed_actions"])
+	if !containsExact(actions, "storefront") || !containsExact(actions, "action") {
+		t.Fatalf("card actions = %v, want storefront+action", actions)
+	}
+	if card["payer_granted"] != false {
+		t.Fatalf("card payer_granted = %v, want false", card["payer_granted"])
+	}
+
+	// 无授权的主体 → 空
+	status, out = f.do(t, "GET", "/api/v1/agency/relations/granted", "sess-owner-a", f.tenA, "")
+	if status != 200 || len(stringListAny(out["items"])) != 0 {
+		t.Fatalf("principal without grants = %d %v, want 200 empty", status, out)
+	}
+
+	// 既有 /agency/relations 语义不变:A 上下文看到的仍是 A 自己的关系(Agent 视图
+	// 不因跨租户端点而改变)。
+	status, out = f.do(t, "GET", "/api/v1/agency/relations", "sess-agent1", f.tenA, "")
+	if status != 200 || len(stringListAny(out["items"])) != 1 {
+		t.Fatalf("legacy agent view = %d %v, want exactly 1 (tenA relation)", status, out)
+	}
+
+	// FEATURE_AGENCY off → 统一 404
+	off := newAuthzFixture(t, false)
+	if status, _ := off.do(t, "GET", "/api/v1/agency/relations/granted", "sess-dual", off.tenA, ""); status != http.StatusNotFound {
+		t.Fatalf("granted list off = %d, want 404", status)
+	}
+}
+
+// F2②:店员动作级授权旅程 —— 授权→访问→撤回→同会话 403。
+func TestMemberPermissionGrantJourney(t *testing.T) {
+	f := newAuthzFixture(t, true)
+
+	// resolve staff member row id
+	status, members := f.do(t, "GET", "/api/v1/admin/members", "sess-owner-a", f.tenA, "")
+	if status != 200 {
+		t.Fatalf("member list = %d %v", status, members)
+	}
+	staffID := ""
+	for _, m := range stringListAny(members["items"]) {
+		if m["principal_ref"] == "usr_staff_a" {
+			staffID, _ = m["id"].(string)
+		}
+	}
+	if staffID == "" {
+		t.Fatal("staff member row not found")
+	}
+
+	// owner grants storefront:configure (tenant-level staff → 全租户)
+	status, out := f.do(t, "PUT", "/api/v1/admin/members/"+staffID+"/permissions", "sess-owner-a", f.tenA,
+		`{"permissions":["storefront:configure"],"reason":"店员参与首页上新"}`)
+	if status != 200 {
+		t.Fatalf("grant = %d %v", status, out)
+	}
+
+	// staff access/effective now carries the permission; 能力真实可用(可下发模板)
+	status, out = f.do(t, "GET", "/api/v1/access/effective", "sess-staff-a", f.tenA, "")
+	if status != 200 {
+		t.Fatalf("staff access = %d %v", status, out)
+	}
+	if !containsExact(stringList(out["permissions"]), "storefront:configure") {
+		t.Fatalf("staff permissions after grant = %v, want storefront:configure", out["permissions"])
+	}
+	status, _ = f.do(t, "POST", "/api/v1/template-assignments", "sess-staff-a", f.tenA,
+		fmt.Sprintf(`{"template_ref":"tpl","source_version":"v1","store_ids":[%q],"request_key":"stf1","reason":"店员代发"}`, f.st1))
+	if status == http.StatusForbidden {
+		t.Fatal("granted tenant-level staff should be able to exercise the granted capability")
+	}
+
+	// revoke → SAME session, next request: permission gone, protected op 403
+	status, out = f.do(t, "PUT", "/api/v1/admin/members/"+staffID+"/permissions", "sess-owner-a", f.tenA,
+		`{"permissions":[],"reason":"门店帮工结束"}`)
+	if status != 200 {
+		t.Fatalf("revoke = %d %v", status, out)
+	}
+	status, out = f.do(t, "GET", "/api/v1/access/effective", "sess-staff-a", f.tenA, "")
+	if status != 200 || len(stringList(out["permissions"])) != 0 {
+		t.Fatalf("staff permissions after revoke = %d %v, want empty (同会话即时失权)", status, out)
+	}
+	status, _ = f.do(t, "POST", "/api/v1/template-assignments", "sess-staff-a", f.tenA,
+		fmt.Sprintf(`{"template_ref":"tpl","source_version":"v2","store_ids":[%q],"request_key":"stf2","reason":"r"}`, f.st1))
+	if status != http.StatusForbidden {
+		t.Fatalf("staff distribute after revoke = %d, want 403", status)
+	}
+
+	// members list carries granted_permissions field (现为空 → 字段缺省)
+	status, members = f.do(t, "GET", "/api/v1/admin/members", "sess-owner-a", f.tenA, "")
+	for _, m := range stringListAny(members["items"]) {
+		if m["principal_ref"] == "usr_staff_a" && m["granted_permissions"] != nil {
+			t.Fatalf("revoked staff still lists grants: %v", m["granted_permissions"])
+		}
+	}
+
+	// negative cases
+	status, out = f.do(t, "PUT", "/api/v1/admin/members/"+staffID+"/permissions", "sess-sm-a", f.tenA,
+		`{"permissions":["storefront:configure"],"reason":"r"}`)
+	if status != http.StatusForbidden {
+		t.Fatalf("manager grant = %d, want 403 (owner 专属)", status)
+	}
+	status, out = f.do(t, "PUT", "/api/v1/admin/members/"+staffID+"/permissions", "sess-owner-a", f.tenA,
+		`{"permissions":["billing:view"],"reason":"r"}`)
+	if status != http.StatusBadRequest || out["error"] != "bad_permission" {
+		t.Fatalf("billing grant = %d %v, want 400 bad_permission (billing 永不经此面)", status, out)
+	}
+	status, out = f.do(t, "PUT", "/api/v1/admin/members/"+staffID+"/permissions", "sess-owner-a", f.tenA,
+		`{"permissions":["storefront:configure"]}`)
+	if status != http.StatusBadRequest || out["error"] != "reason_required" {
+		t.Fatalf("missing reason = %d %v, want 400 reason_required", status, out)
+	}
+
+	// audit carries before/after SETS (不是 null)
+	status, out = f.do(t, "GET", "/api/v1/access/audit?target_id="+staffID, "sess-owner-a", f.tenA, "")
+	if status != 200 {
+		t.Fatalf("audit read = %d %v", status, out)
+	}
+	saw := false
+	for _, e := range stringListAny(out["items"]) {
+		if e["action"] == "member_permissions_set" {
+			saw = true
+			if e["before_json"] == "null" || e["after_json"] == nil {
+				t.Fatalf("permission-set audit must carry real sets: before=%v after=%v", e["before_json"], e["after_json"])
+			}
+		}
+	}
+	if !saw {
+		t.Fatal("member_permissions_set audit missing")
+	}
+}
+
+// F3:模板下发审计保真 —— 用户所填业务原因落审计(而非幂等键),新建前值为字面量 null。
+func TestTemplateAssignmentAuditReasonFidelity(t *testing.T) {
+	f := newAuthzFixture(t, true)
+	body := fmt.Sprintf(`{"template_ref":"tpl_hero","source_version":"v9","store_ids":[%q],"allowed_override_fields":["hero_title"],"request_key":"req_audit","reason":"双11 前统一新版头"}`, f.st1)
+	status, out := f.do(t, "POST", "/api/v1/template-assignments", "sess-owner-a", f.tenA, body)
+	if status != 201 && status != 200 {
+		t.Fatalf("distribute = %d %v", status, out)
+	}
+	// reason missing → 400
+	status, out = f.do(t, "POST", "/api/v1/template-assignments", "sess-owner-a", f.tenA,
+		fmt.Sprintf(`{"template_ref":"tpl","source_version":"v1","store_ids":[%q],"request_key":"k2"}`, f.st1))
+	if status != http.StatusBadRequest || out["error"] != "reason_required" {
+		t.Fatalf("missing reason = %d %v, want 400 reason_required", status, out)
+	}
+	// audit row: reason = 用户原因,before = "null"
+	status, out = f.do(t, "GET", "/api/v1/access/audit?target_type=template_assignment", "sess-owner-a", f.tenA, "")
+	if status != 200 {
+		t.Fatalf("audit read = %d %v", status, out)
+	}
+	saw := false
+	for _, e := range stringListAny(out["items"]) {
+		if e["action"] == "template_assign" {
+			saw = true
+			if e["reason"] != "双11 前统一新版头" {
+				t.Fatalf("audit reason = %v, want user-entered reason (不是幂等键 dist-...)", e["reason"])
+			}
+			if e["before_json"] != "null" {
+				t.Fatalf("create audit before = %v, want literal null (无前值语义)", e["before_json"])
+			}
+		}
+	}
+	if !saw {
+		t.Fatal("template_assign audit missing")
+	}
+}
+
+func containsExact(list []string, v string) bool {
+	for _, s := range list {
+		if s == v {
 			return true
 		}
 	}

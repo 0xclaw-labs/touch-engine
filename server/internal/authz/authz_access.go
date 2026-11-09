@@ -117,7 +117,13 @@ func grantCoversStore(scopeSet []string, storeID string) bool {
 
 // ResolveAccess computes the effective access from trusted server-side rows.
 // now 由调用方注入(可测);代理 grant 过期与 ops grant 过期/撤销在此 fail-closed。
-func ResolveAccess(m *Member, g *AgencyGrant, ops []OpsGrantView, now time.Time) EffectiveAccess {
+//
+// granted(HUI-4593 修复轮 2):店员动作级显式授权(member_permission_grant 现行态,
+// 由调用方每请求实时读取)。仅对 role=staff 生效 —— 授权→访问→撤回→同会话 403
+// 旅程的裁决半边;门店范围沿用成员行 store_scope(带 scope 店员 = 授权仅本店,
+// 租户级店员 = 授权全租户)。未授予仍全拒(fail-closed 默认不变);owner/manager/
+// agent 忽略该参数(各有自己的模型,不混用)。
+func ResolveAccess(m *Member, g *AgencyGrant, ops []OpsGrantView, granted []string, now time.Time) EffectiveAccess {
 	a := EffectiveAccess{Permissions: []string{}, OpsPermissions: []OpsPermission{}}
 	if m == nil || !m.Enabled || !m.Role.Valid() {
 		return a
@@ -160,7 +166,18 @@ func ResolveAccess(m *Member, g *AgencyGrant, ops []OpsGrantView, now time.Time)
 			}
 		}
 	case RoleStaff:
-		// 新维度一律 fail-closed:store_scope 显式建模 ≠ 隐式授权。
+		// 默认一律 fail-closed:store_scope 显式建模 ≠ 隐式授权。
+		// 修复轮 2:显式动作级授权只对店员生效;门店范围随成员行 scope。
+		if len(granted) > 0 {
+			for _, p := range granted {
+				if !hasString(a.Permissions, p) {
+					a.Permissions = append(a.Permissions, p)
+				}
+			}
+			if m.StoreScope != "" {
+				a.AllowedStoreIDs = []string{m.StoreScope}
+			}
+		}
 	}
 
 	// ops 维度:只来自受信服务端 grant 行;主体/租户必须就是本成员。
