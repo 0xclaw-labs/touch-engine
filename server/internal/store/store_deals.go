@@ -34,6 +34,8 @@ var (
 	ErrDealAuthorizationRequired = errors.New("store: deal offer lacks an authorization ref")
 	// ErrDealResultUnknown: 适配器传输失败/未知——诚实未知，零事实。
 	ErrDealResultUnknown = errors.New("store: external coupon result unknown")
+	// ErrDealNotConnected: 本部署没有接任何授权适配器——诚实未接通。
+	ErrDealNotConnected = errors.New("store: no authorized platform adapter is connected")
 )
 
 // StoreDealOffer is one storefront group-buy offer row plus its applicable
@@ -82,6 +84,8 @@ type NewStoreDealOffer struct {
 
 // UpdateStoreDealOffer carries optional edits; nil = unchanged.
 // MarkPriceVerifiedAt is the server-side verification timestamp (校验时间管理).
+// AuthorizationRef records an adapter grant once the merchant obtains an
+// official authorization (空串=显式清除).
 type UpdateStoreDealOffer struct {
 	Title               *string
 	ProductURL          *string
@@ -93,6 +97,7 @@ type UpdateStoreDealOffer struct {
 	ValidFrom           *string
 	ValidUntil          *string
 	Note                *string
+	AuthorizationRef    *string
 	MarkPriceVerifiedAt string
 	StoreIDs            *[]string
 }
@@ -361,6 +366,10 @@ func (s *Store) UpdateStoreDealOffer(id, tenantID string, in UpdateStoreDealOffe
 	if strings.TrimSpace(in.MarkPriceVerifiedAt) != "" {
 		verifiedAt = strings.TrimSpace(in.MarkPriceVerifiedAt)
 	}
+	authRef := cur.AuthorizationRef
+	if in.AuthorizationRef != nil {
+		authRef = strings.TrimSpace(*in.AuthorizationRef)
+	}
 	storeIDs := cur.StoreIDs
 	if in.StoreIDs != nil {
 		resolved, err := s.resolveDealStores(tenantID, firstStoreID(cur.StoreIDs), *in.StoreIDs)
@@ -378,11 +387,11 @@ func (s *Store) UpdateStoreDealOffer(id, tenantID string, in UpdateStoreDealOffe
 	ts := now()
 	if _, err := tx.Exec(
 		`UPDATE store_deal_offers SET title=?, product_url=?, image_ref=?, provider_offer_id=?, price_minor=?,
-		 currency=?, price_source=?, valid_from=?, valid_until=?, price_verified_at=?, note=?, updated_at=?
+		 currency=?, price_source=?, valid_from=?, valid_until=?, price_verified_at=?, note=?, authorization_ref=?, updated_at=?
 		 WHERE id=? AND tenant_id=?`,
 		title, url, pickStr(in.ImageRef, cur.ImageRef), pickStr(in.ProviderOfferID, cur.ProviderOfferID),
 		price, pickStr(in.Currency, cur.Currency), priceSource, validFrom, validUntil, verifiedAt,
-		pickStr(in.Note, cur.Note), ts, id, tenantID); err != nil {
+		pickStr(in.Note, cur.Note), authRef, ts, id, tenantID); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return StoreDealOffer{}, ErrDealConflict
 		}
