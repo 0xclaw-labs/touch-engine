@@ -387,6 +387,8 @@ func (s *Server) Handler() http.Handler {
 	// HUI-2222: single-use redemption of the minted jump credential.
 	mux.Handle("POST /api/v1/eco-nav/switch/redeem", s.requireSession(s.handleEcoNavRedeem))
 	mux.Handle("GET /api/v1/session/memberships", s.requirePrincipal(s.handleSessionMemberships))
+	// HUI-2222 (B15 工程面): operator-declared public/media domain probe.
+	mux.Handle("GET /api/v1/ops/domain-health", s.requirePrincipal(s.handleDomainHealth))
 	mux.Handle("GET /api/v1/workbench", s.requireSession(s.handleWorkbench))
 
 	mux.Handle("GET /api/v1/stores", s.requireSession(s.handleStoreList))

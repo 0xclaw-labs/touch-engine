@@ -137,13 +137,13 @@ func TestRedeemIsSingleUseAndBindsPrincipalTenant(t *testing.T) {
 
 func TestRedeemExpiredAnswersGone(t *testing.T) {
 	svc, _ := newTestService(t)
-	svc.now = func() time.Time { return time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC) }
+	svc.Now = func() time.Time { return time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC) }
 	minted, err := svc.Mint(tenantA, prinA, appID, targetID, launch)
 	if err != nil {
 		t.Fatalf("mint: %v", err)
 	}
 	// 快进 61s:过 TTL。
-	svc.now = func() time.Time { return time.Date(2026, 11, 10, 12, 1, 1, 0, time.UTC) }
+	svc.Now = func() time.Time { return time.Date(2026, 11, 10, 12, 1, 1, 0, time.UTC) }
 	if _, err := svc.Redeem(minted.Token, prinA, tenantA); err != ErrExpired {
 		t.Fatalf("expired redeem err = %v, want ErrExpired", err)
 	}
@@ -213,18 +213,18 @@ func TestConcurrentRedeemHasExactlyOneWinner(t *testing.T) {
 
 func TestCleanupRemovesExpiredAndUsedPastGrace(t *testing.T) {
 	svc, d := newTestService(t)
-	svc.now = func() time.Time { return time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC) }
+	svc.Now = func() time.Time { return time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC) }
 	expired, _ := svc.Mint(tenantA, prinA, appID, targetID, launch)
 	used, _ := svc.Mint(tenantA, prinA, appID, targetID, launch)
 	if _, err := svc.Redeem(used.Token, prinA, tenantA); err != nil {
 		t.Fatalf("redeem: %v", err)
 	}
 	// fresh mint 晚两小时,清理时刻仍未过期。
-	svc.now = func() time.Time { return time.Date(2026, 11, 10, 14, 0, 0, 0, time.UTC) }
+	svc.Now = func() time.Time { return time.Date(2026, 11, 10, 14, 0, 0, 0, time.UTC) }
 	fresh, _ := svc.Mint(tenantA, prinA, appID, targetID, launch)
 
 	// grace 内:一律保留(争议期证据)。
-	svc.now = func() time.Time { return time.Date(2026, 11, 10, 13, 30, 0, 0, time.UTC) }
+	svc.Now = func() time.Time { return time.Date(2026, 11, 10, 13, 30, 0, 0, time.UTC) }
 	deleted, err := svc.Cleanup(svc.now(), credentialGrace)
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
@@ -234,7 +234,7 @@ func TestCleanupRemovesExpiredAndUsedPastGrace(t *testing.T) {
 	}
 
 	// grace 外:过期+已用清掉,未过期 fresh 保留(过期 12:01 + 24h 争议期后)。
-	svc.now = func() time.Time { return time.Date(2026, 11, 11, 13, 30, 0, 0, time.UTC) }
+	svc.Now = func() time.Time { return time.Date(2026, 11, 11, 13, 30, 0, 0, time.UTC) }
 	deleted, err = svc.Cleanup(svc.now(), credentialGrace)
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
