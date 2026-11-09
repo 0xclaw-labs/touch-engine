@@ -17,8 +17,12 @@ func TestPublicPageNamesMerchantWithoutInternalFields(t *testing.T) {
 	mustEqual(t, status, http.StatusCreated)
 	storeID := sto["id"].(string)
 
+	// 中央集成根因修复(2026-11-10, 同 HUI-1671 对其余基线红的诊断): 旧夹具
+	// 硬编码窗口已成过去时,ResolveLink 按活动窗口诚实判 expired(实现正确,
+	// 数据过期)。窗口改为相对 now,测试不再随日历漂移。
+	now := time.Now().UTC()
 	status, _, cmp := f.do(t, "POST", "/api/v1/campaigns", "sess-owner-a", f.tenA,
-		`{"title":"到店咖啡","public_content":"到店送一杯","store_id":"`+storeID+`","starts_at":"2026-09-01T00:00:00Z","ends_at":"2026-10-31T00:00:00Z"}`)
+		`{"title":"到店咖啡","public_content":"到店送一杯","store_id":"`+storeID+`","starts_at":"`+now.Add(-24*time.Hour).Format(time.RFC3339)+`","ends_at":"`+now.Add(48*time.Hour).Format(time.RFC3339)+`"}`)
 	mustEqual(t, status, http.StatusCreated)
 	id := cmp["id"].(string)
 	status, _, _ = f.do(t, "POST", "/api/v1/campaigns/"+id+"/status", "sess-owner-a", f.tenA, `{"status":"active"}`)
