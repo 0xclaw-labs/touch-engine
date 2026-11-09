@@ -227,37 +227,37 @@ func (s *Server) touchpointTargetFacts(tenantID string, t store.TouchpointTarget
 // the concurrency guard. New contract: {target_type, store_id|campaign_id?,
 // expected_binding_revision}. Legacy bodies ({campaign_id,
 // expected_campaign_id}) keep working unchanged (增量演进不砸旧调用方).
-func parseTouchpointTarget(body io.Reader) (store.TouchpointTarget, store.TouchpointRebindExpectation, bool, error) {
+func parseTouchpointTarget(body io.Reader) (store.TouchpointTarget, store.TouchpointRebindExpectation, error) {
 	var in struct {
-		TargetType             string `json:"target_type"`
-		StoreID                string `json:"store_id"`
-		CampaignID             string `json:"campaign_id"`
-		ExpectedBindingRevision int64 `json:"expected_binding_revision"`
-		ExpectedCampaignID     string `json:"expected_campaign_id"`
+		TargetType              string `json:"target_type"`
+		StoreID                 string `json:"store_id"`
+		CampaignID              string `json:"campaign_id"`
+		ExpectedBindingRevision int64  `json:"expected_binding_revision"`
+		ExpectedCampaignID      string `json:"expected_campaign_id"`
 	}
 	if err := json.NewDecoder(body).Decode(&in); err != nil {
-		return store.TouchpointTarget{}, store.TouchpointRebindExpectation{}, false, err
+		return store.TouchpointTarget{}, store.TouchpointRebindExpectation{}, err
 	}
 	guard := store.TouchpointRebindExpectation{Revision: in.ExpectedBindingRevision, CampaignID: in.ExpectedCampaignID}
 	switch strings.TrimSpace(in.TargetType) {
 	case store.TargetStore:
 		if strings.TrimSpace(in.StoreID) == "" {
-			return store.TouchpointTarget{}, store.TouchpointRebindExpectation{}, false, fmt.Errorf("store_id is required for a store target")
+			return store.TouchpointTarget{}, store.TouchpointRebindExpectation{}, fmt.Errorf("store_id is required for a store target")
 		}
-		return store.TouchpointTarget{Type: store.TargetStore, StoreID: strings.TrimSpace(in.StoreID)}, guard, true, nil
+		return store.TouchpointTarget{Type: store.TargetStore, StoreID: strings.TrimSpace(in.StoreID)}, guard, nil
 	case store.TargetLegacyCampaign:
 		if strings.TrimSpace(in.CampaignID) == "" {
-			return store.TouchpointTarget{}, store.TouchpointRebindExpectation{}, false, fmt.Errorf("campaign_id is required for a campaign target")
+			return store.TouchpointTarget{}, store.TouchpointRebindExpectation{}, fmt.Errorf("campaign_id is required for a campaign target")
 		}
-		return store.TouchpointTarget{Type: store.TargetLegacyCampaign, CampaignID: strings.TrimSpace(in.CampaignID)}, guard, true, nil
+		return store.TouchpointTarget{Type: store.TargetLegacyCampaign, CampaignID: strings.TrimSpace(in.CampaignID)}, guard, nil
 	case "":
 		// 兼容路径:只有 campaign_id + expected_campaign_id 的旧请求体。
 		if strings.TrimSpace(in.CampaignID) == "" {
-			return store.TouchpointTarget{}, store.TouchpointRebindExpectation{}, false, fmt.Errorf("target_type or campaign_id is required")
+			return store.TouchpointTarget{}, store.TouchpointRebindExpectation{}, fmt.Errorf("target_type or campaign_id is required")
 		}
-		return store.TouchpointTarget{Type: store.TargetLegacyCampaign, CampaignID: strings.TrimSpace(in.CampaignID)}, guard, false, nil
+		return store.TouchpointTarget{Type: store.TargetLegacyCampaign, CampaignID: strings.TrimSpace(in.CampaignID)}, guard, nil
 	default:
-		return store.TouchpointTarget{}, store.TouchpointRebindExpectation{}, false, fmt.Errorf("target_type must be store or legacy_campaign")
+		return store.TouchpointTarget{}, store.TouchpointRebindExpectation{}, fmt.Errorf("target_type must be store or legacy_campaign")
 	}
 }
 
@@ -286,15 +286,16 @@ func (s *Server) storeTargetScoped(c *caller, storeID string, w http.ResponseWri
 
 // touchpointPreviewImpact counts participations bound to the CURRENT target's
 // campaign (read-only, 3546 domain): 换绑不能挪动已承诺权益,统计只描述影响面。
-func (s *Server) touchpointPreviewImpact(tenantID, campaignID string) int64 {
+// 查询失败如实报错(不显示 0 冒充无影响);确认侧不依赖该统计。
+func (s *Server) touchpointPreviewImpact(tenantID, campaignID string) (int64, error) {
 	if strings.TrimSpace(campaignID) == "" {
-		return 0
+		return 0, nil
 	}
 	started, err := s.St.CountStartedParticipations(tenantID, campaignID)
 	if err != nil {
-		return 0 // 影响面统计失败不阻断预览;确认侧不受影响
+		return 0, err
 	}
-	return started
+	return started, nil
 }
 
 // handleTouchpointRebindPreview: 当前→新目标预览 + 影响范围(已开始参与数只读
@@ -309,7 +310,7 @@ func (s *Server) handleTouchpointRebindPreview(w http.ResponseWriter, r *http.Re
 	if !ok {
 		return
 	}
-	target, _, _, err := parseTouchpointTarget(r.Body)
+	target, _, err := parseTouchpointTarget(r.Body)
 	if err != nil {
 		fail(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
@@ -333,10 +334,15 @@ func (s *Server) handleTouchpointRebindPreview(w http.ResponseWriter, r *http.Re
 		}
 	}
 	current := store.TouchpointTarget{Type: v.TargetType, StoreID: v.StoreID, CampaignID: v.CampaignID}
+	started, err := s.touchpointPreviewImpact(c.Member.TenantID, v.CampaignID)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "impact lookup failed")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"current":                s.touchpointTargetFacts(c.Member.TenantID, current),
 		"next":                   s.touchpointTargetFacts(c.Member.TenantID, target),
-		"started_participations": s.touchpointPreviewImpact(c.Member.TenantID, v.CampaignID),
+		"started_participations": started,
 		"binding_revision":       v.BindingRevision,
 	})
 }
@@ -349,9 +355,15 @@ func (s *Server) handleTouchpointRebind(w http.ResponseWriter, r *http.Request) 
 	if _, ok := s.touchpointScoped(c, r.PathValue("id"), w); !ok {
 		return
 	}
-	target, guard, _, err := parseTouchpointTarget(r.Body)
+	target, guard, err := parseTouchpointTarget(r.Body)
 	if err != nil {
 		fail(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	// 确认必须带并发闸:new 是 expected_binding_revision;旧请求体退化 expected_campaign_id。
+	// 无闸请求体 = 400(显式坏请求),不是模糊的并发冲突。
+	if guard.Revision <= 0 && strings.TrimSpace(guard.CampaignID) == "" {
+		fail(w, http.StatusBadRequest, "bad_request", "expected_binding_revision (or legacy expected_campaign_id) is required")
 		return
 	}
 	switch target.Type {
@@ -623,8 +635,8 @@ func (s *Server) handlePublicTouchpoint(w http.ResponseWriter, r *http.Request) 
 		if res.TargetType == store.TargetStore {
 			payload["store_code"] = res.StoreCode
 		} else {
-			payload["code"] = res.Code           // 兼容约定保留(旧 /t 前端只认 state+code)
-			payload["campaign_code"] = res.Code  // 票面契约:显式活动短码字段
+			payload["code"] = res.Code          // 兼容约定保留(旧 /t 前端只认 state+code)
+			payload["campaign_code"] = res.Code // 票面契约:显式活动短码字段
 		}
 		writeJSON(w, http.StatusOK, payload)
 	case store.TpDisabled:

@@ -47,6 +47,7 @@ export type TouchpointTargetType = (typeof touchpointTargetList)[number];
 export interface TouchEntryView {
   state?: unknown;
   code?: unknown;
+  campaign_code?: unknown;
   target_type?: unknown;
   store_code?: unknown;
   schema_version?: unknown;

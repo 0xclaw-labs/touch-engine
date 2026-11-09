@@ -745,11 +745,16 @@ func TestTouchpointStoreRootPublicAndRebindAPI(t *testing.T) {
 	if after["campaign_id"] != nil { // omitempty:注记清空后键缺省
 		t.Fatalf("store rebind must clear the campaign annotation, got %v", after["campaign_id"])
 	}
-	// 5) 陈旧 revision → 409 rebind_conflict。
+	// 5) 陈旧 revision → 409 rebind_conflict;无并发闸请求体 → 400(显式坏请求)。
 	status, _, body := f.do(t, "POST", "/api/v1/touchpoints/"+tp1+"/rebind", "sess-owner-a", f.tenA,
 		`{"target_type":"store","store_id":"`+f.stoA.ID+`","expected_binding_revision":1}`)
 	if status != http.StatusConflict || body["error"] != "rebind_conflict" {
 		t.Fatalf("stale revision = %d %v", status, body)
+	}
+	status, _, body = f.do(t, "POST", "/api/v1/touchpoints/"+tp1+"/rebind", "sess-owner-a", f.tenA,
+		`{"target_type":"store","store_id":"`+f.stoA.ID+`"}`)
+	if status != http.StatusBadRequest {
+		t.Fatalf("guard-less rebind = %d %v, want 400", status, body)
 	}
 	// 6) 缓存开:换绑后公共解析立即反映新门店码(epoch 结构失效)。
 	status, _, view = f.do(t, "GET", "/api/v1/public/touchpoints/"+codeA, "", "", "")

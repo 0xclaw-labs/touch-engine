@@ -15,6 +15,7 @@ import {
   targetFace,
   touchEntryFace,
   touchEntryRedirect,
+  type TouchEntryView,
 } from "../src/lib/touchpoints";
 
 describe("FEATURE 开关判定(与 Go isTruthy 同纪律:1/true/yes/on,默认 off)", () => {
@@ -69,7 +70,9 @@ describe("/t 稳定入口解析分支(白名单,绝不盲跳)", () => {
   it("非对象载荷一律不跳转", () => {
     expect(touchEntryRedirect(undefined)).toBeNull();
     expect(touchEntryRedirect(null)).toBeNull();
-    expect(touchEntryRedirect("available")).toBeNull();
+    // 历史遗留的字符串载荷(基线 tsc 就报 TS2559):运行时真会出现,测试照钉
+    expect(touchEntryRedirect("available" as unknown as TouchEntryView)).toBeNull();
+    expect(touchEntryRedirect(42 as unknown as TouchEntryView)).toBeNull();
   });
 });
 
