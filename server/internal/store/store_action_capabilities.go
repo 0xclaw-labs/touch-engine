@@ -211,14 +211,12 @@ func (s *Store) insertAudit(tx *sql.Tx, r channeladmission.ActionCapability, aud
 
 // UpsertActionCapability is the controlled write path: validate → hash-diff →
 // insert/update + audit row in ONE transaction. An unchanged re-write is a
-// no-op (no row change, no audit). The caller declares intent via
-// audit.Action (create|update); storage refuses to dress up a conflict.
+// no-op (no row change, no audit). The audit action is DERIVED by storage
+// (insert=create, update=update) so a mislabeled write can never pollute the
+// trail; audit.Action on the input is ignored here (reserved for emergency).
 func (s *Store) UpsertActionCapability(r channeladmission.ActionCapability, audit ControlAudit) (created bool, err error) {
 	if err := r.Validate(); err != nil {
 		return false, err
-	}
-	if !validAuditAction(audit.Action) {
-		return false, fmt.Errorf("control audit action %q unknown", audit.Action)
 	}
 	hash := ActionCapabilityPayloadHash(r)
 	vals, err := actionCapVals(r, hash)
@@ -240,6 +238,7 @@ func (s *Store) UpsertActionCapability(r channeladmission.ActionCapability, audi
 		r.CatalogCode, r.Platform, r.Method, r.Scenario, r.TenantScope).Scan(&curID, &curHash)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
+		audit.Action = "create"
 		if r.ID == "" {
 			r.ID = newID("cap_")
 		}
@@ -263,6 +262,7 @@ func (s *Store) UpsertActionCapability(r channeladmission.ActionCapability, audi
 	if curHash == hash {
 		return false, nil // unchanged controlled re-write: no write, no audit
 	}
+	audit.Action = "update"
 	r.ID = curID
 	_, err = tx.Exec(`UPDATE channel_action_capabilities SET catalog_code=?,platform=?,
 		method=?,scenario=?,action_kind=?,label=?,suggested_only=?,app_binding=?,
