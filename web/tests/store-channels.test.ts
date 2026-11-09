@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  adoptedPackOptions,
+  bindingBlocker,
   buildPutBody,
+  canSave,
   catalogMissingEntries,
   channelsSaveError,
   normalizeItems,
   reorder,
+  refreshNotice,
+  saveFailure,
   targetSummary,
   validateSummary,
   type ChannelItem,
@@ -158,7 +163,76 @@ describe("门店渠道动作页纯逻辑", () => {
     expect(channelsSaveError(400, { error: "duplicate_action_id" })).toContain("同一个动作");
     expect(channelsSaveError(400, { error: "bad_target_ref" })).toContain("公网 https");
     expect(channelsSaveError(400, { error: "target_required" })).toContain("启用前需要填写目标地址");
+    expect(channelsSaveError(400, { error: "bad_content_binding_ref" })).toContain("内容包");
     expect(channelsSaveError(403, { error: "out_of_scope" })).toContain("只能配置自己管辖的门店");
     expect(channelsSaveError(500, {})).toContain("没有保存成功");
+  });
+
+  it("保存失败分流：409 走冲突剧本（提示刷新），其他走普通失败，不吞成泛化话术", () => {
+    const conflict = saveFailure(409, { error: "stale_version" });
+    expect(conflict.kind).toBe("conflict");
+    expect(conflict.text).toContain("刷新最新配置");
+    const conflictByCode = saveFailure(500, { error: "stale_version" });
+    expect(conflictByCode.kind).toBe("conflict");
+    const fieldError = saveFailure(400, { error: "bad_target_ref" });
+    expect(fieldError.kind).toBe("error");
+    expect(fieldError.text).toContain("公网 https");
+    const generic = saveFailure(400, {});
+    expect(generic.kind).toBe("error");
+    expect(generic.text).not.toContain("刷新最新配置");
+  });
+
+  it("保存闸：已知落后或刷新中不允许保存；刷新对齐后恢复", () => {
+    expect(canSave({ stale: true, reloading: false, dirty: true, blockers: 0 })).toBe(false);
+    expect(canSave({ stale: false, reloading: true, dirty: true, blockers: 0 })).toBe(false);
+    expect(canSave({ stale: false, reloading: false, dirty: false, blockers: 0 })).toBe(false);
+    expect(canSave({ stale: false, reloading: false, dirty: true, blockers: 1 })).toBe(false);
+    // 冲突 → 刷新（stale 清掉）→ 再改（dirty）→ 可保存。
+    expect(canSave({ stale: false, reloading: false, dirty: true, blockers: 0 })).toBe(true);
+  });
+
+  it("刷新成功提示明确版本号与后续动作", () => {
+    expect(refreshNotice(3)).toContain("第 3 版");
+    expect(refreshNotice(3)).toContain("保存");
+  });
+
+  it("内容包下拉只列已采用的包，未采用/脏数据行不进选项", () => {
+    const options = adoptedPackOptions({
+      items: [
+        { id: "cpk_a", title: "周末火锅", adoptions: [{ platform: "dianping", pack_id: "cpk_a", version_id: "v1" }] },
+        { id: "cpk_b", title: "未采用包", adoptions: [] },
+        { id: "cpk_c", title: "双平台包", adoptions: [{ platform: "douyin" }, { platform: "dianping" }, { platform: "douyin" }] },
+        { id: "", title: "无 id", adoptions: [{ platform: "x" }] },
+        { title: "缺 adoptions 字段" },
+        "junk",
+      ],
+    });
+    expect(options.map((o) => o.packId)).toEqual(["cpk_a", "cpk_c"]);
+    expect(options[0].title).toBe("周末火锅");
+    expect(options[0].platforms).toEqual(["dianping"]);
+    expect(options[1].platforms).toEqual(["douyin", "dianping"]);
+    expect(adoptedPackOptions(null)).toEqual([]);
+    expect(adoptedPackOptions({})).toEqual([]);
+    // 无标题回退 pack id。
+    const fallback = adoptedPackOptions({ items: [{ id: "cpk_d", adoptions: [{ platform: "x" }] }] });
+    expect(fallback[0].title).toBe("cpk_d");
+  });
+
+  it("内容绑定值拦截：只放行空串与 pack:<id>", () => {
+    expect(bindingBlocker("")).toBe("");
+    expect(bindingBlocker("pack:cpk_a")).toBe("");
+    expect(bindingBlocker("cpk_a")).toContain("pack:");
+    expect(bindingBlocker("pack:")).toContain("pack:");
+    expect(bindingBlocker("pack: ")).toContain("pack:");
+    expect(bindingBlocker("binding:cpk_a")).toContain("pack:");
+  });
+
+  it("normalizeItems 把非法绑定值计为行阻塞", () => {
+    const items = normalizeItems([
+      item({ catalog_code: "A08", target_ref: "https://www.dianping.com/x", content_binding_ref: "pack:cpk_a" }),
+      item({ action_id: "sa_b", catalog_code: "A12", target_ref: "https://www.meituan.com/x", content_binding_ref: "cpk_b" }),
+    ]);
+    expect(items[0].blocker).toBe("");
+    expect(items[1].blocker).toContain("pack:");
   });
 });

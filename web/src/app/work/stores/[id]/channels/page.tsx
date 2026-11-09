@@ -3,13 +3,18 @@
 // HUI-4584 M4 门店渠道动作页（/work/stores/{id}/channels）。
 //
 // 纪律：
-//   - 通用动作列表/启停/排序/新增/目标摘要/测试入口；平台专属目标表单与
-//     校验归 HUI-4589，本页不重复实现；tenant_id 由服务端从会话解析，本页
-//     不要求也不允许手填。
-//   - 普通（链接目标）与高级权限（平台授权/凭据）分区展示；本页绝不存储或
-//     展示 AppSecret 类凭据——那由 4589/4593 的授权面负责。
+//   - 通用动作列表/启停/排序/新增/内容包绑定/目标摘要/测试入口；平台专属目标
+//     表单与校验归 HUI-4589；tenant_id 由服务端从会话解析，本页不要求也不允许手填。
+//   - 普通（链接目标+内容包绑定）与高级权限（平台授权/凭据）分区展示；本页
+//     绝不存储或展示 AppSecret 类凭据。
 //   - validate 是只读测试入口：三分证据 + 准入未判定，绝不说成功。
-//   - 保存带 config_revision 乐观锁；409 提示刷新重试，不静默覆盖。
+//   - 冲突剧本（D1 修复）：保存 409 → 独立冲突提示 + 停用保存；「刷新最新配置」
+//     一次点击完成重取+表单重渲染（横幅内联报错，不整页替换、不丢未保存上下文）；
+//     刷新成功后 revision 与服务端一致，保存才重新放行——expected_revision
+//     永远等于页面当前显示的服务端版本。
+//   - 内容包绑定（D2 修复）：下拉只列本店「已采用」内容包（GET
+//     /api/v1/stores/{id}/content-packs 的 adoptions 非空项）；值 pack:<id>，
+//     可清空；非法形态前端先拦 + 后端 400 单独文案。
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
@@ -17,16 +22,22 @@ import { useParams } from "next/navigation";
 import { failureText, useSession } from "@/components/work/merchant-session";
 import { surfaceLabel } from "@/lib/product-finish";
 import {
+  adoptedPackOptions,
+  bindingBlocker,
   buildPutBody,
+  canSave,
   catalogMissingEntries,
   channelsSaveError,
   nextOrder,
   normalizeItems,
+  refreshNotice,
   reorder,
+  saveFailure,
   targetSummary,
   validateSummary,
   type CatalogEntry,
   type ChannelItem,
+  type ContentPackOption,
   type ValidateResult,
 } from "@/lib/store-channels";
 
@@ -55,10 +66,10 @@ interface DraftItem {
   validateProblem: string;
 }
 
-function blockerOf(row: Pick<DraftItem, "catalog_code" | "enabled" | "target_ref">): string {
+function blockerOf(row: Pick<DraftItem, "catalog_code" | "enabled" | "target_ref" | "content_binding_ref">): string {
   if (row.catalog_code === "") return "请先选择目录项";
   if (row.enabled && row.target_ref.trim() === "") return "启用前需要填写目标地址";
-  return "";
+  return bindingBlocker(row.content_binding_ref);
 }
 
 function toDraft(items: ChannelItem[]): DraftItem[] {
@@ -112,27 +123,68 @@ export default function StoreChannelsPage() {
   const [notice, setNotice] = useState("");
   const [saveError, setSaveError] = useState("");
   const [stale, setStale] = useState(false);
+  const [reloading, setReloading] = useState(false);
+  const [refreshError, setRefreshError] = useState("");
   const [dirty, setDirty] = useState(false);
   const [newCode, setNewCode] = useState("");
+  const [packs, setPacks] = useState<ContentPackOption[]>([]);
+  const [packsState, setPacksState] = useState<"loading" | "ready" | "unavailable">("loading");
+
+  const loadPacks = useCallback(async () => {
+    setPacksState("loading");
+    const res = await session.api("GET", `stores/${storeId}/content-packs`);
+    if (res.ok) {
+      setPacks(adoptedPackOptions(res.data));
+      setPacksState("ready");
+      return;
+    }
+    // 内容包列表不可用（未合流/无权限/网络）：绑定下拉降级为提示，不阻断动作配置。
+    setPacks([]);
+    setPacksState("unavailable");
+  }, [session, storeId]);
+
+  const applyConfig = useCallback((data: ChannelsDoc) => {
+    setDoc(data);
+    setDrafts(toDraft(Array.isArray(data.items) ? data.items : []));
+    setRevision(data.config_revision);
+    setDirty(false);
+    setStale(false);
+    setSaveError("");
+  }, []);
 
   const load = useCallback(async () => {
     setPhase("loading");
     setSaveError("");
     setNotice("");
+    setRefreshError("");
     const res = await session.api("GET", `stores/${storeId}/actions`);
     if (!res.ok) {
       setLoadError(failureText(res.status, res.data));
       setPhase("error");
       return;
     }
-    const data = res.data as unknown as ChannelsDoc;
-    setDoc(data);
-    setDrafts(toDraft(Array.isArray(data.items) ? data.items : []));
-    setRevision(data.config_revision);
-    setDirty(false);
-    setStale(false);
+    applyConfig(res.data as unknown as ChannelsDoc);
+    setNotice("");
     setPhase("ready");
-  }, [session, storeId]);
+    void loadPacks();
+  }, [session, storeId, applyConfig, loadPacks]);
+
+  // 冲突后的唯一恢复路径：一次点击 = 重取 + 表单重渲染。已有配置在屏时失败
+  // 只内联报错（保留页面与未保存状态），不再整页替换、不再需要第二跳。
+  const refreshConfig = useCallback(async () => {
+    setReloading(true);
+    setRefreshError("");
+    setNotice("");
+    const res = await session.api("GET", `stores/${storeId}/actions`);
+    setReloading(false);
+    if (!res.ok) {
+      setRefreshError(`没有读到最新配置：${failureText(res.status, res.data)} 页面仍是上次读到的内容，可再点一次刷新。`);
+      return;
+    }
+    const data = res.data as unknown as ChannelsDoc;
+    applyConfig(data);
+    setNotice(refreshNotice(data.config_revision));
+  }, [session, storeId, applyConfig]);
 
   useEffect(() => {
     if (!storeId) return;
@@ -180,7 +232,7 @@ export default function StoreChannelsPage() {
       content_binding_ref: "",
       order: nextOrder(draftsToChannelItems(drafts)),
       enabled: false,
-      blocker: blockerOf({ catalog_code: entry.code, enabled: false, target_ref: "" }),
+      blocker: blockerOf({ catalog_code: entry.code, enabled: false, target_ref: "", content_binding_ref: "" }),
       validating: false,
       validateText: [],
       validateProblem: "",
@@ -201,18 +253,20 @@ export default function StoreChannelsPage() {
     const body = buildPutBody(draftsToChannelItems(drafts), revision);
     const res = await session.api("PUT", `stores/${storeId}/actions`, body);
     if (!res.ok) {
-      if (res.status === 409) setStale(true);
-      setSaveError(channelsSaveError(res.status, res.data));
+      // 409 是独立剧本：冲突提示 + 停用保存 + 只能走刷新；绝不吞成泛化失败。
+      const failure = saveFailure(res.status, res.data);
+      if (failure.kind === "conflict") {
+        setStale(true);
+        setSaveError(failure.text);
+      } else {
+        setSaveError(failure.text);
+      }
       return;
     }
     const data = res.data as unknown as ChannelsDoc;
-    setDoc(data);
-    setDrafts(toDraft(Array.isArray(data.items) ? data.items : []));
-    setRevision(data.config_revision);
-    setDirty(false);
-    setSaveError("");
+    applyConfig(data);
     setStale(false);
-    setNotice("渠道动作已保存。顾客门店页使用的是已启用的动作。");
+    setNotice(`渠道动作已保存，当前是配置第 ${data.config_revision} 版。顾客门店页使用的是已启用的动作。`);
   }
 
   async function runValidate(index: number) {
@@ -240,6 +294,8 @@ export default function StoreChannelsPage() {
   const catalog = doc?.catalog ?? [];
   const missing = catalogMissingEntries(catalog, drafts.map((row) => ({ catalog_code: row.catalog_code } as ChannelItem)));
   const configuredCodes = new Set(drafts.map((row) => row.catalog_code));
+  const blockers = drafts.filter((row) => row.blocker !== "").length;
+  const saveAllowed = canSave({ stale, reloading, dirty, blockers });
 
   if (phase === "loading") return <main><p className="tk-state" data-state="loading">{surfaceLabel("loading")}</p></main>;
   if (phase === "error") {
@@ -266,12 +322,16 @@ export default function StoreChannelsPage() {
         顾客门店码 {doc.store_code}。当前是配置第 {revision} 版{dirty ? "（有未保存修改）" : ""}。
         顾客侧页面由门店首页发布版本另行控制。
       </p>
-      {notice ? <p className="tk-note">{notice}</p> : null}
-      {saveError ? <p className="tk-warn">{saveError}</p> : null}
-      {stale ? (
-        <p className="tk-warn">
-          配置已被他人更新。
-          <button className="tk-quiet" type="button" onClick={() => void load()}>刷新最新配置</button>
+      {notice ? <p className="tk-note" data-state="notice">{notice}</p> : null}
+      {saveError ? (
+        <p className="tk-warn" data-state={stale ? "conflict" : "save-error"}>{saveError}</p>
+      ) : null}
+      {stale || refreshError ? (
+        <p className="tk-warn" data-state="stale">
+          {refreshError ? `${refreshError}` : "配置已被他人更新。保存已暂停，先刷新对齐最新版本再继续修改。"}
+          <button className="tk-quiet" type="button" data-action="refresh-config" disabled={reloading} onClick={() => void refreshConfig()}>
+            {reloading ? "刷新中…" : "刷新最新配置"}
+          </button>
         </p>
       ) : null}
 
@@ -312,6 +372,31 @@ export default function StoreChannelsPage() {
               disabled={!canEdit}
               onChange={(event) => patchDraft(index, { target_ref: event.target.value })}
             />
+            <label className="tk-note">
+              绑定内容包（已采用的内容包，供顾客「换一个」等场景引用）
+              <select
+                className="tk-input"
+                value={row.content_binding_ref}
+                disabled={!canEdit}
+                onChange={(event) => patchDraft(index, { content_binding_ref: event.target.value })}
+              >
+                <option value="">不绑定内容包</option>
+                {row.content_binding_ref !== "" && !packs.some((p) => `pack:${p.packId}` === row.content_binding_ref) ? (
+                  <option value={row.content_binding_ref}>{row.content_binding_ref}（不在已采用列表）</option>
+                ) : null}
+                {packs.map((p) => (
+                  <option key={p.packId} value={`pack:${p.packId}`}>
+                    {p.title}{p.platforms.length > 0 ? `（${p.platforms.join("/")}）` : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {packsState === "unavailable" ? (
+              <p className="tk-note">内容包列表当前不可用，暂不能调整绑定；已有绑定保持不变。</p>
+            ) : null}
+            {packsState === "ready" && packs.length === 0 ? (
+              <p className="tk-note">这家店还没有已采用的内容包。先在内容包面板采用，再回到这里绑定。</p>
+            ) : null}
             {row.validateProblem || row.validateText.length > 0 ? (
               <div className="tk-note">
                 {row.validateProblem ? <p className="tk-warn">{row.validateProblem}</p> : null}
@@ -347,8 +432,9 @@ export default function StoreChannelsPage() {
 
       {canEdit ? (
         <div className="tk-row tk-gap tk-section">
-          <button className="tk-button" type="button" disabled={!dirty} onClick={() => void save()}>保存全部修改</button>
-          <button className="tk-quiet" type="button" disabled={!dirty} onClick={() => void load()}>放弃修改</button>
+          <button className="tk-button" type="button" disabled={!saveAllowed} onClick={() => void save()}>保存全部修改</button>
+          <button className="tk-quiet" type="button" disabled={!dirty || reloading || stale} onClick={() => void load()}>放弃修改</button>
+          {stale ? <span className="tk-note">配置已有更新版本，先点上面的「刷新最新配置」。</span> : null}
         </div>
       ) : null}
 
@@ -366,7 +452,7 @@ export default function StoreChannelsPage() {
       <div className="tk-section">
         <h2 className="tk-section-title">高级权限与平台授权</h2>
         <p className="tk-note">
-          平台授权、AppSecret 等凭据不在这页存储或展示。普通链接目标在上面配置；
+          平台授权、AppSecret 等凭据不在这页存储或展示。普通链接目标与内容包绑定在上面配置；
           平台专属目标与授权由对应平台的接入配置负责（授权与凭据另有专门入口）。
           本页任何动作都不会代顾客发布、关注、加群或收费。
         </p>
