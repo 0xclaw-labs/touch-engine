@@ -1047,6 +1047,30 @@ func (s *Store) GetActionContentBindingAnyTenant(actionID string) (ActionContent
 	return b, err
 }
 
+// ClearActionContentBinding is the「解绑」internal call (HUI-4584 actions PUT
+// 写入侧,中央集成 2026-11-10): the merchant put content_binding_ref='' on an
+// action that previously carried one (or deleted the action row entirely), so
+// the authoritative binding index must follow. Deletes the
+// store_action_content_bindings row and appends one audit event on the last
+// bound version (kind superseded — the reference moved on; CHECK 词表内唯一
+// 合适的只追加词). Absent binding is a no-op (idempotent unbind).
+func (s *Store) ClearActionContentBinding(tenantID, actionID string) error {
+	b, err := s.GetActionContentBinding(tenantID, actionID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if _, err := s.DB.Exec(
+		`DELETE FROM store_action_content_bindings WHERE id=? AND tenant_id=?`,
+		b.ID, tenantID); err != nil {
+		return err
+	}
+	return s.appendStoreVersionEvent(tenantID, b.LastVersionID, "superseded",
+		"action content binding cleared (unbind by merchant actions PUT)", "")
+}
+
 // ---- media access grant ledger (只追加签发审计) ----------------------------------------
 
 // MediaAccessGrant is one issued credential's audit row.

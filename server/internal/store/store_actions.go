@@ -379,6 +379,33 @@ func (s *Store) ReplaceStoreActions(tenantID, storeID string, expectedRevision i
 // ErrUnknownCatalogCode marks a payload catalog_code outside A01-A30.
 var ErrUnknownCatalogCode = errors.New("store: unknown catalog_code")
 
+// RestoreActionBindingRefs is the HUI-4584×HUI-3553 wiring rollback (中央集成
+// 2026-11-10): after ReplaceStoreActions has committed but BindActionContent
+// failed, the transitional content_binding_ref column goes back to the
+// PRE-ROUND value per action. ids missing from refs are reset to '' — a row
+// born in the failed round must not keep a reference that was never validated.
+// Deliberately no revision bump and no snapshot: the replace-level revision
+// already recorded the round; only the transitional read copy is reverted
+// (the authoritative index lives in store_action_content_bindings).
+func (s *Store) RestoreActionBindingRefs(tenantID, storeID string, refs map[string]string) error {
+	rows, err := s.listRows(tenantID, storeID)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		want := strings.TrimSpace(refs[row.ID]) // missing id → ""
+		if want == row.ContentBindingRef {
+			continue
+		}
+		if _, err := s.DB.Exec(
+			`UPDATE store_actions SET content_binding_ref=?, updated_at=? WHERE id=? AND tenant_id=? AND store_id=?`,
+			want, now(), row.ID, tenantID, storeID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func snapshotPayload(items []StoreAction) []map[string]any {
 	out := make([]map[string]any, 0, len(items))
 	for _, item := range items {

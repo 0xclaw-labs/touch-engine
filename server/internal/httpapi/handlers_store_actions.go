@@ -12,12 +12,14 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/bianjiefilm/touch-engine/server/internal/actioncatalog"
 	"github.com/bianjiefilm/touch-engine/server/internal/authz"
+	"github.com/bianjiefilm/touch-engine/server/internal/contentpack"
 	"github.com/bianjiefilm/touch-engine/server/internal/extrajump"
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
 )
@@ -90,10 +92,11 @@ func (s *Server) handleStoreActionsPut(w http.ResponseWriter, r *http.Request) {
 			fail(w, http.StatusBadRequest, "bad_target_ref", "target_ref must be a public https URL")
 			return
 		}
-		// HUI-3553 对接契约：content_binding_ref 只接受 '' 或 pack:<id> 形态
-		// （引用 3553 已采用内容包）。合流后写入侧切换为调用 3553 导出的
-		// BindActionContent（本票此刻同仓不可见，先按契约收口形状，行上仍存
-		// 同值供消费方过渡读取）；未知形态一律拒绝，不做猜测性引用。
+		// HUI-3553 对接契约（中央集成 2026-11-10 已切换）：content_binding_ref
+		// 只接受 '' 或 pack:<id> 形态。写入侧已切 BindActionContent（绑定表是
+		// 服务器权威索引，见 bindActionContentRefs）；行值仍按现契约存
+		// pack:<id>——过渡读取副本，消费方（B05 公共内容读面）读权威绑定表
+		// 取真。未知形态一律拒绝，不做猜测性引用。
 		binding := strings.TrimSpace(raw.ContentBindingRef)
 		if binding != "" && !strings.HasPrefix(binding, "pack:") {
 			fail(w, http.StatusBadRequest, "bad_content_binding_ref", "content_binding_ref must reference an adopted pack as pack:<id>")
@@ -108,6 +111,17 @@ func (s *Server) handleStoreActionsPut(w http.ResponseWriter, r *http.Request) {
 			Label: label, TargetRef: target, ContentBindingRef: binding,
 			SortOrder: raw.Order, Enabled: raw.Enabled,
 		})
+	}
+	// 回滚基准先行（中央集成 2026-11-10）：Bind 失败时行上 content_binding_ref
+	// 要还原为本轮前的值，所以旧列表必须在 Replace 之前读。
+	oldItems, _, err := s.St.ListStoreActions(c.Member.TenantID, rec.ID)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "store actions lookup failed")
+		return
+	}
+	oldRefs := make(map[string]string, len(oldItems))
+	for _, it := range oldItems {
+		oldRefs[it.ID] = it.ContentBindingRef
 	}
 	rev, items, err := s.St.ReplaceStoreActions(c.Member.TenantID, rec.ID, *body.ExpectedRevision, inputs)
 	switch {
@@ -130,7 +144,125 @@ func (s *Server) handleStoreActionsPut(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, "internal", "store actions could not be saved")
 		return
 	}
+	// 写入侧权威绑定（HUI-4584←HUI-3553）：任一绑定失败 = 整个 PUT 400，
+	// 行上的过渡副本先还原为本轮前的值。inputs 与 items 同序同长
+	// （ReplaceStoreActions 按输入序构建），按下标对齐取行修订。
+	if err := s.bindActionContentRefs(c.Member.TenantID, rec.ID, *body.Items, items, oldRefs, c.Member.PrincipalRef); err != nil {
+		var ve *contentpack.ValidationError
+		switch {
+		case errors.As(err, &ve):
+			fail(w, http.StatusBadRequest, ve.Reason, "content binding rejected: "+ve.Reason)
+		case errors.Is(err, store.ErrNotFound):
+			fail(w, http.StatusBadRequest, "bad_content_binding_ref", "content_binding_ref must reference an adopted pack of this store as pack:<id>")
+		default:
+			fail(w, http.StatusInternalServerError, "internal", "content binding failed")
+		}
+		return
+	}
 	writeJSON(w, http.StatusOK, storeActionsDocument(rec, storefrontOf(w, s, c.Member.TenantID, rec.ID), items, rev))
+}
+
+// bindActionContentRefs is the write-side authority switch (中央集成
+// 2026-11-10): every pack:<id> reference resolves the pack's CURRENT adopted
+// version and lands in the authoritative binding index via BindActionContent;
+// an empty ref on a previously-bound action (and the removal of a bound
+// action row) clears the authoritative row via ClearActionContentBinding.
+// All pack validation runs BEFORE any authoritative mutation, so the
+// realistic failure modes never half-apply; a residual Bind failure (e.g. a
+// concurrent adoption race) rolls the transitional row values back to the
+// pre-round refs before returning the error.
+func (s *Server) bindActionContentRefs(tenantID, storeID string, inputs []storeActionIn, saved []store.StoreAction, oldRefs map[string]string, actor string) error {
+	// 回滚：任一失败路径都先把行上过渡副本还原为本轮前的值。
+	rollback := func(err error) error {
+		if rberr := s.St.RestoreActionBindingRefs(tenantID, storeID, oldRefs); rberr != nil {
+			return fmt.Errorf("binding rollback after failure: %v (original: %w)", rberr, err)
+		}
+		return err
+	}
+	// 1) 预检：逐包解析当前采用版本（纯读，先于一切权威变更）。
+	type pendingBind struct {
+		actionID string
+		packID   string
+		version  store.StoreContentPackVersion
+		revision int
+	}
+	pending := make([]pendingBind, 0, len(inputs))
+	for i, raw := range inputs {
+		binding := strings.TrimSpace(raw.ContentBindingRef)
+		if binding == "" {
+			continue
+		}
+		packID := strings.TrimSpace(strings.TrimPrefix(binding, "pack:"))
+		pack, err := s.St.GetStoreContentPack(packID, tenantID)
+		if err != nil {
+			return rollback(fmt.Errorf("pack %s: %w", packID, store.ErrNotFound)) // 未知/跨租户包 → 400 bad_content_binding_ref
+		}
+		if pack.StoreID != storeID {
+			return rollback(fmt.Errorf("pack %s belongs to another store: %w", packID, store.ErrNotFound))
+		}
+		v, err := s.St.GetStoreAdoptedPackVersion(tenantID, packID)
+		if err != nil {
+			// 未采用（或指针不在本包）：与 BindActionContent 同一拒绝语义。
+			return rollback(contentpack.NewValidationError(contentpack.ReasonNotDistributable, "version"))
+		}
+		if i >= len(saved) {
+			return rollback(fmt.Errorf("bind alignment lost: %w", store.ErrUnknownActionID))
+		}
+		pending = append(pending, pendingBind{
+			actionID: saved[i].ID, packID: pack.ID, version: v, revision: saved[i].Revision,
+		})
+	}
+	// 2) 解绑与清理：本轮清空引用的原绑定行；整行被删除的动作其权威索引跟随。
+	for _, id := range sortedKeys(oldRefs) {
+		if _, still := savedByID(saved, id); !still {
+			if err := s.St.ClearActionContentBinding(tenantID, id); err != nil {
+				return rollback(err)
+			}
+		}
+	}
+	for i, raw := range inputs {
+		if strings.TrimSpace(raw.ContentBindingRef) != "" || i >= len(saved) {
+			continue
+		}
+		if old, had := oldRefs[saved[i].ID]; had && old != "" {
+			if err := s.St.ClearActionContentBinding(tenantID, saved[i].ID); err != nil {
+				return rollback(err)
+			}
+		}
+	}
+	// 3) 建绑/重绑：权威索引落地（行修订 = 本轮 Replace 后的行值）。
+	for _, p := range pending {
+		if _, err := s.St.BindActionContent(tenantID, storeID, p.actionID, p.packID, p.version.ID, p.revision, actor, time.Now()); err != nil {
+			return rollback(err)
+		}
+	}
+	return nil
+}
+
+// savedByID reports whether the id survived this round's replace.
+func savedByID(saved []store.StoreAction, id string) (store.StoreAction, bool) {
+	for _, it := range saved {
+		if it.ID == id {
+			return it, true
+		}
+	}
+	return store.StoreAction{}, false
+}
+
+// sortedKeys returns the map keys in stable order (deterministic clears).
+func sortedKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	for i := 0; i < len(out); i++ {
+		for j := i + 1; j < len(out); j++ {
+			if out[j] < out[i] {
+				out[i], out[j] = out[j], out[i]
+			}
+		}
+	}
+	return out
 }
 
 // storeForActions resolves the store within the caller's tenant (404 masking).

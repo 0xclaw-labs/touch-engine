@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bianjiefilm/touch-engine/server/internal/config"
+	"github.com/bianjiefilm/touch-engine/server/internal/contentpack"
 	"github.com/bianjiefilm/touch-engine/server/internal/db"
 	"github.com/bianjiefilm/touch-engine/server/internal/identity"
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
@@ -115,6 +117,37 @@ const twoItemsBody = `{"expected_revision":0,"items":[
 	{"catalog_code":"A08","label":"大众点评","target_ref":"https://www.dianping.com/shop/9","order":1,"enabled":true},
 	{"catalog_code":"A17","label":"门店 Wi-Fi","target_ref":"https://shop.example.com/wifi","order":2,"enabled":true}
 ]}`
+
+// seedAdoptedStorePack 走 store 层链条种一个「已采用」的门店内容包（不走
+// HTTP,不动 upload 假服）：建包 → 登记真实媒体元数据 → 候选版本 → 显式采用。
+func seedAdoptedStorePack(t *testing.T, st *store.Store, tenantID, storeID string) (packID, versionID string) {
+	t.Helper()
+	pack, err := st.CreateStoreContentPack(tenantID, storeID, "", "集成绑定包", "usr_owner_a")
+	mustNoErr(t, err)
+	video, _, err := st.RegisterContentMedia(tenantID, storeID, upload.MediaMeta{
+		SHA256: strings.Repeat("a", 64), MIME: "video/mp4", Kind: upload.KindVideo,
+		ByteSize: 1024, DurationMS: 1234, Width: 64, Height: 64, MediaRef: strings.Repeat("a", 64),
+	}, "bind.mp4", "usr_owner_a")
+	mustNoErr(t, err)
+	cover, _, err := st.RegisterContentMedia(tenantID, storeID, upload.MediaMeta{
+		SHA256: strings.Repeat("b", 64), MIME: "image/jpeg", Kind: upload.KindImage,
+		ByteSize: 1024, Width: 64, Height: 64, MediaRef: strings.Repeat("b", 64),
+	}, "bind.jpg", "usr_owner_a")
+	mustNoErr(t, err)
+	v, err := st.CreateStoreContentPackVersion(tenantID, pack.ID, store.StoreVersionSpec{
+		ContentKind: contentpack.ContentKindVideo, VideoMediaID: video.ID, CoverMediaID: cover.ID,
+		Title: "集成绑定包", Body: "开业五折。", Topics: []string{"开业"},
+		StoreName: "甲一店", PriceNote: "五折", ValidNote: "长期",
+		PlatformVersions: []contentpack.PlatformVersion{{Platform: "douyin", Note: "竖版", SourceVersion: "src-1"}},
+		GrantRefs:        []string{"grant-int-1"},
+		Marking:          contentpack.Marking{AdRequired: true},
+		Source:           contentpack.SourceMerchantUpload,
+	}, contentpack.StatusCandidate, "usr_owner_a")
+	mustNoErr(t, err)
+	_, err = st.AdoptStoreContentPackVersion(tenantID, pack.ID, v.ID, "douyin", "usr_owner_a", time.Now())
+	mustNoErr(t, err)
+	return pack.ID, v.ID
+}
 
 // TestStoreActionsMerchantSurface 覆盖 GET/PUT 的契约、鉴权矩阵、乐观锁、
 // 幂等重放与逐字段拒绝码。
@@ -257,34 +290,62 @@ func TestStoreActionsMerchantSurface(t *testing.T) {
 		t.Fatalf("rejected writes mutated state")
 	}
 
-	// HUI-3553 契约：pack:<id> 形态可保存并原样回读（写入侧合流后切 BindActionContent）。
+	// HUI-3553 契约（中央集成 2026-11-10 写入侧已切 BindActionContent）：
+	// pack:<id> 保存 = 权威绑定落地；不存在的 pack 引用 = 400（不再是纯形状校验）。
+	goodPack, goodVersion := seedAdoptedStorePack(t, af.f.s.St, af.tenA, af.stoA)
 	status, _, bound := f.do(t, "PUT", "/api/v1/stores/"+af.stoA+"/actions", af.sessOwner, af.tenA, `{"expected_revision":2,"items":[
-		{"action_id":"`+ids[0]+`","catalog_code":"A08","label":"大众点评","target_ref":"https://www.dianping.com/shop/changed","content_binding_ref":"pack:cpk_good","order":5,"enabled":true},
+		{"action_id":"`+ids[0]+`","catalog_code":"A08","label":"大众点评","target_ref":"https://www.dianping.com/shop/changed","content_binding_ref":"pack:`+goodPack+`","order":5,"enabled":true},
 		{"action_id":"`+ids[1]+`","catalog_code":"A17","label":"门店 Wi-Fi","target_ref":"https://shop.example.com/wifi","order":2,"enabled":true}
 	]}`)
 	mustEqual(t, status, http.StatusOK)
-	if itemsOf(t, bound)[0]["content_binding_ref"] != "pack:cpk_good" {
+	if itemsOf(t, bound)[0]["content_binding_ref"] != "pack:"+goodPack {
 		t.Fatalf("content_binding_ref not stored/echoed: %v", itemsOf(t, bound)[0])
+	}
+	if b, err := af.f.s.St.GetActionContentBinding(af.tenA, ids[0]); err != nil ||
+		b.PackID != goodPack || b.LastVersionID != goodVersion {
+		t.Fatalf("authoritative binding = (%v, %+v); want pack %s version %s", err, b, goodPack, goodVersion)
+	}
+	status, _, ghost := f.do(t, "PUT", "/api/v1/stores/"+af.stoA+"/actions", af.sessOwner, af.tenA, `{"expected_revision":3,"items":[
+		{"action_id":"`+ids[0]+`","catalog_code":"A08","label":"大众点评","target_ref":"https://www.dianping.com/shop/changed","content_binding_ref":"pack:no_such_pack","order":5,"enabled":true},
+		{"action_id":"`+ids[1]+`","catalog_code":"A17","label":"门店 Wi-Fi","target_ref":"https://shop.example.com/wifi","order":2,"enabled":true}
+	]}`)
+	if status != http.StatusBadRequest || ghost["error"] != "bad_content_binding_ref" {
+		t.Fatalf("ghost pack = %d %v; want 400 bad_content_binding_ref", status, ghost)
+	}
+	if rows, _, err := af.f.s.St.ListStoreActions(af.tenA, af.stoA); err != nil {
+		t.Fatalf("list after ghost round: %v", err)
+	} else {
+		var bound0 string
+		for _, r := range rows {
+			if r.ID == ids[0] {
+				bound0 = r.ContentBindingRef
+			}
+		}
+		if bound0 != "pack:"+goodPack {
+			t.Fatalf("row value not restored after failed round: %q (%+v)", bound0, rows)
+		}
 	}
 
 	// 鉴权矩阵：staff 可写；本店经理可写；他店经理 403；跨租户 404。
-	status, _, staffPut := f.do(t, "PUT", "/api/v1/stores/"+af.stoA+"/actions", af.sessStaff, af.tenA, `{"expected_revision":3,"items":[
+	// （上面幽灵包那轮 Replace 先落一次修订后绑定失败,行值已还原但修订照实
+	// 占位留痕——当前修订=4,这里从 4 起步。）
+	status, _, staffPut := f.do(t, "PUT", "/api/v1/stores/"+af.stoA+"/actions", af.sessStaff, af.tenA, `{"expected_revision":4,"items":[
 		{"action_id":"`+ids[0]+`","catalog_code":"A08","label":"大众点评","target_ref":"https://www.dianping.com/shop/changed","order":5,"enabled":true},
 		{"action_id":"`+ids[1]+`","catalog_code":"A17","label":"门店 Wi-Fi","target_ref":"https://shop.example.com/wifi","order":2,"enabled":true},
 		{"catalog_code":"A13","label":"抖音关注","target_ref":"https://www.douyin.com/user/7","order":3,"enabled":true}
 	]}`)
 	mustEqual(t, status, http.StatusOK)
-	if staffPut["config_revision"] != float64(4) {
+	if staffPut["config_revision"] != float64(5) {
 		t.Fatalf("staff put revision = %v", staffPut["config_revision"])
 	}
 
-	status, _, mgrOwn := f.do(t, "PUT", "/api/v1/stores/"+af.stoA+"/actions", af.sessMgrA, af.tenA, `{"expected_revision":4,"items":[
+	status, _, mgrOwn := f.do(t, "PUT", "/api/v1/stores/"+af.stoA+"/actions", af.sessMgrA, af.tenA, `{"expected_revision":5,"items":[
 		{"action_id":"`+ids[0]+`","catalog_code":"A08","label":"大众点评","target_ref":"https://www.dianping.com/shop/changed","order":5,"enabled":true},
 		{"action_id":"`+ids[1]+`","catalog_code":"A17","label":"门店 Wi-Fi","target_ref":"https://shop.example.com/wifi","order":2,"enabled":true},
 		{"action_id":"`+itemsOf(t, staffPut)[2]["action_id"].(string)+`","catalog_code":"A13","label":"抖音关注","target_ref":"https://www.douyin.com/user/7","order":3,"enabled":false}
 	]}`)
 	mustEqual(t, status, http.StatusOK)
-	if mgrOwn["config_revision"] != float64(5) {
+	if mgrOwn["config_revision"] != float64(6) {
 		t.Fatalf("own-store manager put = %v", mgrOwn["config_revision"])
 	}
 
@@ -318,7 +379,7 @@ func TestStoreActionsMerchantSurface(t *testing.T) {
 	}
 	// 甲一店的配置不受乙店写入影响（店间隔离）。
 	status, _, storeA := f.do(t, "GET", "/api/v1/stores/"+af.stoA+"/actions", af.sessOwner, af.tenA, "")
-	if status != http.StatusOK || len(itemsOf(t, storeA)) != 3 || storeA["config_revision"] != float64(5) {
+	if status != http.StatusOK || len(itemsOf(t, storeA)) != 3 || storeA["config_revision"] != float64(6) {
 		t.Fatalf("store isolation broken: %v", storeA["config_revision"])
 	}
 }
