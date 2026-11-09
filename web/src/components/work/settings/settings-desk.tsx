@@ -165,13 +165,31 @@ export function SettingsDesk() {
       </p>
     );
   }
+  // 修复轮 3(F2①):页面级 access 门控 —— 店员没有任何配置权限时,本页呈现
+  // 明确的受限视图(403 语义),不再渲染任何管理区;撤权后同会话下一请求即受限
+  // (access/effective 每请求实时读取)。
+  const myPerms = access?.permissions ?? [];
+  if (session.role === "staff" && myPerms.length === 0) {
+    return (
+      <>
+        <h1 className="tk-title">成员与权限</h1>
+        <section className="tk-section" data-state="restricted">
+          <p className="tk-state tk-danger" data-field="restricted-403">
+            当前账号没有成员与权限的管理能力（403）。这个页面只对有配置权限的账号开放；
+            如需授权，请联系组织负责人在「店员动作授权」里授予。
+          </p>
+          <MyAccessSection role={session.role} access={access} tenantName={session.tenantName} />
+        </section>
+      </>
+    );
+  }
   return (
     <>
       <h1 className="tk-title">成员与权限</h1>
       <p className="tk-lead">谁进来、能做什么、代理替谁做——每一次授权和撤回都留痕可查。</p>
       {notice && phase === "ready" ? <p className="tk-warn" data-role="notice">{notice}</p> : null}
       <MyAccessSection role={session.role} access={access} tenantName={session.tenantName} />
-      {agent ? <AgentBanner tenantName={session.tenantName} access={access} /> : null}
+      {agent ? <AgentBanner tenantName={session.tenantName} access={access} backHref="/agency" /> : null}
       {owner ? <OwnerSection members={members} /> : null}
       {owner ? <StoreManagerSection members={members} stores={stores} reload={load} setNotice={setNotice} sessionApi={session.api} /> : null}
       {owner ? <StaffActionSection members={members} stores={stores} reload={load} setNotice={setNotice} sessionApi={session.api} /> : null}
@@ -198,13 +216,21 @@ function MyAccessSection({ role, access, tenantName }: { role: string; access: A
       <p data-field="my-scope">
         {storeIds.length === 0 ? "作用范围：全部门店 / 租户级" : `作用范围：仅 ${storeIds.length} 家门店`}
       </p>
+      {perms.includes("storefront:configure") ? (
+        <p data-field="page-config-entry">
+          <a className="tk-button" href="/work/stores" data-action="goto-page-config">前往门店首页配置</a>
+          <span className="tk-note"> 在门店里完成首页/动作的配置；独立首页配置面（1676）落地后此入口指向它。</span>
+        </p>
+      ) : null}
     </section>
   );
 }
 
 // 代理视角:正在为谁工作 + 权限与付款主体(A1 受控进入的可见性纪律)。
 // export:HUI-4593 A1 /agency 控制台复用同一横幅,不另造权限展示。
-export function AgentBanner({ tenantName, access }: { tenantName: string; access: AccessEffective | null }) {
+// backHref(修复轮 3/F1):代理正在为别的租户工作时,显式提供「返回代理台」入口
+// (横幅内自足,不动 2628 共享壳的导航结构)。
+export function AgentBanner({ tenantName, access, backHref }: { tenantName: string; access: AccessEffective | null; backHref?: string }) {
   const actions = (access?.relation?.allowed_actions ?? []).map((a) => ACTION_LABELS[a] ?? a);
   return (
     <section className="tk-section" data-section="agent-banner">
@@ -216,6 +242,11 @@ export function AgentBanner({ tenantName, access }: { tenantName: string; access
           ? "付款主体：已获代付授权（真实扣费仍由平台按付款授权裁决）"
           : "付款主体：无代付授权。收费动作需要商家先授予付款授权。"}
       </p>
+      {backHref ? (
+        <p data-field="banner-back">
+          <a className="tk-quiet" href={backHref} data-action="back-agency">返回代理台</a>
+        </p>
+      ) : null}
     </section>
   );
 }
