@@ -231,6 +231,30 @@ func (s *Server) mintActionMediaRefs(r *http.Request, h publishhandoff.ActionHan
 	return out
 }
 
+// mintAdapterMediaRefs pre-mints platform_fetch refs for the Start payload so
+// adapter Prepare (4585-4588) receives pullable URLs; read 面按计划 kind 重铸。
+func (s *Server) mintAdapterMediaRefs(tenantID, versionID, sessionID string, media []publishhandoff.MediaItem) map[string]string {
+	if versionID == "" {
+		return map[string]string{}
+	}
+	now := time.Now()
+	base := strings.TrimRight(s.Cfg.PublicBaseURL, "/")
+	out := make(map[string]string, len(media))
+	for _, m := range media {
+		claim, cerr := contentpack.NewMediaAccessClaim(versionID, m.AssetID, contentpack.MediaPurposePlatformFetch, sessionID, now, 0)
+		if cerr != nil {
+			continue
+		}
+		token, terr := contentpack.MintMediaAccess(s.Cfg.InternalToken, claim)
+		if terr != nil {
+			continue
+		}
+		_ = s.St.RecordMediaAccessGrant(tenantID, versionID, m.AssetID, contentpack.MediaPurposePlatformFetch, sessionID, claim.ExpiresAt)
+		out[m.AssetID] = base + "/api/v1/public/content/media/" + token
+	}
+	return out
+}
+
 // ---- views -------------------------------------------------------------------
 
 func actionHandoffView(h publishhandoff.ActionHandoff) map[string]any {
@@ -385,11 +409,22 @@ func (s *Server) handlePublicActionHandoffPlan(w http.ResponseWriter, r *http.Re
 	scenario := scenarioForKind(sess.Kind)
 	rec := s.resolveActionCapability(sess.TenantID, sess.CatalogCode, sess.Platform, method, scenario)
 	q := s.actionGateQuery(rec, environment)
+	// gate-first:先裁决(零内容探测),拒绝/未知路线不给任何内容面。
+	plan := publishhandoff.JudgeActionPlan(q, rec, publishhandoff.ActionPlanInput{})
+	if !plan.Allowed {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"action_id": actionID, "method": method, "environment": environment,
+			"plan": actionPlanView(plan),
+		})
+		return
+	}
 	payload, pok := s.actionPlanPayload(w, sess, payloadKind, actionID)
 	if !pok {
 		return
 	}
-	plan := publishhandoff.JudgeActionPlan(q, rec, payload)
+	if payloadKind != "" {
+		plan = publishhandoff.JudgeActionPlan(q, rec, payload)
+	}
 	out := map[string]any{
 		"action_id":   actionID,
 		"method":      method,
@@ -499,6 +534,17 @@ func (s *Server) handlePublicActionHandoffStart(w http.ResponseWriter, r *http.R
 	rec := s.resolveActionCapability(sess.TenantID, sess.CatalogCode, sess.Platform, body.Method, scenario)
 	q := s.actionGateQuery(rec, body.Environment)
 
+	// gate-first(拒绝面零内容探测):StartAction 内部同样先裁决,这里预检只为
+	// 不让未准入路线触发任何内容/目标解析。
+	pre := publishhandoff.JudgeActionPlan(q, rec, publishhandoff.ActionPlanInput{})
+	if !pre.Allowed {
+		s.writeActionHandoffError(w, &publishhandoff.HandoffRefusedError{
+			Reason: pre.Reason, ReasonText: pre.ReasonText, Notice: pre.Notice,
+			Missing: pre.Missing, PendingExternal: pre.PendingExternal,
+		})
+		return
+	}
+
 	in := publishhandoff.ActionStartInput{
 		TenantID: sess.TenantID, StoreID: sess.StoreID,
 		ActionID: sess.ActionID, CatalogCode: sess.CatalogCode, Platform: sess.Platform,
@@ -519,7 +565,11 @@ func (s *Server) handlePublicActionHandoffStart(w http.ResponseWriter, r *http.R
 			return
 		}
 		in.ContentPackVersionID = v.ID
-		in.PlanPayload = publishhandoff.ActionPlanInput{Text: text, Media: media}
+		// adapter Prepare 的拉取引用(platform_fetch);响应/读面按冻结计划 kind 重铸。
+		in.PlanPayload = publishhandoff.ActionPlanInput{
+			Text: text, Media: media,
+			MediaRefs: s.mintAdapterMediaRefs(sess.TenantID, v.ID, sess.ID, media),
+		}
 	case publishhandoff.PayloadKindLinkShare:
 		share, sok := s.resolveShareURL(w, actionID)
 		if !sok {

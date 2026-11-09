@@ -499,6 +499,8 @@ func TestActionHandoffV2CallbackSurface(t *testing.T) {
 
 type v2CallbackStub struct {
 	platform string
+	submitOK bool
+	query    *publishhandoff.QueryOutcome
 	receipt  publishhandoff.Receipt
 }
 
@@ -507,11 +509,51 @@ func (a *v2CallbackStub) Prepare(_ context.Context, _ publishhandoff.PrepareRequ
 	return publishhandoff.PrepareResult{ClientAction: publishhandoff.ClientAction{Type: publishhandoff.ClientActionOpenURL}}, nil
 }
 func (a *v2CallbackStub) Submit(_ context.Context, _ publishhandoff.Handoff, _ publishhandoff.PrepareResult) error {
-	return publishhandoff.ErrUnsupported
+	if !a.submitOK {
+		return publishhandoff.ErrUnsupported
+	}
+	return nil
 }
 func (a *v2CallbackStub) Query(_ context.Context, _ publishhandoff.Handoff) (publishhandoff.QueryOutcome, error) {
-	return publishhandoff.QueryOutcome{}, publishhandoff.ErrUnsupported
+	if a.query == nil {
+		return publishhandoff.QueryOutcome{}, publishhandoff.ErrUnsupported
+	}
+	return *a.query, nil
 }
 func (a *v2CallbackStub) VerifyCallback(_ context.Context, _ publishhandoff.CallbackPayload) (publishhandoff.Receipt, error) {
 	return a.receipt, nil
+}
+
+// submit/query HTTP 面:adapter 驱动;未注册/unsupported = 422 诚实缺位(状态不推进)。
+func TestActionHandoffV2SubmitQuerySurface(t *testing.T) {
+	f := newHandoffV2Fixture(t, true)
+	startBody := `{"action_session_id":"` + f.sidA + `","action_revision":7,"payload_kind":"link_share",
+		"method":"link_share","environment":"ios_safari","confirmation":"https://dianping.example.com/store/123",
+		"idempotency_key":"idem-v2-submit"}`
+	status, _, body := f.do(t, "POST", "/api/v1/public/actions/"+f.actA27+"/handoffs", f.cookie, strings.ReplaceAll(startBody, "\n", ""))
+	if status != http.StatusCreated {
+		t.Fatalf("start = %d (%v)", status, body)
+	}
+	hid := body["handoff"].(map[string]any)["handoff_id"].(string)
+	// 未注册 adapter:submit 422,状态不推进。
+	if status, _, body := f.do(t, "POST", "/api/v1/public/handoffs/"+hid+"/submit", f.cookie, ""); status != http.StatusUnprocessableEntity || body["error"] != "unsupported_by_adapter" {
+		t.Fatalf("submit without adapter = %d (%v)", status, body)
+	}
+	// query 未注册:422。
+	if status, _, _ := f.do(t, "POST", "/api/v1/public/handoffs/"+hid+"/query", f.cookie, ""); status != http.StatusUnprocessableEntity {
+		t.Fatal("query without adapter must 422")
+	}
+	// 注册可投稿 stub:submit → submitting;query(unsupported)→ 422。
+	f.s.PublishHandoff.SetAdapter(&v2CallbackStub{platform: "qq", submitOK: true})
+	if status, _, body := f.do(t, "POST", "/api/v1/public/handoffs/"+hid+"/submit", f.cookie, ""); status != http.StatusOK || body["handoff"].(map[string]any)["status"] != "submitting" {
+		t.Fatalf("submit = %d (%v)", status, body)
+	}
+	if status, _, _ := f.do(t, "POST", "/api/v1/public/handoffs/"+hid+"/query", f.cookie, ""); status != http.StatusUnprocessableEntity {
+		t.Fatal("query unsupported must 422")
+	}
+	// query 可用:计数 + 照录(不确认)。
+	f.s.PublishHandoff.SetAdapter(&v2CallbackStub{platform: "qq", query: &publishhandoff.QueryOutcome{State: "processing"}})
+	if status, _, body := f.do(t, "POST", "/api/v1/public/handoffs/"+hid+"/query", f.cookie, ""); status != http.StatusOK || body["handoff"].(map[string]any)["query_count"] != float64(1) {
+		t.Fatalf("query = %d (%v)", status, body)
+	}
 }
