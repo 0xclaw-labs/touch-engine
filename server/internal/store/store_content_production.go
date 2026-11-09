@@ -174,6 +174,14 @@ func (s *Store) CreateProductionHandoff(tenantID string, in ProductionHandoffInp
 	}
 	bindingRef := contentpack.NormalizeText(in.ContentBindingRef)
 	if cur, err := s.productionHandoffByIdempotencyKey(tenantID, key); err == nil {
+		// 同幂等键不同负载拒绝(SHARED-BRIEF 幂等语义):重放必须携带与首次
+		// 完全一致的负载(store/pack/binding/quote/note),否则是键冲突。
+		same := cur.StoreID == pack.StoreID && cur.PackID == pack.ID &&
+			cur.ContentBindingRef == bindingRef && cur.QuoteRef == quoteRef &&
+			cur.Note == contentpack.NormalizeText(in.Note)
+		if !same {
+			return ProductionHandoff{}, false, ErrIdempotencyConflict
+		}
 		return cur, true, nil
 	} else if !errors.Is(err, ErrNotFound) {
 		return ProductionHandoff{}, false, err

@@ -46,6 +46,12 @@ type Quote struct {
 
 // QuoteAuthority verifies that a merchant-declared quote_ref is actually
 // confirmed by the billing authority (服务器核实付款授权,票面).
+//
+// HUI-4591 合流切换点:4591 已把裁决 exported 到库层
+// (billing.AdjudicateQuoteRef 五拒绝码 + Store.QuoteProjectionFor/
+// ConsumeQuoteProjection;quote.go 头注释即契约)。账单投影已入本仓时,
+// httpapi 调用侧改走库层裁决;本接口保留为账单权威仍在生态侧的远程形态。
+// 调用侧不自建价格裁决逻辑(形状+归属+已确认语义之外零裁决)。
 type QuoteAuthority interface {
 	Ready() bool
 	ConfirmedQuote(ctx context.Context, quoteRef string) (Quote, error)

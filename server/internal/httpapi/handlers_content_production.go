@@ -267,8 +267,29 @@ func (s *Server) handleStoreContentProductionHandoffCreate(w http.ResponseWriter
 		return
 	}
 
-	// quote seam:配置齐全才核验;核验不过不落行(fail-closed);未配置=申报值
-	// 落库并如实标注(费用状态以账单为准,4591 接线后收敛)。
+	// quote seam(窄接口:校验形状+归属+已确认语义;调用侧不自建价格裁决
+	// 逻辑)。配置齐全才核验;核验不过不落行(fail-closed);未配置=申报值
+	// 落库并如实标注(费用状态以账单为准)。
+	//
+	// ── HUI-4591 合流切换点(集成轮执行;本分支不 import billing,注释即契约)──
+	// 4591 已 exported 库层裁决(billing/quote.go):把上面整个 `if s.ProductionQuotes.Ready()`
+	// 块替换为
+	//   row, err := s.St.QuoteProjectionFor(tenantID, quoteRef)   // nil = 未找到(同形掩蔽)
+	//   verdict := billing.AdjudicateQuoteRef(row, billing.QuoteRefQuery{
+	//       TenantID: tenantID,            // 服务端解析的租户,绝不信请求体
+	//       QuoteRef: quoteRef,
+	//       Capability: "content_production",
+	//       RequireUnconsumed: true,       // 发起制作必须未消费
+	//   })
+	// 五拒绝码→HTTP 映射(本实现的 quote_not_confirmed 已同码,其余三条补齐):
+	//   quote_not_found/quote_cross_tenant → 404 not_found(同形掩蔽,不泄漏存在性)
+	//   quote_not_confirmed                → 422 quote_not_confirmed(现实现)
+	//   quote_already_consumed             → 409 quote_already_consumed
+	//   quote_capability_mismatch          → 422 quote_capability_mismatch
+	// verdict.Allowed → ConsumeQuoteProjection(tenantID, quoteRef, h.ID, now)
+	// 建议在建行成功后消费(消费引用=handoff id);quoteVerified=verdict.Allowed。
+	// production.BillingQuoteAuthority(平台统一账单 HTTP 形)保留为 seam 的
+	// 远程形态:账单权威仍在生态侧时用,已投影到本仓时用上面的库层裁决。
 	quoteVerified := false
 	notes := make([]string, 0, 3)
 	if s.ProductionQuotes.Ready() {
@@ -291,7 +312,7 @@ func (s *Server) handleStoreContentProductionHandoffCreate(w http.ResponseWriter
 		notes = append(notes, "账单权威未接入:报价引用按申报记录,quote_verified=false,费用状态以账单为准。")
 	}
 
-	h, _, err := s.St.CreateProductionHandoff(tenantID, store.ProductionHandoffInput{
+	h, replayed, err := s.St.CreateProductionHandoff(tenantID, store.ProductionHandoffInput{
 		StoreID:           storeID,
 		PackID:            packID,
 		ContentBindingRef: bindingRef,
@@ -301,7 +322,20 @@ func (s *Server) handleStoreContentProductionHandoffCreate(w http.ResponseWriter
 		IdempotencyKey:    key,
 	}, c.Member.PrincipalRef)
 	if err != nil {
+		if errors.Is(err, store.ErrIdempotencyConflict) {
+			fail(w, http.StatusConflict, "idempotency_conflict", "same idempotency_key was used with a different payload; retry must reuse the exact original request")
+			return
+		}
 		packStoreFail(w, err)
+		return
+	}
+	if replayed {
+		// 显式重放口径(先查未命中、落行时竞态命中同一键)。
+		writeJSON(w, http.StatusOK, map[string]any{
+			"handoff":  productionHandoffView(h),
+			"replayed": true,
+			"notes":    []string{"同一幂等键重放:返回既有发起,不新建制作工程、不重复报价。"},
+		})
 		return
 	}
 
@@ -497,8 +531,8 @@ func parseProductionResultForm(w http.ResponseWriter, r *http.Request) (*multipa
 		fail(w, http.StatusUnprocessableEntity, "bad_source_app", "source_app must be a stable service identifier")
 		return nil, productionResultDeclaration{}, false
 	}
-	if d.EventID == "" || len(d.EventID) > 64 {
-		fail(w, http.StatusUnprocessableEntity, "bad_event_id", "event_id is required (<=64 chars) and pairs with source_app for idempotency")
+	if d.EventID == "" || len(d.EventID) > 56 {
+		fail(w, http.StatusUnprocessableEntity, "bad_event_id", "event_id is required (<=56 chars) and pairs with source_app for idempotency")
 		return nil, productionResultDeclaration{}, false
 	}
 	if d.TaskRef == "" || len(d.TaskRef) > 128 {
@@ -655,18 +689,20 @@ func (s *Server) handleContentProductionResultReturn(w http.ResponseWriter, r *h
 			return
 		}
 		spec := store.StoreVersionSpec{
-			ContentKind:    contentpack.ContentKindVideo,
-			VideoMediaID:   video.ID,
-			CoverMediaID:   cover.ID,
-			Title:          d.Title,
-			Body:           d.Body,
-			Topics:         d.Topics,
-			StoreName:      d.StoreName,
-			PriceNote:      d.PriceNote,
-			ValidNote:      d.ValidNote,
-			Marking:        contentpack.Marking{AdRequired: d.AdRequired, IncentiveDisclosed: d.AdRequired, AIGenerated: d.AIGenerated},
-			Source:         contentpack.SourceProductPhotoReturn,
-			IdempotencyKey: d.SourceApp + ":" + d.EventID,
+			ContentKind:  contentpack.ContentKindVideo,
+			VideoMediaID: video.ID,
+			CoverMediaID: cover.ID,
+			Title:        d.Title,
+			Body:         d.Body,
+			Topics:       d.Topics,
+			StoreName:    d.StoreName,
+			PriceNote:    d.PriceNote,
+			ValidNote:    d.ValidNote,
+			Marking:      contentpack.Marking{AdRequired: d.AdRequired, IncentiveDisclosed: d.AdRequired, AIGenerated: d.AIGenerated},
+			Source:       contentpack.SourceProductPhotoReturn,
+			// 命名空间前缀:回流候选键绝不与商家手输幂等键共享命名空间
+			//(cpr:prod-svc:evt-1;4+63+1+56 <= MaxIdempotencyKey)。
+			IdempotencyKey: "cpr:" + d.SourceApp + ":" + d.EventID,
 		}
 		v, candidateReplayed, err := s.St.AddStoreReturnCandidate(h.TenantID, h.PackID, spec, actor)
 		if err != nil {

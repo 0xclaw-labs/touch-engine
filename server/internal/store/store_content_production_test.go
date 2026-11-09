@@ -90,12 +90,17 @@ func TestCreateProductionHandoffIdempotentAndEmptyPackLegal(t *testing.T) {
 		t.Fatalf("replay returned different handoff %s != %s", h2.ID, h.ID)
 	}
 
-	// 同键不同负载:仍返回既有行(幂等键是唯一去重口径),绝不产生第二行。
+	// 同键不同负载:拒绝(SHARED-BRIEF 幂等语义:同键异负载=IDEMPOTENCY_CONFLICT),
+	// 绝不产生第二行。
 	alt := productionInput(stA, pack.ID)
 	alt.Note = "别的要求"
-	h3, replayed3, err := s.CreateProductionHandoff(tenA, alt, "usr_owner_a")
-	if err != nil || !replayed3 || h3.ID != h.ID {
-		t.Fatalf("alt replay: replayed=%v err=%v id=%s", replayed3, err, h3.ID)
+	if _, _, err := s.CreateProductionHandoff(tenA, alt, "usr_owner_a"); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("alt payload: want ErrIdempotencyConflict, got %v", err)
+	}
+	altPack := productionInput(stA, pack.ID)
+	altPack.QuoteRef = "quote_OTHER"
+	if _, _, err := s.CreateProductionHandoff(tenA, altPack, "usr_owner_a"); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("alt quote: want ErrIdempotencyConflict, got %v", err)
 	}
 	list, err := s.ListProductionHandoffs(tenA, stA)
 	if err != nil {
