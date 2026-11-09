@@ -744,7 +744,8 @@ const (
 // RewardReserveInput is a trusted participation-service call: the user
 // explicitly started participating and the campaign promised this slot at
 // this rule version. TTLSeconds is mandatory and shown to the user before
-// the operation.
+// the operation. Expiry (HUI-1671) is the six-deadline promise context the
+// caller assembled; new promises are judged, in-flight reservations are not.
 type RewardReserveInput struct {
 	TenantID        string
 	CampaignID      string
@@ -755,7 +756,13 @@ type RewardReserveInput struct {
 	Actor           string
 	TTLSeconds      int
 	Note            string
+	Expiry          *rewardops.GrantDeadlines
 }
+
+// ErrPromiseBlocked marks a NEW commitment refused by one of the six
+// independent deadlines. The wrapped text carries the machine reasons so the
+// HTTP layer can surface the exact cause (e.g. subscription_expired).
+var ErrPromiseBlocked = errors.New("store: promise blocked by expiry")
 
 func addSeconds(ts string, sec int) (string, error) {
 	t, err := time.Parse(time.RFC3339Nano, ts)
@@ -818,6 +825,13 @@ func (s *Store) ReserveRewardBenefit(in RewardReserveInput, nowTS string) (Rewar
 	until, err := addSeconds(nowTS, in.TTLSeconds)
 	if err != nil {
 		return ben, RewardOutcome{}, err
+	}
+	// HUI-1671 六到期 promise gate: 新承诺(首次预留/过期后重预留)按六期限
+	// 判定;进行中预留、活跃事实回读不是新承诺,不受影响。
+	if existing == nil || existing.Status == RewardStatusExpired {
+		if err := expiryPromiseGate(in.Expiry, inv, nowTS); err != nil {
+			return ben, RewardOutcome{}, err
+		}
 	}
 	switch {
 	case existing == nil:
@@ -1010,6 +1024,13 @@ func (s *Store) ConfirmRewardBenefit(in RewardConfirmInput) (RewardBenefit, Rewa
 	}
 	if existing != nil && existing.CampaignID != in.CampaignID {
 		return *existing, RewardOutcome{}, fmt.Errorf("%w: slot_belongs_to_other_campaign", ErrRewardConflict)
+	}
+	// HUI-1671 六到期 promise gate: 首次发放/过期重发是新承诺;已发事实的
+	// 回读(already_issued/redeemed)与进行中预留不受影响。
+	if existing == nil || existing.Status == RewardStatusExpired {
+		if err := expiryPromiseGate(in.Expiry, inv, in.Now); err != nil {
+			return ben, RewardOutcome{}, err
+		}
 	}
 	if existing != nil {
 		switch existing.Status {

@@ -209,6 +209,27 @@ func (s *Store) redeemGuardInTx(tx *sql.Tx, tenantID string, ben RewardBenefit, 
 	return nil
 }
 
+// expiryPromiseGate refuses NEW commitments (first reserve, re-reserve after
+// a lapse, first confirm, re-confirm after a lapse) whose six-deadline
+// context has lapsed. In-flight reservations and read-backs of live facts
+// are not new promises: they pass untouched (进行中预留不受影响).
+// Pure function: the deadlines arrive with the input; an unset benefit
+// deadline falls back to the picked batch's validity window.
+func expiryPromiseGate(dl *rewardops.GrantDeadlines, inv RewardInventory, nowTS string) error {
+	d := rewardops.GrantDeadlines{}
+	if dl != nil {
+		d = *dl
+	}
+	if strings.TrimSpace(d.BenefitUntil) == "" {
+		d.BenefitUntil = inv.ValidUntil
+	}
+	v := rewardops.AdjudicateExpiry(rewardops.ExpiryOpPromise, d, nowTS)
+	if v.Allowed {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", ErrPromiseBlocked, strings.Join(v.Reasons, ","))
+}
+
 // ---- 顾客展示码(短时,可重签) --------------------------------------------------
 
 const displayCodeTTL = 10 * time.Minute
@@ -242,17 +263,20 @@ func hashDisplayToken(token string) string {
 }
 
 // MintRewardDisplayCode re-signs a short-lived staff_verify display code for
-// an issued benefit the visitor owns. Old codes are not invalidated (each has
-// its own TTL; an expired code is refused at lookup) — 重签是补发,不是改账。
-func (s *Store) MintRewardDisplayCode(tenantID, benefitID, visitorID, nowTS string) (RewardDisplayCode, error) {
+// an issued benefit the visitor owns. The tenant comes from the benefit row
+// itself: the visitor key is the only credential on this path, ownership is
+// proven through the participation, and foreign/unknown requests are masked
+// as not found. Old codes are not invalidated (each has its own TTL; an
+// expired code is refused at lookup) — 重签是补发,不是改账。
+func (s *Store) MintRewardDisplayCode(benefitID, visitorID, nowTS string) (RewardDisplayCode, error) {
 	out := RewardDisplayCode{}
-	if strings.TrimSpace(tenantID) == "" || strings.TrimSpace(benefitID) == "" || strings.TrimSpace(visitorID) == "" {
+	if strings.TrimSpace(benefitID) == "" || strings.TrimSpace(visitorID) == "" {
 		return out, fmt.Errorf("%w: missing fields", ErrRewardInvalid)
 	}
 	if _, err := time.Parse(time.RFC3339Nano, nowTS); err != nil {
 		return out, fmt.Errorf("%w: bad now", ErrRewardInvalid)
 	}
-	row := s.DB.QueryRow(`SELECT `+rewardBenefitCols+` FROM reward_benefits WHERE id=? AND tenant_id=?`, benefitID, tenantID)
+	row := s.DB.QueryRow(`SELECT `+rewardBenefitCols+` FROM reward_benefits WHERE id=?`, benefitID)
 	ben, err := scanRewardBenefit(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return out, ErrNotFound
@@ -260,6 +284,7 @@ func (s *Store) MintRewardDisplayCode(tenantID, benefitID, visitorID, nowTS stri
 	if err != nil {
 		return out, err
 	}
+	tenantID := ben.TenantID
 	owner, err := s.rewardVisitorForBenefit(tenantID, ben.ParticipationID)
 	if err != nil {
 		return out, ErrNotFound // no participation = no ownership proof

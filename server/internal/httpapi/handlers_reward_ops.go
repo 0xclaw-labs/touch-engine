@@ -62,7 +62,15 @@ func (s *Server) registerRewardOpsRoutes(mux *http.ServeMux) {
 	// Guest-reachable summary, FEATURE_REWARD_OPS gated (default off).
 	if s.Cfg.FeatureRewardOps {
 		mux.Handle("GET /api/v1/public/links/{code}/reward-summary", http.HandlerFunc(s.handlePublicRewardSummary))
+		// HUI-1671 旧券保护(同样 FEATURE 门): 顾客本人访客会话查询有效券、
+		// 重签短时展示码。查询路径不经过 resolveAvailableLink/新参与 Gate。
+		mux.Handle("GET /api/v1/visitor/reward-benefits", http.HandlerFunc(s.handleVisitorRewardBenefits))
+		mux.Handle("POST /api/v1/visitor/reward-benefits/{id}/display-code", http.HandlerFunc(s.handleVisitorDisplayCode))
 	}
+	// 店员侧码定位(3562 消费;session + 门店 read 权限,不加 FEATURE)。
+	mux.Handle("POST /api/v1/reward-display-codes/lookup", s.requireSession(s.handleRewardDisplayCodeLookup))
+	// 外部券发放登记列表(管理面只读,含 pending_unknown 待确认,无券引用外泄面)。
+	mux.Handle("GET /api/v1/campaigns/{id}/reward-external-issuances", s.requireSession(s.handleRewardExternalIssuances))
 }
 
 // rewardError maps ledger refusals onto honest HTTP answers. Conflict (a
@@ -78,12 +86,37 @@ func rewardError(w http.ResponseWriter, err error) {
 		fail(w, http.StatusUnprocessableEntity, "out_of_stock", "奖励库存已用完，停止新的承诺。")
 	case errors.Is(err, store.ErrRewardUnavailable):
 		fail(w, http.StatusUnprocessableEntity, "batch_unavailable", "该批次已暂停或不在有效期，停止新的承诺。")
+	case errors.Is(err, store.ErrPromiseBlocked):
+		fail(w, http.StatusUnprocessableEntity, rewardReason(err), promiseBlockedText(err))
+	case errors.Is(err, store.ErrRewardExpired):
+		fail(w, http.StatusUnprocessableEntity, "benefit_expired", "券本身已过有效期，不能再核销；查询仍可。")
+	case errors.Is(err, store.ErrExternalRedeemForbidden):
+		fail(w, http.StatusUnprocessableEntity, "external_redeem_local_forbidden", "外部平台券不能由本地账核销，只能等待授权适配器返回的事实。")
+	case errors.Is(err, store.ErrExternalAuthorizationRequired):
+		fail(w, http.StatusUnprocessableEntity, "external_authorization_required", "没有外部平台授权，不能生成任何平台券事实。")
 	case errors.Is(err, store.ErrRewardConflict):
 		fail(w, http.StatusConflict, rewardReason(err), rewardConflictText(err))
 	case errors.Is(err, store.ErrRewardInvalid):
 		fail(w, http.StatusUnprocessableEntity, rewardReason(err), "奖励请求没有被接受。")
 	default:
 		fail(w, http.StatusInternalServerError, "internal", "reward ledger write failed")
+	}
+}
+
+func promiseBlockedText(err error) string {
+	switch rewardReason(err) {
+	case "subscription_expired":
+		return "订阅已到期，停止新的奖励承诺；已发未过期权益仍可查询和核销。"
+	case "campaign_ended":
+		return "活动已结束，停止新的奖励承诺；已发未过期权益仍可查询和核销。"
+	case "channel_closed":
+		return "渠道已关闭，停止新的奖励承诺。"
+	case "participation_closed":
+		return "参与窗口已关闭，停止新的奖励承诺。"
+	case "benefit_expired":
+		return "券本身已过有效期，不能承诺。"
+	default:
+		return "奖励承诺没有被接受。"
 	}
 }
 
@@ -95,6 +128,11 @@ func rewardReason(err error) string {
 		"slot_belongs_to_other_campaign", "official_fact_consumed", "fabricated_official_receipt",
 		"official_evidence_required", "evidence_not_allowed", "unknown_evidence",
 		"missing_field", "campaign_mismatch", "slot_unknown", "rule_version_mismatch", "store_mismatch",
+		// HUI-1671: 六种到期独立原因 + 动作资格 + 外部券边界码
+		"reward_not_eligible",
+		"subscription_expired", "campaign_ended", "channel_closed", "participation_closed",
+		"reservation_ttl_elapsed", "benefit_expired",
+		"external_redeem_local_forbidden", "external_authorization_required",
 	} {
 		if strings.Contains(msg, reason) {
 			return reason
@@ -291,6 +329,32 @@ type rewardConfirmBody struct {
 	Note          string `json:"note"`
 	FulfillNow    bool   `json:"fulfill_now"`
 	RedeemEventID string `json:"redeem_event_id"`
+	// HUI-1671: 调用方对绑定动作的声明(创建侧已校验;批次存量绑定优先)。
+	ActionKind     string `json:"action_kind"`
+	ActionEligible string `json:"action_eligible"`
+}
+
+// subscriptionExpiredMarker is the guaranteed-past deadline representing an
+// already-lapsed subscription (Cfg.SubscriptionStatus == "expired").
+const subscriptionExpiredMarker = "1970-01-01T00:00:00Z"
+
+// subscriptionStatusExpired mirrors the Touch package fact value.
+const subscriptionStatusExpired = "expired"
+
+// rewardPromiseDeadlines assembles the six-deadline promise context from what
+// the server knows: subscription fact, campaign window, participation window
+// (when the participation domain is live), and any caller-known channel
+// state. Channel stays unchecked here: no live channel source exists in this
+// deployment, and an unknown state must not invent a refusal.
+func (s *Server) rewardPromiseDeadlines(camp store.Campaign, participationUntil string) *rewardops.GrantDeadlines {
+	dl := rewardops.GrantDeadlines{
+		CampaignUntil:      camp.EndsAt,
+		ParticipationUntil: participationUntil,
+	}
+	if s.Cfg.SubscriptionStatus == subscriptionStatusExpired {
+		dl.SubscriptionUntil = subscriptionExpiredMarker
+	}
+	return &dl
 }
 
 func (s *Server) handleRewardConfirm(w http.ResponseWriter, r *http.Request) {
@@ -315,6 +379,8 @@ func (s *Server) handleRewardConfirm(w http.ResponseWriter, r *http.Request) {
 	// 确认必须绑定本租户「真实存在」的参与(店员作用域内),且确认门店与
 	// 参与门店一致——编造参与引用/跨店确认在此拒绝,不进账本。off 部署
 	// (参与域未上线的存量商家)保持 1671 原语义,零行为变化。
+	// HUI-1671: 参与窗口同时是六种到期 promise 上下文之一。
+	participationUntil := ""
 	if s.Cfg.FeatureParticipation && s.Participation != nil {
 		p, err := s.Participation.GetForStaff(r.Context(), body.ParticipationID, participation.StaffView{
 			TenantID: camp.TenantID, Role: string(c.Member.Role), StoreScope: c.Member.StoreScope,
@@ -324,6 +390,7 @@ func (s *Server) handleRewardConfirm(w http.ResponseWriter, r *http.Request) {
 			writeParticipationError(w, err)
 			return
 		}
+		participationUntil = p.Window.ExpiresAt
 		if p.Window.Expired(time.Now().UTC()) {
 			// 过期参与:窗口已关闭,不再发新承诺(读取仍允许顾客查看)。
 			writeParticipationError(w, participation.ErrFrozen)
@@ -344,7 +411,10 @@ func (s *Server) handleRewardConfirm(w http.ResponseWriter, r *http.Request) {
 		},
 		Actor: c.Member.PrincipalRef, StoreID: body.StoreID, Note: body.Note,
 		FulfillNow: body.FulfillNow, RedeemEventID: body.RedeemEventID,
-		Now: nowRFC3339(),
+		Now:           nowRFC3339(),
+		ActionKind:    body.ActionKind,
+		ActionEligible: body.ActionEligible,
+		Expiry:        s.rewardPromiseDeadlines(camp, participationUntil),
 	})
 	if err != nil {
 		rewardError(w, err)
@@ -482,17 +552,23 @@ type rewardReserveBody struct {
 // handleRewardReserve is the trusted participation-service entry (internal
 // token only). The participation reference is opaque: this ticket never calls
 // back into G2 (no G2→G3→G2 wait cycle), and pure browsing reaches nothing
-// here.
+// here. HUI-1671: the promise context (subscription + campaign) rides along;
+// 进行中预留的 TTL 续期不是新承诺,不受六到期 gate 影响(账本内判定)。
 func (s *Server) handleRewardReserve(w http.ResponseWriter, r *http.Request) {
 	var body rewardReserveBody
 	if !readRewardBody(w, r, &body) {
 		return
+	}
+	var dl *rewardops.GrantDeadlines
+	if camp, err := s.St.GetCampaign(body.CampaignID, body.TenantID); err == nil {
+		dl = s.rewardPromiseDeadlines(camp, "")
 	}
 	ben, outcome, err := s.St.ReserveRewardBenefit(store.RewardReserveInput{
 		TenantID: body.TenantID, CampaignID: body.CampaignID,
 		ParticipationID: body.ParticipationID, Slot: body.BenefitSlot,
 		RuleVersion: body.RuleVersion, EventID: body.EventID,
 		Actor: body.Actor, TTLSeconds: body.TTLSeconds,
+		Expiry: dl,
 	}, nowRFC3339())
 	if err != nil {
 		rewardError(w, err)
@@ -505,4 +581,22 @@ func (s *Server) handleRewardReserve(w http.ResponseWriter, r *http.Request) {
 
 func nowRFC3339() string {
 	return time.Now().UTC().Format(time.RFC3339Nano)
+}
+
+// handleRewardExternalIssuances (HUI-1671) lists the campaign's external
+// issuance records with their honest states: issued / pending_unknown
+// (待确认) / failed. Coupon refs are sensitive: the admin surface shows them
+// only to authenticated roles and they never enter logs or public payloads.
+func (s *Server) handleRewardExternalIssuances(w http.ResponseWriter, r *http.Request) {
+	c := callerFrom(r)
+	camp, ok := s.campaignScoped(c, r.PathValue("id"), authz.ActionReadList, w)
+	if !ok {
+		return
+	}
+	items, err := s.St.ListExternalIssuances(camp.TenantID, camp.ID)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "external issuances lookup failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
