@@ -437,8 +437,8 @@ func TestSeedHashParity(t *testing.T) {
 		}
 	}
 	created, updated, err := s.UpsertActionCapability(target, ControlAudit{Actor: "ops", Reason: "复核", Action: "update"})
-	if err != nil || created {
-		t.Fatalf("unchanged seed rewrite: created=%v err=%v, want false", created, err)
+	if err != nil || created || updated {
+		t.Fatalf("unchanged seed rewrite: created=%v updated=%v err=%v, want false/false", created, updated, err)
 	}
 	if n := countAudit(t, s, "A01"); n != 0 {
 		t.Fatalf("audit after unchanged rewrite = %d, want 0", n)
