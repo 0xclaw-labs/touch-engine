@@ -31,7 +31,9 @@ CREATE TABLE IF NOT EXISTS action_sessions (
     visitor_id                TEXT NOT NULL,
     participation_id          TEXT NOT NULL DEFAULT '',
     status                    TEXT NOT NULL CHECK (status IN ('active', 'ended')),
-    idempotency_key           TEXT NOT NULL DEFAULT '',
+    -- 幂等键可空(NULL = 无键创建):SQLite UNIQUE 下多个 NULL 互不冲突,
+    -- 同键重复才被拒;空串会令不同访客的无键创建互相碰撞,故不用 '' 哨兵。
+    idempotency_key           TEXT,
     created_at                TEXT NOT NULL,
     updated_at                TEXT NOT NULL,
     UNIQUE (tenant_id, action_id, idempotency_key)

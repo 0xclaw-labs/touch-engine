@@ -21,6 +21,13 @@ import (
 // DefaultHandoffTTL is the default credential lifetime (短时).
 const DefaultHandoffTTL = 10 * time.Minute
 
+// DefaultResumeTTL is the default session resume-credential lifetime. The
+// ruling caps it hard at MaxResumeTTL: short-lived by construction.
+const (
+	DefaultResumeTTL = 10 * time.Minute
+	MaxResumeTTL     = 15 * time.Minute
+)
+
 // reserveTimeout bounds the outbound Reserve call.
 const reserveTimeout = 3 * time.Second
 
@@ -31,6 +38,7 @@ const credentialGrace = 24 * time.Hour
 // Options configures the service. Now is injectable for tests.
 type Options struct {
 	HandoffTTL time.Duration
+	ResumeTTL  time.Duration // session resume credentials; clamped to MaxResumeTTL
 	Now        func() time.Time
 }
 
@@ -38,15 +46,23 @@ type Options struct {
 type Service struct {
 	db       *sql.DB
 	reserver BenefitReserver
+	dir      ActionDirectory // published-action catalog port (nil until wired)
 	opts     Options
 }
 
 // New builds a Service over an opened database. A nil reserver is legal:
 // participations still start and stay pending — production wiring lands with
-// HUI-1671.
+// HUI-1671. A nil action directory keeps the session surface fail-closed —
+// production wiring lands with HUI-4584.
 func New(database *sql.DB, res BenefitReserver, opts Options) *Service {
 	if opts.HandoffTTL <= 0 {
 		opts.HandoffTTL = DefaultHandoffTTL
+	}
+	if opts.ResumeTTL <= 0 {
+		opts.ResumeTTL = DefaultResumeTTL
+	}
+	if opts.ResumeTTL > MaxResumeTTL {
+		opts.ResumeTTL = MaxResumeTTL // 裁定书硬上限:恢复凭据 ≤ 15 分钟
 	}
 	if opts.Now == nil {
 		opts.Now = func() time.Time { return time.Now().UTC() }
