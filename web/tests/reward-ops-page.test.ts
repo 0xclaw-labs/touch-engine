@@ -61,3 +61,28 @@ describe("/work/rewards 真实管理页", () => {
     expect(page).toContain("imported_code");
   });
 });
+
+describe("/work/rewards 门店券库存/有效期页签(HUI-1671)", () => {
+  it("页签化:门店券库存为主页签,外部团购是诚实占位 tab", () => {
+    expect(page).toContain('data-action="tab-store"');
+    expect(page).toContain('data-action="tab-external"');
+    // 外部团购配置归 HUI-4590:占位必须诚实说明,不假装可用。
+    expect(page).toContain("HUI-4590");
+    expect(page).toContain("不代发也不本地核销");
+    // 页签复用,不新建路由(28 视图按页签/抽屉复用纪律)。
+    expect(page).not.toMatch(/href="\/work\/rewards\//);
+  });
+
+  it("门店券库存页签保留批次/有效期管理与权益记录", () => {
+    expect(page).toContain("门店券库存");
+    expect(page).toContain("有效期至");
+    expect(page).toContain('aria-label="奖励批次"');
+    expect(page).toContain('aria-label="权益记录"');
+  });
+
+  it("外部发放登记端口接入,待确认是合法展示态", () => {
+    expect(page).toContain("reward-external-issuances");
+    expect(page).toContain("pending_unknown");
+    expect(page).toContain("待确认");
+  });
+});

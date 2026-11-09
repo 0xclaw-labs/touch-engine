@@ -257,7 +257,7 @@ func TestMintAndResolveDisplayCode(t *testing.T) {
 	if _, _, err := s.ReserveRewardBenefit(rb, boundaryNow); err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
-	if _, err := s.MintRewardDisplayCode(tenA, "", "visitor-ok", boundaryNow); err == nil {
+	if _, err := s.MintRewardDisplayCode("", "visitor-ok", boundaryNow); err == nil {
 		t.Fatalf("missing benefit id must refuse")
 	}
 	ben, _, err := s.ConfirmRewardBenefit(func() RewardConfirmInput {
@@ -267,7 +267,7 @@ func TestMintAndResolveDisplayCode(t *testing.T) {
 	}())
 	must(t, err)
 
-	code, err := s.MintRewardDisplayCode(tenA, ben.ID, "visitor-ok", boundaryNow)
+	code, err := s.MintRewardDisplayCode(ben.ID, "visitor-ok", boundaryNow)
 	must(t, err)
 	if code.Token == "" || code.ExpiresAt == "" {
 		t.Fatalf("mint must return a short-lived token: %+v", code)
@@ -285,7 +285,7 @@ func TestMintAndResolveDisplayCode(t *testing.T) {
 	}
 
 	// 伪造/跨访客拒绝。
-	if _, err := s.MintRewardDisplayCode(tenA, ben.ID, "visitor-evil", boundaryNow); !errors.Is(err, ErrNotFound) {
+	if _, err := s.MintRewardDisplayCode(ben.ID, "visitor-evil", boundaryNow); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("wrong visitor must be masked as not found: %v", err)
 	}
 	// 店员码定位返回 RewardBenefit:结构上没有访客字段,店员码换不来顾客身份。

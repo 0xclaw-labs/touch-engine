@@ -200,3 +200,18 @@ export function reverseRequestBody(reason: string): Record<string, unknown> {
     event_id: `rvs-${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`,
   };
 }
+
+// HUI-1671: 外部券发放登记的事实态文案。待确认(pending_unknown)是合法展示
+// 态:外部没有给出结果就不是已发放,永不升级、不伪造。
+export function externalStateText(state: string): string {
+  switch (state) {
+    case "issued":
+      return "外部平台已确认发放";
+    case "failed":
+      return "外部平台返回失败";
+    case "pending_unknown":
+      return "待确认（外部没有给出结果，不是已发放）";
+    default:
+      return "状态未知（未知不是已发放）";
+  }
+}
