@@ -58,6 +58,52 @@ function upstreamMatrix(req: Request, path: string): Response {
     });
   }
 
+  // HUI-3553 D3: controlled media semantics — the same contract the Go server
+  // implements (http.ServeContent): HEAD headers, Range 206/416, 410 expiry.
+  // The mp4-ish payload is 11546 bytes like the real testdata fixture.
+  const media = path.match(/^public\/content\/media\/(.+)$/);
+  if (media) {
+    const token = media[1];
+    const mp4Headers = (extra: Record<string, string>): HeadersInit => ({
+      "content-type": "video/mp4",
+      "accept-ranges": "bytes",
+      ...extra,
+    });
+    if (token === "expiredtok01") return new Response("gone", { status: 410 });
+    if (token === "unknowntok01") return new Response("not found", { status: 404, headers: { "content-type": "text/plain" } });
+    const full = new Uint8Array(11546).map((_, i) => i % 251);
+    if (req.method === "HEAD") {
+      return new Response(null, {
+        status: 200,
+        headers: mp4Headers({ "content-length": String(full.length) }),
+      });
+    }
+    const range = req.headers.get("range");
+    if (range) {
+      const m = range.match(/^bytes=(\d+)-(\d*)$/);
+      if (!m || Number(m[1]) >= full.length) {
+        return new Response("range not satisfiable", {
+          status: 416,
+          headers: { "content-range": `bytes */${full.length}` },
+        });
+      }
+      const start = Number(m[1]);
+      const end = m[2] ? Math.min(Number(m[2]), full.length - 1) : full.length - 1;
+      const slice = full.subarray(start, end + 1);
+      return new Response(slice, {
+        status: 206,
+        headers: mp4Headers({
+          "content-range": `bytes ${start}-${end}/${full.length}`,
+          "content-length": String(slice.length),
+        }),
+      });
+    }
+    return new Response(full, {
+      status: 200,
+      headers: mp4Headers({ "content-length": String(full.length) }),
+    });
+  }
+
   // admin surface: session + tenant membership required
   const sessionToken = cookieToken(req.headers.get("cookie"));
   const sess = sessionToken ? SESSIONS[sessionToken] : undefined;
@@ -311,5 +357,87 @@ describe("BFF relay semantics", () => {
       if (prevToken === undefined) delete process.env.TOUCH_INTERNAL_TOKEN;
       else process.env.TOUCH_INTERNAL_TOKEN = prevToken;
     }
+  });
+});
+
+// ---- HUI-3553 D3: controlled media relay through the web BFF ------------------------
+// Walk A found the defect: a Go-absolute media URL ("/api/v1/public/content/
+// media/<token>", as returned by media-access and fed to <video>/<a>) hit the
+// BFF with path[0]="v1" and was double-prefixed to /api/v1/v1/... = upstream
+// 404, so the <video> element was fed an error page instead of mp4 bytes. The
+// relay must (1) pass Go-absolute URLs through, (2) forward Range, (3) relay
+// 206/416/410/404 statuses and the REAL Content-Type untouched, and (4) not
+// buffer whole files.
+
+describe("BFF controlled media relay (HUI-3553 D3)", () => {
+  const MEDIA_PATH = "v1/public/content/media/tokA2f9";
+
+  it("passes Go-absolute /api/v1/* URLs through WITHOUT double prefixing", async () => {
+    const res = await call("GET", MEDIA_PATH);
+    expect(res.status).toBe(200);
+    expect(upstreamCalls[0].url).toBe(ENV.serverUrl + "/api/v1/public/content/media/tokA2f9");
+  });
+
+  it("keeps mapping classic /api/X paths to /api/v1/X (unchanged behavior)", () => {
+    expect(bffPathToUpstream(["stores", "sto_1", "content-packs"])).toBe("/api/v1/stores/sto_1/content-packs");
+    expect(bffPathToUpstream(["public", "links", "X"])).toBe("/api/v1/public/links/X");
+    expect(bffPathToUpstream(["v1", "public", "content", "media", "t"])).toBe("/api/v1/public/content/media/t");
+  });
+
+  it("forwards the Range header upstream and relays 206 + Content-Range + real video/mp4", async () => {
+    const res = await call("GET", MEDIA_PATH, { extraHeaders: { range: "bytes=100-199" } });
+    expect(upstreamCalls[0].headers.get("range")).toBe("bytes=100-199");
+    expect(res.status).toBe(206);
+    expect(res.headers.get("content-type")).toBe("video/mp4");
+    expect(res.headers.get("content-range")).toBe("bytes 100-199/11546");
+    expect(res.headers.get("accept-ranges")).toBe("bytes");
+    const body = await res.arrayBuffer();
+    expect(body.byteLength).toBe(100);
+  });
+
+  it("relays 200 full-body byte-identically with the real Content-Type (never an HTML error page)", async () => {
+    const res = await call("GET", MEDIA_PATH);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("video/mp4");
+    const body = await res.arrayBuffer();
+    expect(body.byteLength).toBe(11546);
+    // payload fingerprint from the fake upstream (i % 251)
+    const first = new Uint8Array(body)[0];
+    const last = new Uint8Array(body)[11545];
+    expect(first).toBe(0);
+    expect(last).toBe(11545 % 251);
+  });
+
+  it("relays 410 (expired) and 404 (unknown) verbatim — no status rewriting, no fake success", async () => {
+    const gone = await call("GET", "v1/public/content/media/expiredtok01");
+    expect(gone.status).toBe(410);
+    const unknown = await call("GET", "v1/public/content/media/unknowntok01");
+    expect(unknown.status).toBe(404);
+    expect(unknown.headers.get("content-type")).not.toBe("video/mp4");
+  });
+
+  it("relays 416 for unsatisfiable ranges (upstream verdict, untouched)", async () => {
+    const res = await call("GET", MEDIA_PATH, { extraHeaders: { range: "bytes=99999-" } });
+    expect(res.status).toBe(416);
+    expect(res.headers.get("content-range")).toBe("bytes */11546");
+  });
+
+  it("relays HEAD with empty body and real media headers", async () => {
+    const res = await call("HEAD", MEDIA_PATH);
+    expect(upstreamCalls[0].method).toBe("HEAD");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("video/mp4");
+    expect(res.headers.get("content-length")).toBe("11546");
+    const body = await res.arrayBuffer();
+    expect(body.byteLength).toBe(0);
+  });
+
+  it("streams the body instead of buffering (Response carries an upstream stream)", async () => {
+    const res = await call("GET", MEDIA_PATH, { extraHeaders: { range: "bytes=0-9" } });
+    // A streamed body is a ReadableStream, not a materialized buffer: the
+    // proxy must never call upstream.arrayBuffer() for media responses.
+    expect(res.body).toBeInstanceOf(ReadableStream);
+    const body = await res.arrayBuffer();
+    expect(body.byteLength).toBe(10);
   });
 });

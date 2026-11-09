@@ -35,6 +35,14 @@ const HOP_BY_HOP = new Set([
 ]);
 
 export function bffPathToUpstream(path: string[]): string {
+  // HUI-3553 D3: Go API responses carry Go-absolute URLs (e.g. media-access
+  // returns "/api/v1/public/content/media/<token>" as the <video>/<a> src).
+  // A browser fetching such a URL from the web origin arrives here with
+  // path[0] === "v1" — pass it through instead of double-prefixing
+  // ("/api/v1/v1/..." 404s upstream). Classic BFF paths are unchanged.
+  if (path.length > 0 && path[0] === "v1") {
+    return "/api/" + path.join("/");
+  }
   return "/api/v1/" + path.join("/");
 }
 
@@ -67,6 +75,13 @@ export async function proxyToServer(
   if (cookie) headers.set("cookie", cookie);
   const contentType = req.headers.get("content-type");
   if (contentType) headers.set("content-type", contentType);
+  // HUI-3553 D3: controlled media needs Range semantics end to end (video
+  // seeking, weak-network resume). Relay the byte-interval headers verbatim;
+  // the Go server (http.ServeContent) answers 206/416.
+  const range = req.headers.get("range");
+  if (range) headers.set("range", range);
+  const ifRange = req.headers.get("if-range");
+  if (ifRange) headers.set("if-range", ifRange);
   // workspace selection is caller input; the Go server re-validates it
   // against membership (an unknown/foreign tenant can only ever yield 403)
   const tenant = req.headers.get("x-tenant-id");
@@ -104,11 +119,13 @@ export async function proxyToServer(
   upstream.headers.forEach((value, key) => {
     if (!HOP_BY_HOP.has(key.toLowerCase())) outHeaders.append(key, value);
   });
-  const body = await upstream.arrayBuffer();
+  // HUI-3553 D3: relay the body as a stream — never buffer the whole file.
+  // Controlled media answers 206 partial content; buffering would defeat
+  // Range seeking on large videos and hold every byte in memory per request.
   // 204/304 must carry a null body (a zero-length buffer is still a body and
   // makes the Response constructor throw — e.g. the view-event beacon).
   const nullBody = upstream.status === 204 || upstream.status === 304;
-  return new Response(nullBody ? null : body, {
+  return new Response(nullBody ? null : upstream.body, {
     status: upstream.status,
     statusText: upstream.statusText,
     headers: outHeaders,
