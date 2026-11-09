@@ -1,30 +1,36 @@
 "use client";
 
 // HUI-1665 触点管理台(/work/touchpoints):一卡一稳定入口的日常操作面。
+// B02 修订(2026-11-10):绑定目标以门店为根(创建先选有权门店;标签绑定的活动
+// 只是注记/过滤,服务端从标签派生,不收客户端门店/活动输入),换绑目标可选
+// 门店或活动(expected_binding_revision 乐观并发);旧 /c 卡经同 URL 换绑升级。
 //
 // 纪律:
 //   - 独占新页,日常操作全在本页完成,不跳旧管理后台;
 //   - 稳定链接 = 服务端给的 /t/ 短链原样复制,前端不自行拼接;
 //   - 下载二维码/写卡 CSV、查看目标检查:零推进;部署五态只经显式按钮
 //     单步前进(nextStage + isStage 守卫),没到真机验证绝不当作完成;
-//   - 换绑先预览:展示 当前→新 与「已开始参与数」(只读统计,3546),
-//     确认后才提交,并带 expected_campaign_id 乐观并发;409 = 有并发变更,
-//     重查列表,绝不覆盖别人的改动;
+//   - 换绑先预览:展示 当前→新目标(按目标类型措辞) 与「已开始参与数」
+//     (只读统计,3546)与 binding_revision,确认后才提交并带
+//     expected_binding_revision;409 = 有并发变更,重查列表,绝不覆盖别人;
 //   - 别名的停用/恢复只动别名层,与共享短码互不影响;
 //   - 无别名标签走旧停用端点前,必须按同短码共享数先说清传播影响
-//     (sharedStopFace + confirm),不默认传播。
+//     (sharedStopFace + confirm),不默认传播;
+//   - 门店/经理视野由服务端收口:本页的 store 选择只作表单过滤,
+//     永不作为放宽服务端作用域的输入。
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { LoadErrorState } from "@/components/work/load-error-state";
 import { failureText, useSession } from "@/components/work/merchant-session";
 import {
-  entryStateFace,
+  entryFace,
   isStage,
   nextStage,
   rebindImpactFace,
   sharedStopFace,
   stageFace,
+  targetFace,
 } from "@/lib/touchpoints";
 
 interface TouchpointItem {
@@ -36,10 +42,14 @@ interface TouchpointItem {
   deployment_stage?: string;
   tag_id?: string;
   tag_label?: string;
+  store_id?: string;
   store_name?: string;
-  campaign_id: string;
+  store_code?: string;
+  campaign_id?: string;
   campaign_title?: string;
   campaign_status?: string;
+  target_type: string;
+  binding_revision?: number;
   url?: string;
   entry_code?: string;
   entry_state?: string;
@@ -52,17 +62,34 @@ interface CampaignItem {
   store_id?: string;
 }
 
+interface StoreItem {
+  id: string;
+  name?: string;
+}
+
 interface TagItem {
   id: string;
   label: string;
   status: string;
   link_id: string;
+  store_id?: string;
+  campaign_id?: string;
+  campaign_title?: string;
+}
+
+interface TargetFacts {
+  target_type?: string;
+  id?: string;
+  title?: string;
+  status?: string;
+  store_code?: string;
 }
 
 interface RebindPreview {
-  current: { id: string; title?: string; status?: string };
-  next: { id: string; title?: string; status?: string };
+  current: TargetFacts;
+  next: TargetFacts;
   started_participations: number;
+  binding_revision?: number;
 }
 
 function queryOf(params: Record<string, string>): string {
@@ -74,6 +101,14 @@ function queryOf(params: Record<string, string>): string {
   return text ? `?${text}` : "";
 }
 
+// 预览里「当前 → 新」一行的目标措辞:门店带公共码,活动带标题。
+function targetLine(facts: TargetFacts | undefined): string {
+  if (!facts || !facts.target_type) return "目标未知";
+  const name = facts.title || facts.id || "";
+  const suffix = facts.target_type === "store" && facts.store_code ? `(${facts.store_code})` : "";
+  return `${targetFace(facts.target_type)} · ${name}${suffix}`;
+}
+
 export function TouchpointsPanel() {
   const session = useSession();
   const [phase, setPhase] = useState<"loading" | "error" | "ready">("loading");
@@ -83,24 +118,31 @@ export function TouchpointsPanel() {
 
   const [items, setItems] = useState<TouchpointItem[]>([]);
   const [campaigns, setCampaigns] = useState<CampaignItem[]>([]);
+  const [stores, setStores] = useState<StoreItem[]>([]);
   const [tags, setTags] = useState<TagItem[]>([]);
 
+  const [storeFilter, setStoreFilter] = useState("");
   const [campaignFilter, setCampaignFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
 
+  const [createStoreId, setCreateStoreId] = useState("");
+  const [createCampaignId, setCreateCampaignId] = useState("");
   const [createTagId, setCreateTagId] = useState("");
   const [createLabel, setCreateLabel] = useState("");
   const [createPosition, setCreatePosition] = useState("");
 
   const [rebindTarget, setRebindTarget] = useState<TouchpointItem | null>(null);
+  const [rebindType, setRebindType] = useState<"store" | "legacy_campaign">("store");
+  const [rebindStoreId, setRebindStoreId] = useState("");
   const [rebindCampaignId, setRebindCampaignId] = useState("");
   const [preview, setPreview] = useState<RebindPreview | null>(null);
   const [legacyPending, setLegacyPending] = useState<{ tag: TagItem; shared: number } | null>(null);
 
   const load = useCallback(async () => {
-    const [tpRes, campRes, tagRes] = await Promise.all([
-      session.api("GET", "touchpoints" + queryOf({ campaign_id: campaignFilter, status: statusFilter })),
+    const [tpRes, campRes, storeRes, tagRes] = await Promise.all([
+      session.api("GET", "touchpoints" + queryOf({ store_id: storeFilter, campaign_id: campaignFilter, status: statusFilter })),
       session.api("GET", "campaigns"),
+      session.api("GET", "stores"),
       session.api("GET", "nfc/tags"),
     ]);
     if (!tpRes.ok) {
@@ -110,9 +152,10 @@ export function TouchpointsPanel() {
     }
     setItems(Array.isArray(tpRes.data.items) ? (tpRes.data.items as TouchpointItem[]) : []);
     if (campRes.ok && Array.isArray(campRes.data.items)) setCampaigns(campRes.data.items as CampaignItem[]);
+    if (storeRes.ok && Array.isArray(storeRes.data.items)) setStores(storeRes.data.items as StoreItem[]);
     if (tagRes.ok && Array.isArray(tagRes.data.items)) setTags(tagRes.data.items as TagItem[]);
     setPhase("ready");
-  }, [session, campaignFilter, statusFilter]);
+  }, [session, storeFilter, campaignFilter, statusFilter]);
 
   useEffect(() => {
     let alive = true;
@@ -131,7 +174,14 @@ export function TouchpointsPanel() {
   }, [load, attempt]);
 
   const aliasTagIds = useMemo(() => new Set(items.map((item) => item.tag_id).filter(Boolean)), [items]);
-  const unprovisionedTags = useMemo(() => tags.filter((tag) => !aliasTagIds.has(tag.id)), [tags, aliasTagIds]);
+  // 创建:先选门店,再按门店(可再按活动)过滤待开卡;活动过滤只是表单筛选,
+  // 服务端始终从标签绑定派生门店与活动注记(客户端输入不作为绑定来源)。
+  const unprovisionedTags = useMemo(() =>
+    tags.filter((tag) =>
+      !aliasTagIds.has(tag.id) &&
+      (!createStoreId || tag.store_id === createStoreId) &&
+      (!createCampaignId || tag.campaign_id === createCampaignId),
+    ), [tags, aliasTagIds, createStoreId, createCampaignId]);
 
   const run = useCallback(async (action: () => Promise<void>) => {
     setNotice("");
@@ -143,6 +193,10 @@ export function TouchpointsPanel() {
   }, []);
 
   const create = useCallback(() => run(async () => {
+    if (!createStoreId) {
+      setNotice("先选门店。触点绑定以门店为根。");
+      return;
+    }
     if (!createTagId) {
       setNotice("先选一张还没有稳定入口的卡。");
       return;
@@ -159,9 +213,9 @@ export function TouchpointsPanel() {
     setCreateTagId("");
     setCreateLabel("");
     setCreatePosition("");
-    setNotice("已创建稳定入口。把稳定链接或二维码交给门店即可。");
+    setNotice("已创建稳定入口。这张卡指向门店首页;把稳定链接或二维码交给门店即可。");
     await load();
-  }), [run, session, createTagId, createLabel, createPosition, load]);
+  }), [run, session, createStoreId, createTagId, createLabel, createPosition, load]);
 
   const toggleStatus = useCallback((tp: TouchpointItem) => run(async () => {
     const status = tp.status === "active" ? "disabled" : "active";
@@ -194,30 +248,41 @@ export function TouchpointsPanel() {
   }), [run, session, load]);
 
   const previewRebind = useCallback((tp: TouchpointItem) => run(async () => {
-    if (!rebindCampaignId) {
+    const body = rebindType === "store"
+      ? { target_type: "store", store_id: rebindStoreId }
+      : { target_type: "legacy_campaign", campaign_id: rebindCampaignId };
+    if (rebindType === "store" && !rebindStoreId) {
+      setNotice("先选要换到的目标门店。");
+      return;
+    }
+    if (rebindType === "legacy_campaign" && !rebindCampaignId) {
       setNotice("先选要换到的目标活动。");
       return;
     }
-    const res = await session.api("POST", `touchpoints/${tp.id}/rebind-preview`, { campaign_id: rebindCampaignId });
+    const res = await session.api("POST", `touchpoints/${tp.id}/rebind-preview`, body);
     if (!res.ok) {
       setNotice(failureText(res.status, res.data));
       return;
     }
     setPreview({
-      current: (res.data.current ?? {}) as RebindPreview["current"],
-      next: (res.data.next ?? {}) as RebindPreview["next"],
+      current: (res.data.current ?? {}) as TargetFacts,
+      next: (res.data.next ?? {}) as TargetFacts,
       started_participations: typeof res.data.started_participations === "number" ? res.data.started_participations : 0,
+      binding_revision: typeof res.data.binding_revision === "number" ? res.data.binding_revision : undefined,
     });
-  }), [run, session, rebindCampaignId]);
+  }), [run, session, rebindType, rebindStoreId, rebindCampaignId]);
 
   const confirmRebind = useCallback((tp: TouchpointItem) => run(async () => {
-    if (!preview) return;
-    const res = await session.api("POST", `touchpoints/${tp.id}/rebind`, {
-      campaign_id: preview.next.id,
-      expected_campaign_id: tp.campaign_id,
-    });
+    if (!preview || typeof preview.binding_revision !== "number") {
+      setNotice("先重新预览影响再确认。");
+      return;
+    }
+    const body = rebindType === "store"
+      ? { target_type: "store", store_id: rebindStoreId, expected_binding_revision: preview.binding_revision }
+      : { target_type: "legacy_campaign", campaign_id: rebindCampaignId, expected_binding_revision: preview.binding_revision };
+    const res = await session.api("POST", `touchpoints/${tp.id}/rebind`, body);
     if (res.status === 409) {
-      setNotice("目标活动刚被别人改过,没有覆盖。已重查,请重新预览再确认。");
+      setNotice("目标刚被别人改过,没有覆盖。已重查,请重新预览再确认。");
       setPreview(null);
       await load();
       return;
@@ -228,10 +293,11 @@ export function TouchpointsPanel() {
     }
     setRebindTarget(null);
     setPreview(null);
+    setRebindStoreId("");
     setRebindCampaignId("");
-    setNotice("换绑完成。稳定链接不变,顾客下次打开直达新活动。");
+    setNotice("换绑完成。稳定链接不变,顾客下次打开直达新目标;已有参与和奖励不受影响。");
     await load();
-  }), [run, session, preview, load]);
+  }), [run, session, preview, rebindType, rebindStoreId, rebindCampaignId, load]);
 
   const copyUrl = useCallback((tp: TouchpointItem) => run(async () => {
     if (!tp.url) {
@@ -239,7 +305,7 @@ export function TouchpointsPanel() {
       return;
     }
     await navigator.clipboard.writeText(tp.url);
-    setNotice("稳定链接已复制。同一链接,换绑活动后仍然有效。");
+    setNotice("稳定链接已复制。同一链接,换绑目标后仍然有效。");
   }), [run]);
 
   const downloadQr = useCallback((tp: TouchpointItem) => run(async () => {
@@ -263,7 +329,7 @@ export function TouchpointsPanel() {
   }), [run, session.tenantId]);
 
   const downloadCsv = useCallback(() => run(async () => {
-    const res = await fetch("/api/touchpoints/export.csv" + queryOf({ campaign_id: campaignFilter, status: statusFilter }), {
+    const res = await fetch("/api/touchpoints/export.csv" + queryOf({ store_id: storeFilter, campaign_id: campaignFilter, status: statusFilter }), {
       headers: { "x-tenant-id": session.tenantId },
     });
     if (!res.ok) {
@@ -280,7 +346,7 @@ export function TouchpointsPanel() {
     anchor.click();
     anchor.remove();
     URL.revokeObjectURL(href);
-  }), [run, session.tenantId, campaignFilter, statusFilter]);
+  }), [run, session.tenantId, storeFilter, campaignFilter, statusFilter]);
 
   // 旧链接停用是两步:先算共享影响并展示(sharedStopFace),用户显式确认才发请求。
   // 不用浏览器原生弹窗:文案要留在页面里可回看,也守 uifinish 文件级闸。
@@ -306,6 +372,8 @@ export function TouchpointsPanel() {
   const openRebind = useCallback((tp: TouchpointItem) => {
     setRebindTarget(tp);
     setPreview(null);
+    setRebindType(tp.target_type === "legacy_campaign" ? "legacy_campaign" : "store");
+    setRebindStoreId("");
     setRebindCampaignId("");
     setNotice("");
   }, []);
@@ -321,12 +389,21 @@ export function TouchpointsPanel() {
     <section>
       <h1 className="tk-title">稳定入口(触点)</h1>
       <p className="tk-lead">
-        一张卡一个稳定链接:换绑活动不改链接;停用只停这一张卡;
+        一张卡一个稳定链接:入口以门店为根,换绑目标不改链接;停用只停这一张卡;
         写卡与回读推进只经下面显式操作,下载与检查不改变状态。
       </p>
       {notice ? <p className="tk-state" data-state="notice">{notice}</p> : null}
 
       <div className="tk-toolbar">
+        <label className="tk-label">
+          门店
+          <select className="tk-select" data-field="store-filter" value={storeFilter} onChange={(event) => setStoreFilter(event.target.value)}>
+            <option value="">全部门店</option>
+            {stores.map((sto) => (
+              <option key={sto.id} value={sto.id}>{sto.name || sto.id}</option>
+            ))}
+          </select>
+        </label>
         <label className="tk-label">
           活动
           <select className="tk-select" data-field="campaign-filter" value={campaignFilter} onChange={(event) => setCampaignFilter(event.target.value)}>
@@ -351,19 +428,47 @@ export function TouchpointsPanel() {
 
       <div className="tk-card">
         <h2 className="tk-subtitle">给卡开稳定入口</h2>
-        {unprovisionedTags.length === 0 ? (
-          <p className="tk-note">每张卡最多一个稳定入口;没有待开的卡了。</p>
+        {stores.length === 0 ? (
+          <p className="tk-note">先建门店,再给门店的卡开稳定入口。</p>
+        ) : unprovisionedTags.length === 0 && !createStoreId ? (
+          <p className="tk-note">先选门店,下面会列出这家店还没有稳定入口的卡。</p>
+        ) : unprovisionedTags.length === 0 ? (
+          <p className="tk-note">这家店没有待开的卡了;每张卡最多一个稳定入口。</p>
         ) : (
           <>
+            <label className="tk-label">
+              门店
+              <select className="tk-select" data-field="create-store" value={createStoreId} onChange={(event) => { setCreateStoreId(event.target.value); setCreateCampaignId(""); setCreateTagId(""); }}>
+                <option value="">选一家有权门店</option>
+                {stores.map((sto) => (
+                  <option key={sto.id} value={sto.id}>{sto.name || sto.id}</option>
+                ))}
+              </select>
+            </label>
+            <label className="tk-label">
+              活动(可选,过滤用)
+              <select className="tk-select" data-field="create-campaign" value={createCampaignId} onChange={(event) => { setCreateCampaignId(event.target.value); setCreateTagId(""); }}>
+                <option value="">不限活动</option>
+                {campaigns.filter((camp) => !createStoreId || camp.store_id === createStoreId).map((camp) => (
+                  <option key={camp.id} value={camp.id}>{camp.title || camp.id}</option>
+                ))}
+              </select>
+            </label>
             <label className="tk-label">
               选卡
               <select className="tk-select" data-field="create-tag" value={createTagId} onChange={(event) => setCreateTagId(event.target.value)}>
                 <option value="">选一张还没有稳定入口的卡</option>
                 {unprovisionedTags.map((tag) => (
-                  <option key={tag.id} value={tag.id}>{tag.label || tag.id}</option>
+                  <option key={tag.id} value={tag.id}>
+                    {tag.label || tag.id}{tag.campaign_title ? ` · 注记:${tag.campaign_title}` : ""}
+                  </option>
                 ))}
               </select>
             </label>
+            <p className="tk-note">
+              门店与活动由服务端按这张卡的绑定派生:入口指向门店首页,卡上绑定的活动只作注记;
+              换绑随时可改目标,链接不变。
+            </p>
             <label className="tk-label">
               名称(可选)
               <input className="tk-input" data-field="create-label" value={createLabel} onChange={(event) => setCreateLabel(event.target.value)} placeholder="如:前台立牌" />
@@ -408,14 +513,17 @@ export function TouchpointsPanel() {
             <article key={tp.id} className="tk-card" data-touchpoint={tp.code}>
               <h2 className="tk-subtitle">{tp.label || tp.tag_label || "未命名入口"}</h2>
               <p className="tk-note">
-                {tp.store_name ? `${tp.store_name} · ` : ""}{tp.campaign_title || tp.campaign_id}
+                {tp.store_name ? `${tp.store_name}` : "归属门店未定"}
+                {tp.store_code ? ` · ${tp.store_code}` : ""}
+                {" · 目标:"}{targetFace(tp.target_type)}
+                {tp.campaign_title ? ` · 注记活动:${tp.campaign_title}` : ""}
                 {tp.position ? ` · ${tp.position}` : ""}
               </p>
               <p className="tk-note">
                 状态:{tp.status === "active" ? "启用" : "停用"} ·
                 部署:{stageFace(tp.deployment_stage)}
               </p>
-              <p className="tk-note">检查:{entryStateFace(tp.entry_state)}</p>
+              <p className="tk-note">检查:{entryFace(tp.target_type, tp.entry_state)}</p>
               {tp.url ? <p className="tk-note"><code>{tp.url}</code></p> : null}
               <div className="tk-toolbar">
                 <button className="tk-quiet" type="button" data-action="copy-url" onClick={() => void copyUrl(tp)}>复制稳定链接</button>
@@ -428,26 +536,46 @@ export function TouchpointsPanel() {
                     推进到:{stageFace(nxt)}
                   </button>
                 ) : null}
-                <button className="tk-quiet" type="button" data-action="open-rebind" onClick={() => openRebind(tp)}>换绑活动</button>
+                <button className="tk-quiet" type="button" data-action="open-rebind" onClick={() => openRebind(tp)}>换绑目标</button>
               </div>
               {rebindTarget?.id === tp.id ? (
                 <div className="tk-card" data-state="rebind">
                   <label className="tk-label">
-                    目标活动
-                    <select className="tk-select" data-field="rebind-campaign" value={rebindCampaignId} onChange={(event) => setRebindCampaignId(event.target.value)}>
-                      <option value="">选目标活动</option>
-                      {campaigns.filter((camp) => camp.id !== tp.campaign_id).map((camp) => (
-                        <option key={camp.id} value={camp.id}>{camp.title || camp.id}</option>
-                      ))}
+                    换绑到
+                    <select className="tk-select" data-field="rebind-type" value={rebindType} onChange={(event) => { setRebindType(event.target.value === "store" ? "store" : "legacy_campaign"); setPreview(null); }}>
+                      <option value="store">门店首页</option>
+                      <option value="legacy_campaign">活动页</option>
                     </select>
                   </label>
+                  {rebindType === "store" ? (
+                    <label className="tk-label">
+                      目标门店
+                      <select className="tk-select" data-field="rebind-store" value={rebindStoreId} onChange={(event) => { setRebindStoreId(event.target.value); setPreview(null); }}>
+                        <option value="">选目标门店</option>
+                        {stores.filter((sto) => sto.id !== tp.store_id).map((sto) => (
+                          <option key={sto.id} value={sto.id}>{sto.name || sto.id}</option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : (
+                    <label className="tk-label">
+                      目标活动
+                      <select className="tk-select" data-field="rebind-campaign" value={rebindCampaignId} onChange={(event) => { setRebindCampaignId(event.target.value); setPreview(null); }}>
+                        <option value="">选目标活动</option>
+                        {campaigns.filter((camp) => camp.id !== tp.campaign_id).map((camp) => (
+                          <option key={camp.id} value={camp.id}>{camp.title || camp.id}</option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
                   <button className="tk-quiet" type="button" data-action="preview-rebind" onClick={() => void previewRebind(tp)}>预览影响</button>
                   {preview ? (
                     <>
                       <p className="tk-note">
-                        {preview.current.title || preview.current.id} → {preview.next.title || preview.next.id}
+                        {targetLine(preview.current)} → {targetLine(preview.next)}
                       </p>
                       <p className="tk-note">{rebindImpactFace(preview.started_participations)}</p>
+                      <p className="tk-note">绑定版本:{preview.binding_revision}(别人先改过会拒绝提交,不会静默覆盖)</p>
                       <button className="tk-quiet" type="button" data-action="confirm-rebind" onClick={() => void confirmRebind(tp)}>确认换绑</button>
                       <button className="tk-quiet" type="button" data-action="cancel-rebind" onClick={() => setRebindTarget(null)}>取消</button>
                     </>
