@@ -708,6 +708,21 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("POST /api/v1/participations/staff/redeem", s.requireSession(s.handleParticipationStaffRedeem))
 		// HUI-3562 店员台:扫/手输凭据开参与卡(不消费,重复扫码幂等)。
 		mux.Handle("POST /api/v1/participations/staff/peek", s.requireSession(s.handleParticipationStaffPeek))
+
+		// HUI-3546 增量轮(2026-11-09, B08): 匿名动作会话与跨端恢复。
+		// 动作维度(campaign 可空),不建生态账号;创建即冻结
+		// storefront/action/规则/内容快照,停用/撤权实时复核;跨浏览器只走
+		// 短时单用途恢复凭据(POST 体,永不进 URL 查询参数),店员码与参与
+		// 凭据结构性进不了会话兑换面;全部凭据丢失不可认回。目录端口未接线
+		// 时 handlers 另答 503(fail-closed,生产接线归 HUI-4584)。
+		mux.Handle("POST /api/v1/public/actions/{actionId}/sessions", http.HandlerFunc(s.handleActionSessionStart))
+		mux.Handle("GET /api/v1/public/action-sessions/{sessionId}/status", http.HandlerFunc(s.handleActionSessionStatus))
+		mux.Handle("POST /api/v1/public/action-sessions/{sessionId}/content", http.HandlerFunc(s.handleActionSessionContent))
+		mux.Handle("POST /api/v1/public/action-sessions/{sessionId}/participations", http.HandlerFunc(s.handleActionSessionAttach))
+		mux.Handle("POST /api/v1/public/action-sessions/{sessionId}/resume-credentials", http.HandlerFunc(s.handleActionSessionResumeCredentialIssue))
+		mux.Handle("DELETE /api/v1/public/action-sessions/{sessionId}/resume-credentials/{credentialId}", http.HandlerFunc(s.handleActionSessionResumeCredentialRevoke))
+		mux.Handle("POST /api/v1/public/action-sessions/{sessionId}/cancel", http.HandlerFunc(s.handleActionSessionCancel))
+		mux.Handle("POST /api/v1/public/resume/exchange", http.HandlerFunc(s.handleResumeExchange))
 	}
 
 	// channel admission (HUI-3535 渠道准入与承接清单): 登记制开关
