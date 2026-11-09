@@ -51,4 +51,16 @@ describe("loginFailureText（登录面专用口径）", () => {
     expect(loginFailureText(500, {})).toMatch(/稍(等|后)/);
     expect(loginFailureText(403, {})).toMatch(/权限|重新登录/);
   });
+
+  it("上传/媒体链失败不误报权限:非 401/403 一律不出现「权限/登录」字样(Walk A F)", () => {
+    // 服务器实测拒绝(伪媒体 422/超限 413/媒体缺失 422/校验 400)与网络失败
+    // 都不是登录或权限问题;只有 401/403 才允许权限语义。
+    for (const status of [400, 404, 409, 413, 422, 500, 503]) {
+      const text = failureText(status, {});
+      expect(text, String(status)).not.toContain("权限");
+      expect(text, String(status)).not.toContain("登录");
+    }
+    expect(failureText(403, {})).toContain("权限");
+    expect(failureText(401, {})).toContain("重新登录");
+  });
 });

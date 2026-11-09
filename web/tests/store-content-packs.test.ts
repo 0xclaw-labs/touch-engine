@@ -94,6 +94,15 @@ describe("门店内容包抽屉：真实上传、候选、采用、换版与受�
     expect(drawer).toMatch(/content-packs\/\$\{packId\}\/versions/);
     expect(drawer).toMatch(/public\/content\/\$\{version\.id\}\/media-access/);
   });
+
+  it("同控件可连续多次选择文件(每次上传互不影响,可重选同一文件)", () => {
+    // Walk A F 场景:第一件上传后控件必须复位且不影响第二件。
+    expect(drawer).toMatch(/event\.target\.value = ""/);
+    expect(drawer).toMatch(/disabled=\{uploading\}/);
+    // 每件文件独立出结果,前一件成功不掩盖后一件失败(反之亦然)。
+    expect(drawer).toMatch(/data-field="upload-result"/);
+    expect(drawer).not.toMatch(/uploadCount|alreadyUploaded/);
+  });
 });
 
 describe("素材页挂载门店内容包抽屉", () => {
