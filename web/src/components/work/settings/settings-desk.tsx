@@ -2,12 +2,16 @@
 
 // HUI-4593 M13 成员与权限工作台。
 //
-// 纪律(裁定书):
-//   - 四区:成员与权限 / 代理协作 / 模板下发 / 白标授权;agent 角色时顶部
-//     「正在为谁工作」横幅(组织/权限/付款主体),切换组织即清空上一户数据
-//     (merchant-session 既有单缝保证)。
-//   - 授权/撤回/代管/下发全部操作必填原因(服务端审计;前端先挡一道)。
-//   - 特权操作只对 org_owner 显示;权限不足按产品语句说明,不崩、不装成功。
+// 纪律(裁定书 + 走查 Walk B 修复轮 2):
+//   - 四区按角色维度呈现:组织负责人 / 门店经理 / 店员动作授权 / 代理协作
+//     (外加模板下发与白标授权两区;走查验收按四区对照);
+//   - 店员动作授权:对现有店员授予/撤回 storefront/action 配置权限
+//     (授权→访问→撤回→同会话 403 旅程;PUT admin/members/{id}/permissions,
+//      撤回即时生效由 access/effective 每请求实时读取保证);
+//   - agent 角色时顶部「正在为谁工作」横幅(组织/权限/付款主体),切换组织
+//     即清空上一户数据(merchant-session 既有单缝保证);
+//   - 授权/撤回/代管/下发全部操作必填原因(服务端审计;前端先挡一道);
+//   - 特权操作只对 org_owner 显示;权限不足按产品语句说明,不崩、不装成功;
 //   - FEATURE_AUTHZ off(access/effective 404)时诚实空态,不伪造能力。
 
 import { useCallback, useEffect, useState } from "react";
@@ -29,15 +33,6 @@ export interface AccessEffective {
   ops_permissions: { command: string; store_scope_set: string[] }[];
 }
 
-interface MemberRec {
-  id: string;
-  principal_ref: string;
-  role: string;
-  store_scope: string;
-  enabled: boolean;
-  display_name: string;
-}
-
 // export:A1 /agency 控制台复用同一代管关系行形状(0064 scope 列)。
 export interface AgencyRel {
   id: string;
@@ -50,6 +45,16 @@ export interface AgencyRel {
   valid_until: string;
   grant_revision: number;
   payer_grant_ref: string;
+}
+
+interface MemberRec {
+  id: string;
+  principal_ref: string;
+  role: string;
+  store_scope: string;
+  enabled: boolean;
+  display_name: string;
+  granted_permissions?: string[];
 }
 
 interface StoreRec {
@@ -79,6 +84,15 @@ const ROLE_LABELS: Record<string, string> = {
   store_manager: "门店经理",
   staff: "店员",
   agent: "代理",
+};
+
+// 店员可被授予的动作权限(与后端白名单一一对应;billing/ops 永不经此面)。
+const STAFF_PERM_LABELS: Record<string, string> = {
+  "storefront:configure": "首页配置",
+  "action:configure": "动作配置",
+  "action:channel_target": "渠道目标",
+  "action:manage_deal": "商务动作（deal）",
+  "action:manage_voucher": "商务动作（voucher）",
 };
 
 // newTemplateDraft starts ONE logical distribution request: its idempotency
@@ -156,14 +170,35 @@ export function SettingsDesk() {
       <h1 className="tk-title">成员与权限</h1>
       <p className="tk-lead">谁进来、能做什么、代理替谁做——每一次授权和撤回都留痕可查。</p>
       {notice && phase === "ready" ? <p className="tk-warn" data-role="notice">{notice}</p> : null}
+      <MyAccessSection role={session.role} access={access} tenantName={session.tenantName} />
       {agent ? <AgentBanner tenantName={session.tenantName} access={access} /> : null}
-      {owner ? <MembersSection members={members} stores={stores} reload={load} setNotice={setNotice} sessionApi={session.api} /> : null}
+      {owner ? <OwnerSection members={members} /> : null}
+      {owner ? <StoreManagerSection members={members} stores={stores} reload={load} setNotice={setNotice} sessionApi={session.api} /> : null}
+      {owner ? <StaffActionSection members={members} stores={stores} reload={load} setNotice={setNotice} sessionApi={session.api} /> : null}
       {owner ? <AgencySection relations={relations} stores={stores} reload={load} setNotice={setNotice} sessionApi={session.api} /> : null}
       {owner || session.role === "store_manager" ? (
         <TemplatesSection owner={owner} stores={stores} items={templates} reload={load} setNotice={setNotice} sessionApi={session.api} />
       ) : null}
       <BrandSection owner={owner} access={access} tenantName={session.tenantName} />
     </>
+  );
+}
+
+// 我的有效授权(所有角色):授权→访问→撤回旅程的「访问」一侧,当场可核对。
+function MyAccessSection({ role, access, tenantName }: { role: string; access: AccessEffective | null; tenantName: string }) {
+  const perms = access?.permissions ?? [];
+  const storeIds = access?.allowed_store_ids ?? [];
+  return (
+    <section className="tk-section" data-section="my-access">
+      <h2 className="tk-section-title">我的有效授权</h2>
+      <p data-field="my-role">当前身份:{ROLE_LABELS[role] ?? (role || "—")}（{tenantName || "—"}）</p>
+      <p data-field="my-perms">
+        {perms.length > 0 ? `已获配置权限：${perms.join("、")}` : "未获任何配置权限（业务读写按既有角色语义）"}
+      </p>
+      <p data-field="my-scope">
+        {storeIds.length === 0 ? "作用范围：全部门店 / 租户级" : `作用范围：仅 ${storeIds.length} 家门店`}
+      </p>
+    </section>
   );
 }
 
@@ -187,9 +222,35 @@ export function AgentBanner({ tenantName, access }: { tenantName: string; access
 
 type SessionApi = (method: string, path: string, body?: unknown) => Promise<{ ok: boolean; status: number; data: Record<string, unknown> }>;
 
-// ---- 成员与权限(授权/改角色/停用,org_owner)----------------------------------
+function memberRowLabel(m: MemberRec): string {
+  return m.display_name || m.principal_ref;
+}
 
-function MembersSection({
+// ---- 四区之一:组织负责人(治理面清单,只读展示)---------------------------------
+
+function OwnerSection({ members }: { members: MemberRec[] }) {
+  const owners = members.filter((m) => m.role === "org_owner" && m.enabled);
+  return (
+    <section className="tk-section" data-section="owner">
+      <h2 className="tk-section-title">组织负责人</h2>
+      <ul className="tk-list">
+        {owners.map((m) => (
+          <li key={m.id} data-role="owner-row">
+            <strong>{memberRowLabel(m)}</strong>
+            <span className="tk-note"> 总部 / 全部门店</span>
+          </li>
+        ))}
+      </ul>
+      <p className="tk-note" data-field="owner-scope">
+        组织负责人独占:成员与门店管理、模板下发、代理授权、白标设置。以下三区的一切授权都由组织负责人操作并留痕。
+      </p>
+    </section>
+  );
+}
+
+// ---- 四区之二:门店经理授权 ------------------------------------------------------
+
+function StoreManagerSection({
   members, stores, reload, setNotice, sessionApi,
 }: {
   members: MemberRec[];
@@ -198,8 +259,9 @@ function MembersSection({
   setNotice: (v: string) => void;
   sessionApi: SessionApi;
 }) {
-  const [draft, setDraft] = useState({ principal: "", role: "staff", scope: "", reason: "" });
+  const [draft, setDraft] = useState({ principal: "", scope: "", reason: "" });
   const [stopReason, setStopReason] = useState<Record<string, string>>({});
+  const managers = members.filter((m) => m.role === "store_manager");
   const storeName = (id: string) => stores.find((s) => s.id === id)?.name ?? id ?? "";
 
   async function grant(event: React.FormEvent) {
@@ -208,10 +270,14 @@ function MembersSection({
       setNotice("授权必须填写原因（会留痕可查）。");
       return;
     }
+    if (!draft.scope) {
+      setNotice("门店经理必须指定负责的门店。");
+      return;
+    }
     const res = await sessionApi("POST", "admin/members", {
       principal_ref: draft.principal.trim(),
-      role: draft.role,
-      store_scope: (draft.role === "store_manager" || draft.scope !== "") ? draft.scope : "",
+      role: "store_manager",
+      store_scope: draft.scope,
       display_name: "",
       reason: draft.reason.trim(),
     });
@@ -219,7 +285,7 @@ function MembersSection({
       setNotice(failureText(res.status, res.data));
       return;
     }
-    setDraft({ principal: "", role: "staff", scope: "", reason: "" });
+    setDraft({ principal: "", scope: "", reason: "" });
     setNotice("");
     await reload();
   }
@@ -241,14 +307,13 @@ function MembersSection({
   }
 
   return (
-    <section className="tk-section" data-section="members">
-      <h2 className="tk-section-title">成员与权限</h2>
+    <section className="tk-section" data-section="store-manager">
+      <h2 className="tk-section-title">门店经理授权</h2>
       <ul className="tk-list">
-        {members.map((m) => (
-          <li key={m.id} data-role="member-row">
-            <strong>{m.display_name || m.principal_ref}</strong>
-            <span className="tk-note"> {ROLE_LABELS[m.role] ?? m.role}</span>
-            {m.store_scope ? <span className="tk-note">仅本店：{storeName(m.store_scope)}</span> : null}
+        {managers.map((m) => (
+          <li key={m.id} data-role="manager-row">
+            <strong>{memberRowLabel(m)}</strong>
+            <span className="tk-note"> 仅本店:{storeName(m.store_scope)}</span>
             {m.enabled ? null : <span className="tk-unknown">已停用</span>}
             {m.enabled ? (
               <div className="tk-row tk-gap">
@@ -258,33 +323,185 @@ function MembersSection({
                   value={stopReason[m.id] ?? ""}
                   onChange={(e) => setStopReason({ ...stopReason, [m.id]: e.target.value })}
                 />
-                <button className="tk-quiet" type="button" data-action="disable-member" onClick={() => void stop(m)}>停用</button>
+                <button className="tk-quiet" type="button" data-action="disable-manager" onClick={() => void stop(m)}>停用</button>
               </div>
             ) : null}
           </li>
         ))}
       </ul>
-      <form className="tk-form" onSubmit={grant} data-form="grant-member">
-        <h3 className="tk-note">授权新成员</h3>
+      <form className="tk-form" onSubmit={grant} data-form="grant-manager">
+        <h3 className="tk-note">授权门店经理</h3>
         <input className="tk-input" placeholder="成员账号 ID（usr_ 开头，向平台管理员索取）" value={draft.principal} onChange={(e) => setDraft({ ...draft, principal: e.target.value })} required />
-        <select className="tk-input" value={draft.role} onChange={(e) => setDraft({ ...draft, role: e.target.value })}>
-          <option value="staff">店员</option>
-          <option value="store_manager">门店经理</option>
-        </select>
-        <select className="tk-input" value={draft.scope} onChange={(e) => setDraft({ ...draft, scope: e.target.value })}>
-          <option value="">不限门店（店员默认全组织可见）</option>
+        <select className="tk-input" value={draft.scope} onChange={(e) => setDraft({ ...draft, scope: e.target.value })} required>
+          <option value="">选择负责的门店</option>
           {stores.map((s) => (
-            <option key={s.id} value={s.id}>仅本店：{s.name}</option>
+            <option key={s.id} value={s.id}>{s.name}</option>
           ))}
         </select>
         <input className="tk-input" placeholder="授权原因（必填，留痕可查）" value={draft.reason} onChange={(e) => setDraft({ ...draft, reason: e.target.value })} required />
-        <button className="tk-button" type="submit" data-action="grant-member">授权</button>
+        <button className="tk-button" type="submit" data-action="grant-manager">授权</button>
       </form>
     </section>
   );
 }
 
-// ---- 代理协作(建立/scope 授权/撤回,org_owner)---------------------------------
+// ---- 四区之三:店员动作授权(授权→访问→撤回→同会话 403 旅程的写面)----------------
+
+function StaffActionSection({
+  members, stores, reload, setNotice, sessionApi,
+}: {
+  members: MemberRec[];
+  stores: StoreRec[];
+  reload: () => Promise<void>;
+  setNotice: (v: string) => void;
+  sessionApi: SessionApi;
+}) {
+  const [draft, setDraft] = useState({ principal: "", scope: "", reason: "" });
+  const [stopReason, setStopReason] = useState<Record<string, string>>({});
+  const [permDraft, setPermDraft] = useState<Record<string, { picked: string[]; reason: string }>>({});
+  const staff = members.filter((m) => m.role === "staff");
+  const storeName = (id: string) => stores.find((s) => s.id === id)?.name ?? id ?? "";
+
+  function pickedOf(m: MemberRec): string[] {
+    return permDraft[m.id]?.picked ?? m.granted_permissions ?? [];
+  }
+
+  function togglePerm(m: MemberRec, perm: string) {
+    const cur = pickedOf(m);
+    const picked = cur.includes(perm) ? cur.filter((p) => p !== perm) : [...cur, perm];
+    setPermDraft({ ...permDraft, [m.id]: { picked, reason: permDraft[m.id]?.reason ?? "" } });
+  }
+
+  async function savePerms(m: MemberRec) {
+    const entry = permDraft[m.id];
+    const reason = (entry?.reason ?? "").trim();
+    if (!reason) {
+      setNotice("动作授权变更必须填写原因（会留痕可查）。撤回也一样。");
+      return;
+    }
+    const res = await sessionApi("PUT", `admin/members/${m.id}/permissions`, {
+      permissions: entry?.picked ?? [],
+      reason,
+    });
+    if (!res.ok) {
+      setNotice(failureText(res.status, res.data));
+      return;
+    }
+    setPermDraft({ ...permDraft, [m.id]: { picked: entry?.picked ?? [], reason: "" } });
+    setNotice("已保存。该店员的下一次请求即按新权限执行（撤回即时生效）。");
+    await reload();
+  }
+
+  async function grantStaff(event: React.FormEvent) {
+    event.preventDefault();
+    if (!draft.reason.trim()) {
+      setNotice("授权必须填写原因（会留痕可查）。");
+      return;
+    }
+    const res = await sessionApi("POST", "admin/members", {
+      principal_ref: draft.principal.trim(),
+      role: "staff",
+      store_scope: draft.scope,
+      display_name: "",
+      reason: draft.reason.trim(),
+    });
+    if (!res.ok) {
+      setNotice(failureText(res.status, res.data));
+      return;
+    }
+    setDraft({ principal: "", scope: "", reason: "" });
+    setNotice("");
+    await reload();
+  }
+
+  async function stop(member: MemberRec) {
+    const reason = (stopReason[member.id] ?? "").trim();
+    if (!reason) {
+      setNotice("停用成员必须填写原因（会留痕可查）。");
+      return;
+    }
+    const res = await sessionApi("PATCH", `admin/members/${member.id}`, { enabled: false, reason });
+    if (!res.ok) {
+      setNotice(failureText(res.status, res.data));
+      return;
+    }
+    setStopReason({ ...stopReason, [member.id]: "" });
+    setNotice("");
+    await reload();
+  }
+
+  return (
+    <section className="tk-section" data-section="staff-action">
+      <h2 className="tk-section-title">店员动作授权</h2>
+      <p className="tk-note">给店员授予首页/动作配置权限；撤回后,店员的下一次请求立即失去对应能力。</p>
+      <ul className="tk-list">
+        {staff.map((m) => {
+          const current = m.granted_permissions ?? [];
+          const picked = pickedOf(m);
+          const entry = permDraft[m.id];
+          return (
+            <li key={m.id} data-role="staff-row">
+              <strong>{memberRowLabel(m)}</strong>
+              <span className="tk-note"> {m.store_scope ? `仅本店：${storeName(m.store_scope)}` : "全组织"}</span>
+              {m.enabled ? null : <span className="tk-unknown">已停用</span>}
+              {m.enabled ? (
+                <>
+                  <div className="tk-row tk-gap" data-field={`staff-perms-${m.id}`}>
+                    {Object.entries(STAFF_PERM_LABELS).map(([perm, label]) => (
+                      <label key={perm}>
+                        <input
+                          type="checkbox"
+                          checked={picked.includes(perm)}
+                          onChange={() => togglePerm(m, perm)}
+                        />
+                        {label}
+                      </label>
+                    ))}
+                  </div>
+                  <p className="tk-note" data-field="staff-current">
+                    {current.length > 0 ? `现行:${current.join("、")}` : "现行:未获配置权限"}
+                  </p>
+                  <div className="tk-row tk-gap">
+                    <input
+                      className="tk-input"
+                      placeholder={entry?.picked && entry.picked.join(",") !== current.join(",") ? "授权/撤回原因（必填）" : "变更原因（必填，留痕可查）"}
+                      value={entry?.reason ?? ""}
+                      onChange={(e) => setPermDraft({ ...permDraft, [m.id]: { picked: pickedOf(m), reason: e.target.value } })}
+                    />
+                    <button className="tk-quiet" type="button" data-action="save-staff-perms" onClick={() => void savePerms(m)}>保存授权</button>
+                  </div>
+                  <div className="tk-row tk-gap">
+                    <input
+                      className="tk-input"
+                      placeholder="停用原因（必填）"
+                      value={stopReason[m.id] ?? ""}
+                      onChange={(e) => setStopReason({ ...stopReason, [m.id]: e.target.value })}
+                    />
+                    <button className="tk-quiet" type="button" data-action="disable-staff" onClick={() => void stop(m)}>停用</button>
+                  </div>
+                </>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+      <form className="tk-form" onSubmit={grantStaff} data-form="grant-staff">
+        <h3 className="tk-note">新增店员</h3>
+        <input className="tk-input" placeholder="成员账号 ID（usr_ 开头，向平台管理员索取）" value={draft.principal} onChange={(e) => setDraft({ ...draft, principal: e.target.value })} required />
+        <select className="tk-input" value={draft.scope} onChange={(e) => setDraft({ ...draft, scope: e.target.value })}>
+          <option value="">不限门店（全组织可见）</option>
+          {stores.map((s) => (
+            <option key={s.id} value={s.id}>仅本店：{s.name}</option>
+          ))}
+        </select>
+        <input className="tk-input" placeholder="授权原因（必填，留痕可查）" value={draft.reason} onChange={(e) => setDraft({ ...draft, reason: e.target.value })} required />
+        <button className="tk-button" type="submit" data-action="grant-staff">新增店员</button>
+      </form>
+    </section>
+  );
+}
+
+// ---- 四区之四:代理协作(建立/scope 授权/撤回,org_owner)--------------------------
 
 function AgencySection({
   relations, stores, reload, setNotice, sessionApi,
@@ -376,7 +593,7 @@ function AgencySection({
   const active = relations.filter((r) => !r.revoked_at);
   return (
     <section className="tk-section" data-section="agency">
-      <h2 className="tk-section-title">代理协作</h2>
+      <h2 className="tk-section-title">代理协作授权</h2>
       <ul className="tk-list">
         {active.map((rel) => {
           const cur = scopeOf(rel);
@@ -452,7 +669,7 @@ function AgencySection({
   );
 }
 
-// ---- 模板下发(总部选店下发;门店经理本店只读)----------------------------------
+// ---- 模板下发(总部选店下发;门店经理本店只读)-------------------------------------
 
 function TemplatesSection({
   owner, stores, items, reload, setNotice, sessionApi,
@@ -484,6 +701,8 @@ function TemplatesSection({
       // 幂等键在一次逻辑请求的生命周期内稳定:失败重试沿用同一 key
       // (服务端按 key 重放,不重复创建);成功后才换新 key。
       request_key: draft.key,
+      // 修复轮 2(F3):业务原因独立于幂等键,原样透传进审计。
+      reason: draft.reason.trim(),
     });
     if (!res.ok) {
       setNotice(failureText(res.status, res.data));
@@ -553,7 +772,7 @@ function TemplatesSection({
   );
 }
 
-// ---- 白标授权(只读展示;授权开关=org_owner 专属判定)---------------------------
+// ---- 白标授权(只读展示;授权开关=org_owner 专属判定)-------------------------------
 
 function BrandSection({ owner, access, tenantName }: { owner: boolean; access: AccessEffective | null; tenantName: string }) {
   const canManage = owner && (access?.permissions ?? []).includes("storefront:configure");

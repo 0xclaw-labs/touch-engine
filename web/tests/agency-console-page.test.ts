@@ -37,13 +37,15 @@ describe("census 账本同步", () => {
 describe("A1 控制台结构", () => {
   const desk = read(deskRel);
 
-  it("授权商户列表来自激活代管关系×成员行,撤销/停用不可见", () => {
+  it("授权商户列表来自跨租户主体全集(修复轮 2/F1):granted 端点,当前租户上下文≠授权商户也显示", () => {
     expect(desk).toContain('data-section="merchants"');
-    expect(desk).toContain("/api/agency/relations");
+    expect(desk).toContain("/api/agency/relations/granted");
     expect(desk).toContain("/api/session/memberships");
     expect(desk).toContain('data-role="merchant-row"');
     expect(desk).toContain("filter((r) => !r.revoked_at)");
     expect(desk).toContain('m.enabled && m.source === "membership"');
+    expect(desk).toContain("tenant_name");
+    expect(desk).toContain("payer_granted");
   });
 
   it("受控进入沿用既有 switchTenant 单缝并跳 M1(/),不新造权限体系", () => {

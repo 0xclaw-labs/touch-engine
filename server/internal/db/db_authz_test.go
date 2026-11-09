@@ -160,6 +160,38 @@ func TestOpsGrantsSchema(t *testing.T) {
 	}
 }
 
+func TestMemberPermissionGrantActiveUnique(t *testing.T) {
+	d, err := Open(filepath.Join(t.TempDir(), "touch.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer d.Close()
+
+	if _, err := d.Exec(`INSERT INTO tenants(id,name,created_at) VALUES('tnt_x','X','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO members(id,tenant_id,principal_ref,role,store_scope,enabled,display_name,created_by,created_at,updated_at)
+		 VALUES('mem_s1','tnt_x','usr_s1','staff',NULL,1,'店员','seed','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("seed member: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO member_permission_grant(id,tenant_id,member_id,permission,granted_by,granted_at,revoked_by,revoked_at,reason)
+		 VALUES('g_1','tnt_x','mem_s1','storefront:configure','usr_owner','2026-01-01T00:00:00Z','',NULL,'门店帮工')`); err != nil {
+		t.Fatalf("first active grant: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO member_permission_grant(id,tenant_id,member_id,permission,granted_by,granted_at,revoked_by,revoked_at,reason)
+		 VALUES('g_2','tnt_x','mem_s1','storefront:configure','usr_owner','2026-01-02T00:00:00Z','',NULL,'dup')`); err == nil {
+		t.Fatal("second ACTIVE grant for the same (member, permission) must be refused by the partial unique index")
+	}
+	// revoke the first: re-grant becomes legal (新行,可回查)
+	if _, err := d.Exec(`UPDATE member_permission_grant SET revoked_by='usr_owner', revoked_at='2026-01-03T00:00:00Z' WHERE id='g_1'`); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO member_permission_grant(id,tenant_id,member_id,permission,granted_by,granted_at,revoked_by,revoked_at,reason)
+		 VALUES('g_3','tnt_x','mem_s1','storefront:configure','usr_owner','2026-01-04T00:00:00Z','',NULL,'重新授权')`); err != nil {
+		t.Fatalf("re-grant after revoke must be allowed: %v", err)
+	}
+}
+
 func TestAuthzAuditAppendOnlyShape(t *testing.T) {
 	d, err := Open(filepath.Join(t.TempDir(), "touch.db"))
 	if err != nil {

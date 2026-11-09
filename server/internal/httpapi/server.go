@@ -606,6 +606,8 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("DELETE /api/v1/agency/relations/{id}", s.requireSession(s.handleAgencyRelationRevoke))
 		// HUI-4593: 代管 scope 显式授权/变更(org_owner 专属,乐观并发+审计)。
 		mux.Handle("PUT /api/v1/agency/relations/{id}/scope", s.requireSession(s.handleAgencyRelationScopeSet))
+		// 修复轮 2(F1):主体视角跨租户代管关系全集(行集恒以调用主体收口)。
+		mux.Handle("GET /api/v1/agency/relations/granted", s.requireSession(s.handleAgencyGrantedList))
 		mux.Handle("POST /api/v1/agency/sub-accounts", s.requireSession(s.handleAgencySubAccountCreate))
 		mux.Handle("GET /api/v1/agency/sub-accounts", s.requireSession(s.handleAgencySubAccountList))
 	}
@@ -618,6 +620,8 @@ func (s *Server) Handler() http.Handler {
 	if s.Cfg.FeatureAuthz {
 		mux.Handle("GET /api/v1/access/effective", s.requireSession(s.handleAccessEffective))
 		mux.Handle("GET /api/v1/access/audit", s.requireSession(s.handleAccessAudit))
+		// 修复轮 2(F2):店员动作级授权写面(授权→访问→撤回→同会话 403)。
+		mux.Handle("PUT /api/v1/admin/members/{id}/permissions", s.requireSession(s.handleMemberPermissionsSet))
 		mux.Handle("POST /api/v1/template-assignments", s.requireSession(s.handleTemplateAssignmentCreate))
 		mux.Handle("GET /api/v1/template-assignments", s.requireSession(s.handleTemplateAssignmentList))
 		mux.Handle("GET /api/v1/template-assignments/{id}", s.requireSession(s.handleTemplateAssignmentGet))

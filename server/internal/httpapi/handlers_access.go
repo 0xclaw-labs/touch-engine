@@ -78,7 +78,9 @@ func (s *Server) resolveAccess(c *caller) authz.EffectiveAccess {
 		}
 		views = append(views, v)
 	}
-	return authz.ResolveAccess(am, grant, views, nowT)
+	// 修复轮 2(F2):店员动作级显式授权,每请求实时读取(撤回即时生效)。
+	granted := s.St.ListMemberPermissionGrants(am.TenantID, am.ID)
+	return authz.ResolveAccess(am, grant, views, granted, nowT)
 }
 
 // ---- GET /access/effective -----------------------------------------------------
@@ -189,6 +191,8 @@ type templateAssignmentBody struct {
 	StoreIDs              []string `json:"store_ids"`
 	AllowedOverrideFields []string `json:"allowed_override_fields"`
 	RequestKey            string   `json:"request_key"`
+	// Reason (修复轮 2/F3):业务原因独立于幂等键,原样透传进审计。
+	Reason string `json:"reason"`
 }
 
 // templateReservedOverrideFields 冻结:门店目标/账号/二维码/Wi-Fi 密码是门店
@@ -216,6 +220,10 @@ func (s *Server) handleTemplateAssignmentCreate(w http.ResponseWriter, r *http.R
 	}
 	if strings.TrimSpace(in.TemplateRef) == "" || strings.TrimSpace(in.SourceVersion) == "" {
 		fail(w, http.StatusBadRequest, "bad_request", "template_ref and source_version are required")
+		return
+	}
+	if strings.TrimSpace(in.Reason) == "" {
+		fail(w, http.StatusBadRequest, "reason_required", "a reason is required for template distribution")
 		return
 	}
 	if len(in.StoreIDs) == 0 {
@@ -252,7 +260,9 @@ func (s *Server) handleTemplateAssignmentCreate(w http.ResponseWriter, r *http.R
 			items = append(items, map[string]any{"store_id": storeID, "ok": false, "error": "internal"})
 		}
 	}
-	// 审计(仅新授权事实落痕;重放行不重复记审计,失败不落授权事实)
+	// 审计(仅新授权事实落痕;重放行不重复记审计,失败不落授权事实)。
+	// 修复轮 2(F3):reason 是用户所填业务原因(必填),request_key 只是幂等键;
+	// 新建无前值,前值用字面量 "null"(显式 null 语义)。
 	for _, it := range items {
 		if it["ok"] != true || it["replayed"] == true {
 			continue
@@ -261,8 +271,9 @@ func (s *Server) handleTemplateAssignmentCreate(w http.ResponseWriter, r *http.R
 			TenantID: c.Member.TenantID, ActorPrincipal: c.Member.PrincipalRef,
 			ActorRole: c.Member.Role,
 			Action:    "template_assign", TargetType: "template_assignment", TargetID: it["id"].(string),
-			AfterJSON: marshalSnapshot(map[string]any{"template_ref": in.TemplateRef, "source_version": in.SourceVersion, "store_id": it["store_id"]}),
-			Reason:    in.RequestKey,
+			BeforeJSON: "null",
+			AfterJSON:  marshalSnapshot(map[string]any{"template_ref": in.TemplateRef, "source_version": in.SourceVersion, "store_id": it["store_id"]}),
+			Reason:     strings.TrimSpace(in.Reason),
 		})
 	}
 
@@ -477,8 +488,9 @@ func (s *Server) handleOpsGrantCreate(w http.ResponseWriter, r *http.Request) {
 	_, _ = s.St.AppendAuthzAudit(store.AuthzAuditEntry{
 		TenantID: g.TenantID, ActorPrincipal: serviceID, ActorRole: opsGrantManagerRole,
 		Action: "ops_grant_issue", TargetType: "ops_grant", TargetID: g.ID,
-		AfterJSON: marshalSnapshot(map[string]any{"principal_ref": g.PrincipalRef, "commands": g.Commands, "expires_at": g.ExpiresAt}),
-		Reason:    in.Reason,
+		BeforeJSON: "null",
+		AfterJSON:  marshalSnapshot(map[string]any{"principal_ref": g.PrincipalRef, "commands": g.Commands, "expires_at": g.ExpiresAt}),
+		Reason:     in.Reason,
 	})
 	writeJSON(w, http.StatusCreated, g)
 }
@@ -529,4 +541,56 @@ func (s *Server) handleOpsGrantRevoke(w http.ResponseWriter, r *http.Request) {
 		Reason: "revoked by issuing service",
 	})
 	writeJSON(w, http.StatusOK, rev)
+}
+
+// ---- member permission grants(店员动作级授权,修复轮 2/F2)--------------------------
+
+// handleMemberPermissionsSet atomically replaces one STAFF member's granted
+// permission set (授权→访问→撤回→同会话 403 旅程的写面)。
+//   - owner 专属(manage_members);目标必须是店员(别角色各有自己的模型);
+//   - 白名单 = storefront:*/action:* 冻结权限串(store 层最后一道闸);
+//   - reason 必填(审计:操作者/时间/前后值集合/原因);
+//   - 撤回即时生效:access/effective 每请求实时读取,同会话下一请求即失权。
+func (s *Server) handleMemberPermissionsSet(w http.ResponseWriter, r *http.Request) {
+	if !s.authzGate(w) {
+		return
+	}
+	c := callerFrom(r)
+	if !s.requireAction(c, authz.ActionManageMembers, authz.RecordScope{TenantID: c.Member.TenantID}, w) {
+		return
+	}
+	var in struct {
+		Permissions []string `json:"permissions"`
+		Reason      string   `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		fail(w, http.StatusBadRequest, "bad_request", "invalid json body")
+		return
+	}
+	if strings.TrimSpace(in.Reason) == "" {
+		fail(w, http.StatusBadRequest, "reason_required", "a reason is required for permission changes")
+		return
+	}
+	if in.Permissions == nil {
+		in.Permissions = []string{}
+	}
+	target, err := s.St.GetMember(r.PathValue("id"))
+	if err != nil || target.TenantID != c.Member.TenantID {
+		fail(w, http.StatusNotFound, "not_found", "member not found in this tenant scope")
+		return
+	}
+	if target.Role != "staff" {
+		fail(w, http.StatusBadRequest, "bad_target", "action-level grants apply to staff members only")
+		return
+	}
+	perms, err := s.St.SetMemberPermissionGrants(c.Member.TenantID, target.ID, in.Permissions, c.Member.PrincipalRef, strings.TrimSpace(in.Reason))
+	if err != nil {
+		if errors.Is(err, store.ErrMemberGrantInvalid) {
+			fail(w, http.StatusBadRequest, "bad_permission", "permissions must be storefront:*/action:* configuration commands")
+			return
+		}
+		fail(w, http.StatusNotFound, "not_found", "member not found in this tenant scope")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"member_id": target.ID, "permissions": perms})
 }

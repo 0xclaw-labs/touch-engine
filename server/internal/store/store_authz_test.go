@@ -295,6 +295,74 @@ func TestOpsGrantLifecycle(t *testing.T) {
 	}
 }
 
+func TestMemberPermissionGrantSetLifecycle(t *testing.T) {
+	s := openStore(t)
+	ctx := seedTwoTenants(t, s)
+
+	staff, err := s.CreateMember(ctx.tenA.ID, "usr_staff_x", "staff", "店员", "test", true)
+	must(t, err)
+
+	// grant: 空集 → [storefront, action]
+	set, err := s.SetMemberPermissionGrants(ctx.tenA.ID, staff.ID, []string{"storefront:configure", "action:configure"}, ctx.ownA.PrincipalRef, "门店帮工需要改首页")
+	must(t, err)
+	if len(set) != 2 {
+		t.Fatalf("grant set = %v, want 2 perms", set)
+	}
+	if got := s.ListMemberPermissionGrants(ctx.tenA.ID, staff.ID); len(got) != 2 {
+		t.Fatalf("active grants = %v, want 2", got)
+	}
+
+	// full replace: 撤一个留一个 → 撤销墓碑 + 新授权并存,可回查
+	set, err = s.SetMemberPermissionGrants(ctx.tenA.ID, staff.ID, []string{"action:configure", "action:manage_deal"}, ctx.ownA.PrincipalRef, "改为动作配置")
+	must(t, err)
+	if len(set) != 2 || set[0] != "action:configure" {
+		t.Fatalf("replaced set = %v", set)
+	}
+	// audit row with before/after sets
+	rows, err := s.ListAuthzAudit(ctx.tenA.ID, "member", staff.ID, 50)
+	must(t, err)
+	sawSet := false
+	for _, e := range rows {
+		if e.Action == "member_permissions_set" && e.Reason == "改为动作配置" {
+			sawSet = true
+			if e.BeforeJSON == "" || e.AfterJSON == "" || e.BeforeJSON == "null" {
+				t.Fatalf("permission set audit must carry before/after sets: %q %q", e.BeforeJSON, e.AfterJSON)
+			}
+		}
+	}
+	if !sawSet {
+		t.Fatal("member_permissions_set audit missing")
+	}
+
+	// non-staff target refused
+	owner2, err := s.CreateMember(ctx.tenA.ID, "usr_owner2", "org_owner", "老板2", "test", true)
+	must(t, err)
+	if _, err := s.SetMemberPermissionGrants(ctx.tenA.ID, owner2.ID, []string{"storefront:configure"}, ctx.ownA.PrincipalRef, "r"); !errors.Is(err, ErrMemberGrantInvalid) {
+		t.Fatalf("non-staff grant = %v, want ErrMemberGrantInvalid", err)
+	}
+
+	// non-whitelisted permission refused (billing/ops never via this surface)
+	if _, err := s.SetMemberPermissionGrants(ctx.tenA.ID, staff.ID, []string{"billing:view"}, ctx.ownA.PrincipalRef, "r"); !errors.Is(err, ErrMemberGrantInvalid) {
+		t.Fatalf("billing grant = %v, want ErrMemberGrantInvalid", err)
+	}
+	if _, err := s.SetMemberPermissionGrants(ctx.tenA.ID, staff.ID, []string{"ops:inspect"}, ctx.ownA.PrincipalRef, "r"); !errors.Is(err, ErrMemberGrantInvalid) {
+		t.Fatalf("ops grant = %v, want ErrMemberGrantInvalid", err)
+	}
+
+	// foreign tenant member masked
+	staffB, err := s.CreateMember(ctx.tenB.ID, "usr_staff_b", "staff", "B店员", "test", true)
+	must(t, err)
+	if _, err := s.SetMemberPermissionGrants(ctx.tenA.ID, staffB.ID, []string{"storefront:configure"}, ctx.ownA.PrincipalRef, "r"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-tenant grant = %v, want ErrNotFound", err)
+	}
+
+	// tenant-wide grant map for member list join
+	m := s.ListTenantPermissionGrants(ctx.tenA.ID)
+	if len(m[staff.ID]) != 2 {
+		t.Fatalf("tenant grant map = %v", m)
+	}
+}
+
 func withStore(in NewTemplateAssignment, storeID string, extraFields ...string) NewTemplateAssignment {
 	out := in
 	out.StoreID = storeID

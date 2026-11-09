@@ -34,6 +34,13 @@ interface StoreRec {
   name: string;
 }
 
+// 修复轮 2(F1):/agency/relations/granted 的卡片 —— 主体视角跨租户全集,
+// 含 grantor 租户名与代付状态(行集由服务端按调用主体收口)。
+interface GrantedRelation extends AgencyRel {
+  tenant_name: string;
+  payer_granted: boolean;
+}
+
 export function AgencyConsole() {
   const session = useMerchantSession();
   if (session.phase === "loading") {
@@ -69,7 +76,7 @@ function AgencyLogin({ session }: { session: MerchantSession }) {
 function AgencyDesk({ session }: { session: MerchantSession }) {
   const [phase, setPhase] = useState<"loading" | "error" | "empty" | "ready">("loading");
   const [error, setError] = useState("");
-  const [merchants, setMerchants] = useState<{ rel: AgencyRel; name: string }[]>([]);
+  const [merchants, setMerchants] = useState<{ rel: GrantedRelation; name: string }[]>([]);
   const [enterError, setEnterError] = useState("");
   const [insideName, setInsideName] = useState("");
   const [access, setAccess] = useState<AccessEffective | null>(null);
@@ -77,7 +84,9 @@ function AgencyDesk({ session }: { session: MerchantSession }) {
 
   const load = useCallback(async () => {
     setPhase("loading");
-    // 名下成员行(名称来源;已撤销/停用的商户不会出现在这里)
+    // 成员行只用来选会话租户上下文(任何自己所属租户皆可);
+    // 商户全集来自 /agency/relations/granted —— 服务端按【调用主体】收口的
+    // 跨租户激活代管关系(修复轮 2/F1:当前租户上下文≠授权商户时同样显示)。
     const memRes = await fetch("/api/session/memberships");
     if (!memRes.ok) {
       setError(failureText(memRes.status, {}));
@@ -90,19 +99,16 @@ function AgencyDesk({ session }: { session: MerchantSession }) {
       setPhase("empty");
       return;
     }
-    // 代管关系(激活行;服务端按代理主体过滤)。列表接口需要成员租户上下文,
-    // 取第一个成员行作头(服务端按主体重过滤,头不放大可见性)。
-    const relRes = await fetch("/api/agency/relations", { headers: { "x-tenant-id": scopes[0].tenant_id } });
+    const relRes = await fetch("/api/agency/relations/granted", { headers: { "x-tenant-id": scopes[0].tenant_id } });
     if (!relRes.ok) {
       setError(failureText(relRes.status, {}));
       setPhase("error");
       return;
     }
-    const relData = (await relRes.json().catch(() => ({}))) as { items?: AgencyRel[] };
-    const byName = new Map(scopes.map((m) => [m.tenant_id, m.display_name] as const));
-    const active = (relData.items ?? []).filter((r) => !r.revoked_at);
-    setMerchants(active.map((rel) => ({ rel, name: byName.get(rel.tenant_id) ?? rel.tenant_id })));
-    setPhase(active.length === 0 ? "empty" : "ready");
+    const relData = (await relRes.json().catch(() => ({}))) as { items?: GrantedRelation[] };
+    const granted = (relData.items ?? []).filter((r) => !r.revoked_at);
+    setMerchants(granted.map((rel) => ({ rel, name: rel.tenant_name || rel.tenant_id })));
+    setPhase(granted.length === 0 ? "empty" : "ready");
   }, []);
 
   useEffect(() => {

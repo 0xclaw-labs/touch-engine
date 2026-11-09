@@ -59,7 +59,7 @@ func agencyGrant(actions []string, stores []string, revision int64, expires time
 }
 
 func TestResolveAccessOwnerFullDimensions(t *testing.T) {
-	a := ResolveAccess(ownerX, nil, nil, nowT)
+	a := ResolveAccess(ownerX, nil, nil, nil, nowT)
 	for _, p := range []Permission{PermStorefrontConfigure, PermActionConfigure, PermActionChannelTarget,
 		PermActionManageDeal, PermActionManageVoucher, PermBillingView, PermBillingManagePayer} {
 		if !Can(a, string(p), "sto_any").Allowed {
@@ -75,7 +75,7 @@ func TestResolveAccessOwnerFullDimensions(t *testing.T) {
 }
 
 func TestResolveAccessStoreManagerOwnStoreOnly(t *testing.T) {
-	a := ResolveAccess(mgrS1, nil, nil, nowT)
+	a := ResolveAccess(mgrS1, nil, nil, nil, nowT)
 	if !Can(a, "storefront:configure", "sto_S1").Allowed {
 		t.Fatal("manager configures own store")
 	}
@@ -94,14 +94,14 @@ func TestResolveAccessStoreManagerOwnStoreOnly(t *testing.T) {
 
 func TestResolveAccessStaffFailClosed(t *testing.T) {
 	// legacy tenant-level staff: business semantics untouched, zero NEW dimensions
-	a := ResolveAccess(staffX, nil, nil, nowT)
+	a := ResolveAccess(staffX, nil, nil, nil, nowT)
 	for _, p := range []string{"storefront:configure", "action:configure", "billing:view", "ops:inspect"} {
 		if Can(a, p, "").Allowed {
 			t.Fatalf("legacy staff must not hold %s", p)
 		}
 	}
 	// explicit store-scoped staff: same — new dimensions stay fail-closed
-	a2 := ResolveAccess(staffS1, nil, nil, nowT)
+	a2 := ResolveAccess(staffS1, nil, nil, nil, nowT)
 	if Can(a2, "storefront:configure", "sto_S1").Allowed {
 		t.Fatal("store-scoped staff still has no configuration dimensions (explicit modeling ≠ implicit grant)")
 	}
@@ -109,7 +109,7 @@ func TestResolveAccessStaffFailClosed(t *testing.T) {
 
 func TestResolveAccessAgentGrantMatrix(t *testing.T) {
 	// no grant (legacy relation): only legacy whitelist outside this layer; zero new dims
-	a := ResolveAccess(agentX, nil, nil, nowT)
+	a := ResolveAccess(agentX, nil, nil, nil, nowT)
 	for _, p := range []string{"storefront:configure", "action:configure", "billing:view"} {
 		if Can(a, p, "sto_S1").Allowed {
 			t.Fatalf("agent without grant must not hold %s", p)
@@ -118,7 +118,7 @@ func TestResolveAccessAgentGrantMatrix(t *testing.T) {
 
 	// grant with storefront+action, scoped to S1+S2
 	g := agencyGrant([]string{"storefront", "action"}, []string{"sto_S1", "sto_S2"}, 2, time.Time{}, "")
-	a = ResolveAccess(agentX, g, nil, nowT)
+	a = ResolveAccess(agentX, g, nil, nil, nowT)
 	if !Can(a, "storefront:configure", "sto_S1").Allowed || !Can(a, "action:configure", "sto_S2").Allowed {
 		t.Fatal("agent configures within granted stores")
 	}
@@ -137,7 +137,7 @@ func TestResolveAccessAgentGrantMatrix(t *testing.T) {
 
 	// renewal grant → billing:view only; pay needs payer_grant_ref
 	g = agencyGrant([]string{"renewal"}, nil, 3, time.Time{}, "")
-	a = ResolveAccess(agentX, g, nil, nowT)
+	a = ResolveAccess(agentX, g, nil, nil, nowT)
 	if !Can(a, "billing:view", "").Allowed {
 		t.Fatal("renewal grant implies billing:view")
 	}
@@ -145,7 +145,7 @@ func TestResolveAccessAgentGrantMatrix(t *testing.T) {
 		t.Fatal("payer management needs payer_grant_ref")
 	}
 	g = agencyGrant([]string{"renewal"}, nil, 4, time.Time{}, "pgr_9")
-	a = ResolveAccess(agentX, g, nil, nowT)
+	a = ResolveAccess(agentX, g, nil, nil, nowT)
 	if !Can(a, "billing:manage_payer", "").Allowed {
 		t.Fatal("payer_grant_ref present → billing eligibility passes (final charge decided by public payer authority)")
 	}
@@ -155,13 +155,13 @@ func TestResolveAccessAgentExpiry(t *testing.T) {
 	// expired grant: extended capabilities fail closed (same as revoked)
 	expired := nowT.Add(-time.Minute)
 	g := agencyGrant([]string{"storefront"}, []string{"sto_S1"}, 1, expired, "")
-	a := ResolveAccess(agentX, g, nil, nowT)
+	a := ResolveAccess(agentX, g, nil, nil, nowT)
 	if Can(a, "storefront:configure", "sto_S1").Allowed {
 		t.Fatal("expired agency grant must fail closed")
 	}
 	future := nowT.Add(time.Minute)
 	g = agencyGrant([]string{"storefront"}, []string{"sto_S1"}, 1, future, "")
-	a = ResolveAccess(agentX, g, nil, nowT)
+	a = ResolveAccess(agentX, g, nil, nil, nowT)
 	if !Can(a, "storefront:configure", "sto_S1").Allowed {
 		t.Fatal("unexpired grant works")
 	}
@@ -171,7 +171,7 @@ func TestResolveAccessOpsGrants(t *testing.T) {
 	valid := OpsGrantView{Ref: "ops_1", PrincipalRef: "usr_o1", TenantID: "tnt_X",
 		StoreScopeSet: []string{"sto_S1"}, Commands: []string{"ops:inspect"},
 		ExpiresAt: nowT.Add(time.Hour)}
-	a := ResolveAccess(ownerX, nil, []OpsGrantView{valid}, nowT)
+	a := ResolveAccess(ownerX, nil, []OpsGrantView{valid}, nil, nowT)
 	if !Can(a, "ops:inspect", "sto_S1").Allowed {
 		t.Fatal("valid ops grant authorizes its command within scope")
 	}
@@ -184,21 +184,21 @@ func TestResolveAccessOpsGrants(t *testing.T) {
 	// expired
 	expired := valid
 	expired.ExpiresAt = nowT.Add(-time.Second)
-	a = ResolveAccess(ownerX, nil, []OpsGrantView{expired}, nowT)
+	a = ResolveAccess(ownerX, nil, []OpsGrantView{expired}, nil, nowT)
 	if Can(a, "ops:inspect", "sto_S1").Allowed {
 		t.Fatal("expired ops grant is dead")
 	}
 	// revoked grants never reach ResolveAccess (HTTP layer filters); defense in depth:
 	revoked := valid
 	revoked.RevokedAt = nowT.Add(-time.Second)
-	a = ResolveAccess(ownerX, nil, []OpsGrantView{revoked}, nowT)
+	a = ResolveAccess(ownerX, nil, []OpsGrantView{revoked}, nil, nowT)
 	if Can(a, "ops:inspect", "sto_S1").Allowed {
 		t.Fatal("revoked ops grant is dead")
 	}
 	// wrong principal: grant belongs to another principal → not applied
 	other := valid
 	other.PrincipalRef = "usr_else"
-	a = ResolveAccess(ownerX, nil, []OpsGrantView{other}, nowT)
+	a = ResolveAccess(ownerX, nil, []OpsGrantView{other}, nil, nowT)
 	if Can(a, "ops:inspect", "sto_S1").Allowed {
 		t.Fatal("ops grant of another principal must not apply")
 	}
@@ -207,36 +207,36 @@ func TestResolveAccessOpsGrants(t *testing.T) {
 func TestResolveAccessDisabledAndUnknownRole(t *testing.T) {
 	disabled := *ownerX
 	disabled.Enabled = false
-	a := ResolveAccess(&disabled, nil, nil, nowT)
+	a := ResolveAccess(&disabled, nil, nil, nil, nowT)
 	if len(a.Permissions) != 0 {
 		t.Fatal("disabled member holds nothing")
 	}
 	ghost := &Member{ID: "mem_g", TenantID: "tnt_X", PrincipalRef: "usr_g", Role: Role("ghost"), Enabled: true}
-	a = ResolveAccess(ghost, nil, nil, nowT)
+	a = ResolveAccess(ghost, nil, nil, nil, nowT)
 	if len(a.Permissions) != 0 {
 		t.Fatal("unknown role holds nothing")
 	}
 }
 
 func TestCanUnknownPermissionDenied(t *testing.T) {
-	a := ResolveAccess(ownerX, nil, nil, nowT)
+	a := ResolveAccess(ownerX, nil, nil, nil, nowT)
 	if d := Can(a, "made:up", ""); d.Allowed {
 		t.Fatal("unknown permission strings are always denied")
 	}
 }
 
 func TestCanManageBrandSettings(t *testing.T) {
-	owner := ResolveAccess(ownerX, nil, nil, nowT)
+	owner := ResolveAccess(ownerX, nil, nil, nil, nowT)
 	if !CanManageBrandSettings(owner) {
 		t.Fatal("org_owner with storefront:configure manages brand settings")
 	}
-	mgr := ResolveAccess(mgrS1, nil, nil, nowT)
+	mgr := ResolveAccess(mgrS1, nil, nil, nil, nowT)
 	if CanManageBrandSettings(mgr) {
 		t.Fatal("store manager never manages brand settings")
 	}
 	// agent with storefront grant still is not brand-settings manager (brand is tenant-level)
 	g := agencyGrant([]string{"storefront"}, nil, 1, time.Time{}, "")
-	ag := ResolveAccess(agentX, g, nil, nowT)
+	ag := ResolveAccess(agentX, g, nil, nil, nowT)
 	if CanManageBrandSettings(ag) {
 		t.Fatal("agent never manages brand settings")
 	}
@@ -265,16 +265,50 @@ func TestStaffStoreScopeBusinessActions(t *testing.T) {
 		}
 	}
 	// scoped staff still holds zero configuration dimensions (fail-closed)
-	a := ResolveAccess(scoped, nil, nil, nowT)
+	a := ResolveAccess(scoped, nil, nil, nil, nowT)
 	if Can(a, "storefront:configure", "sto_S1").Allowed {
 		t.Fatal("scoped staff never gains configuration dimensions")
 	}
 }
 
+func TestStaffExplicitPermissionGrants(t *testing.T) {
+	// 修复轮 2(F2):店员动作级显式授权 —— 授权→访问→撤回→同会话 403 的裁决半边。
+	// 仅 staff 生效;门店范围随成员行 store_scope;未授予仍全拒。
+	// tenant-level clerk granted storefront → whole-tenant scope
+	a := ResolveAccess(staffX, nil, nil, []string{"storefront:configure"}, nowT)
+	if !Can(a, "storefront:configure", "").Allowed {
+		t.Fatal("granted tenant-level clerk holds storefront:configure tenant-wide")
+	}
+	if Can(a, "action:configure", "").Allowed {
+		t.Fatal("only granted strings are held")
+	}
+	// store-scoped clerk: grant applies within own store only
+	a2 := ResolveAccess(staffS1, nil, nil, []string{"storefront:configure", "action:configure"}, nowT)
+	if !Can(a2, "storefront:configure", "sto_S1").Allowed {
+		t.Fatal("scoped clerk exercises grant in own store")
+	}
+	if d := Can(a2, "storefront:configure", "sto_S2"); d.Allowed || d.Reason != ReasonOutOfScope {
+		t.Fatalf("scoped clerk grant beyond own store = %+v, want out_of_scope", d)
+	}
+	if ids := a2.AllowedStoreIDs; len(ids) != 1 || ids[0] != "sto_S1" {
+		t.Fatalf("scoped clerk allowed_store_ids = %v, want [sto_S1]", ids)
+	}
+	// empty grant → still fully closed
+	a3 := ResolveAccess(staffX, nil, nil, nil, nowT)
+	if len(a3.Permissions) != 0 {
+		t.Fatal("ungranted clerk stays closed")
+	}
+	// non-staff roles ignore the grant parameter (各走各的模型)
+	a4 := ResolveAccess(mgrS1, nil, nil, []string{"billing:view"}, nowT)
+	if Can(a4, "billing:view", "sto_S1").Allowed {
+		t.Fatal("grants must not apply to non-staff roles (manager never gains billing)")
+	}
+}
+
 func TestEffectiveAccessIsCopySafe(t *testing.T) {
-	a := ResolveAccess(ownerX, nil, nil, nowT)
+	a := ResolveAccess(ownerX, nil, nil, nil, nowT)
 	a.Permissions[0] = "tampered"
-	b := ResolveAccess(ownerX, nil, nil, nowT)
+	b := ResolveAccess(ownerX, nil, nil, nil, nowT)
 	if Can(b, "storefront:configure", "").Allowed != true {
 		t.Fatal("ResolveAccess must return fresh state each call")
 	}

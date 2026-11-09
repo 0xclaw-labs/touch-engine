@@ -51,6 +51,8 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"lib_pool_items",
 		"lib_pools",
 		"lib_selections",
+		// HUI-4593 修复轮 2 (0065) 店员动作级授权
+		"member_permission_grant",
 		"members",
 		"nfc_tag_groups",
 		"nfc_tags",

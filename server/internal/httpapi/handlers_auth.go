@@ -225,7 +225,7 @@ func (s *Server) appendMemberAudit(c *caller, action, targetID, reason string, b
 
 func memberSnapshotJSON(m map[string]any) string {
 	if m == nil {
-		return "{}"
+		return "null" // 修复轮 2(F3):新建无前值,显式 null 语义
 	}
 	b, err := json.Marshal(m)
 	if err != nil {
@@ -248,7 +248,22 @@ func (s *Server) handleMemberList(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, "internal", "list members failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": members})
+	// 修复轮 2(F2):回填店员动作级授权现行态(列表一次读取,页面免逐个查询)。
+	grants := s.St.ListTenantPermissionGrants(c.Member.TenantID)
+	items := make([]map[string]any, 0, len(members))
+	for _, m := range members {
+		item := map[string]any{
+			"id": m.ID, "tenant_id": m.TenantID, "principal_ref": m.PrincipalRef,
+			"role": m.Role, "store_scope": m.StoreScope, "enabled": m.Enabled,
+			"display_name": m.DisplayName, "created_by": m.CreatedBy,
+			"created_at": m.CreatedAt, "updated_at": m.UpdatedAt,
+		}
+		if perms := grants[m.ID]; len(perms) > 0 {
+			item["granted_permissions"] = perms
+		}
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 // handleMemberCreate attaches an ALREADY EXISTING platform principal to this

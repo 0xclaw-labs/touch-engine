@@ -354,3 +354,42 @@ func (s *Server) handleAgencySubAccountList(w http.ResponseWriter, r *http.Reque
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": rows})
 }
+
+// ---- granted(主体视角跨租户代管关系全集,修复轮 2/F1)-----------------------------
+//
+// GET /api/v1/agency/relations/granted:返回授予【调用主体】的全部激活代管关系,
+// 与当前工作区租户上下文无关 —— 代理同时是 A 租户 owner + B 租户代理时,
+// 在 A 上下文里也必须看到 B 的卡片(走查 Walk B / F1)。
+// 安全性:行集恒以 agent_principal = 调用者主体 收口,自己被授予的关系对自己
+// 可见(与 agent 视图同一纪律),工作区租户头不放大可见性;已撤销关系不可见。
+// 附 grantor 租户名与代付状态(卡片直显;租户名本就对其可见 —— 代理是该租户成员行)。
+func (s *Server) handleAgencyGrantedList(w http.ResponseWriter, r *http.Request) {
+	if !s.agencyGate(w) {
+		return
+	}
+	c := callerFrom(r)
+	if c == nil || c.Member == nil {
+		fail(w, http.StatusForbidden, authz.ReasonNotMember, "principal is not a member of this tenant")
+		return
+	}
+	rels, err := s.St.ListActiveAgencyRelationsByAgent(c.Member.PrincipalRef)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "agency granted list failed")
+		return
+	}
+	items := make([]map[string]any, 0, len(rels))
+	for _, rel := range rels {
+		item := map[string]any{
+			"id": rel.ID, "tenant_id": rel.TenantID, "agent_principal": rel.AgentPrincipal,
+			"note": rel.Note, "established_by": rel.EstablishedBy, "established_at": rel.EstablishedAt,
+			"allowed_actions": rel.AllowedActions, "store_scope_set": rel.StoreScopeSet,
+			"valid_until": rel.ValidUntil, "grant_revision": rel.GrantRevision,
+			"payer_granted": rel.PayerGrantRef != "",
+		}
+		if t, terr := s.St.GetTenant(rel.TenantID); terr == nil && t.Name != "" {
+			item["tenant_name"] = t.Name
+		}
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
