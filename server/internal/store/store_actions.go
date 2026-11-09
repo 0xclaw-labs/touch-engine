@@ -457,6 +457,22 @@ func sameSet(existing, desired []StoreAction) bool {
 	return true
 }
 
+// StoreActionScope resolves the trusted tenant+store that own an action id.
+// The id alone is NOT an authorization: callers must still authorize the
+// resolved scope. Unknown ids answer ErrNotFound (uniform, no existence leak).
+func (s *Store) StoreActionScope(actionID string) (string, string, error) {
+	var tenantID, storeID string
+	err := s.DB.QueryRow(`SELECT tenant_id,store_id FROM store_actions WHERE id=?`, actionID).
+		Scan(&tenantID, &storeID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", ErrNotFound
+	}
+	if err != nil {
+		return "", "", err
+	}
+	return tenantID, storeID, nil
+}
+
 // GetStoreActionByID resolves one action strictly within its tenant+store
 // (used by the validate surface: the action id is NOT an authorization).
 func (s *Store) GetStoreActionByID(tenantID, storeID, actionID string) (StoreAction, error) {

@@ -340,6 +340,11 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/stores", s.requireSession(s.handleStoreList))
 	mux.Handle("POST /api/v1/stores", s.requireSession(s.handleStoreCreate))
 	mux.Handle("GET /api/v1/stores/{id}", s.requireSession(s.handleStoreGet))
+	// HUI-4584 门店动作目录与渠道配置(G1): 实例级 action_id 模型 + config_revision
+	// 乐观锁;validate 按 action 粒度只读校验(不执行发布/关注/加群/收费)。
+	mux.Handle("GET /api/v1/stores/{id}/actions", s.requireSession(s.handleStoreActionsGet))
+	mux.Handle("PUT /api/v1/stores/{id}/actions", s.requireSession(s.handleStoreActionsPut))
+	mux.Handle("POST /api/v1/actions/{actionId}/validate", s.requireSession(s.handleStoreActionValidate))
 	// HUI-1674 连锁多门店:org_owner 治理面(改店/停用店)。停用不级联:
 	// 存量活动逐个显式处理,公共页附「门店暂不可用」标注。
 	mux.Handle("PATCH /api/v1/stores/{id}", s.requireSession(s.handleStorePatch))
