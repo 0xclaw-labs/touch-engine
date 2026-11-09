@@ -300,8 +300,8 @@ func (s *Service) UpdateActionSessionContent(ctx context.Context, id, visitorID,
 // outstanding unused resume credential (取消即全废:散落的凭据不能再兑换).
 // Reads of the ended session stay allowed — the customer can always see what
 // happened; nothing resurrects a ended session.
-func (s *Service) CancelActionSession(_ context.Context, id, visitorID string) (ActionSession, error) {
-	sess, err := s.getSessionForVisitor(context.Background(), id, visitorID)
+func (s *Service) CancelActionSession(ctx context.Context, id, visitorID string) (ActionSession, error) {
+	sess, err := s.getSessionForVisitor(ctx, id, visitorID)
 	if err != nil {
 		return ActionSession{}, err
 	}
@@ -432,7 +432,7 @@ type SessionExchangeResult struct {
 // 结构性查不到) → 过期 → 已用 → 撤销 → 会话 active → 动作实时可用 →
 // 事务性单次消费 → 换绑 visitor。全部凭据丢失不可认回:除凭据本身外
 // 没有任何认回路径。
-func (s *Service) ExchangeResumeCredential(_ context.Context, in SessionExchangeInput) (SessionExchangeResult, error) {
+func (s *Service) ExchangeResumeCredential(ctx context.Context, in SessionExchangeInput) (SessionExchangeResult, error) {
 	if !ValidTokenShape(in.Token) {
 		return SessionExchangeResult{}, ErrNotFound
 	}
@@ -475,7 +475,7 @@ func (s *Service) ExchangeResumeCredential(_ context.Context, in SessionExchange
 	}
 	// 实时停用检查:签发后动作被停用/下架,兑换一律拒绝(快照不掩盖现状)。
 	if s.SessionsReady() {
-		if _, err := s.liveAction(context.Background(), sess.ActionID); err != nil {
+		if _, err := s.liveAction(ctx, sess.ActionID); err != nil {
 			return SessionExchangeResult{}, err
 		}
 	} else {
@@ -490,10 +490,16 @@ func (s *Service) ExchangeResumeCredential(_ context.Context, in SessionExchange
 	if n, _ := res.RowsAffected(); n != 1 {
 		return SessionExchangeResult{}, ErrCredentialUsed
 	}
-	if _, err := s.db.Exec(`UPDATE action_sessions SET visitor_id=?, updated_at=?
+	res, err = s.db.Exec(`UPDATE action_sessions SET visitor_id=?, updated_at=?
 		WHERE id=? AND tenant_id=? AND status=?`,
-		in.NewVisitorID, rfc3339(now), sess.ID, sess.TenantID, string(SessionActive)); err != nil {
+		in.NewVisitorID, rfc3339(now), sess.ID, sess.TenantID, string(SessionActive))
+	if err != nil {
 		return SessionExchangeResult{}, fmt.Errorf("participation: rebind session visitor: %w", err)
+	}
+	// 并发取消竞态:消费与会话换绑之间会话被取消时,这里 0 行——诚实回答
+	// 终态拒绝(凭据已烧,但取消是显式终态,兑换不得伪报成功)。
+	if n, _ := res.RowsAffected(); n != 1 {
+		return SessionExchangeResult{}, ErrSessionEnded
 	}
 	sess.VisitorID = in.NewVisitorID
 	if err := s.recordSessionEvent("resume_credential_exchanged", sess, c.ID); err != nil {
