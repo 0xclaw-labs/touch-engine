@@ -81,6 +81,10 @@ function AgencyDesk({ session }: { session: MerchantSession }) {
   const [insideName, setInsideName] = useState("");
   const [access, setAccess] = useState<AccessEffective | null>(null);
   const [drawer, setDrawer] = useState<{ tenantId: string; name: string; stores: StoreRec[]; loading: boolean } | null>(null);
+  // 修复轮 3(F1):受控进入的等待态。switchTenant 是异步单缝(确认租户后才写
+  // 记忆),绝不能与硬跳转竞速 —— 记 pendingEnter,等会话真正落到授权租户
+  // (phase=ready 且 tenantId 命中)后再跳 M1。
+  const [pendingEnter, setPendingEnter] = useState("");
 
   const load = useCallback(async () => {
     setPhase("loading");
@@ -131,16 +135,31 @@ function AgencyDesk({ session }: { session: MerchantSession }) {
     };
   }, [session]);
 
-  // 受控进入:switchTenant 单缝(成员行+激活关系双门槛),就绪后跳 M1。
-  async function enter(tenantId: string) {
+  // 受控进入:switchTenant 单缝(成员行+激活关系双门槛;代理 scope 由后端
+  // access/effective 每请求裁决)。修复轮 3(F1):等待切换真正落地再跳 M1,
+  // 落地后 M1 显示的就是被授权租户的数据。
+  function enter(tenantId: string) {
     if (!merchants.some((m) => m.rel.tenant_id === tenantId)) {
       setEnterError("只能进入已授权商户。");
       return;
     }
     setEnterError("");
+    setPendingEnter(tenantId);
     session.switchTenant(tenantId);
-    window.location.href = "/"; // M1:今天要做的事
   }
+
+  useEffect(() => {
+    if (!pendingEnter) return;
+    if (session.phase === "ready" && session.tenantId === pendingEnter) {
+      setPendingEnter("");
+      window.location.href = "/"; // M1:今天要做的事(已是授权租户上下文)
+      return;
+    }
+    if (session.phase === "error") {
+      setEnterError("受控进入没有完成：会话没有落到该商户。请稍后重试，或联系商户确认授权。");
+      setPendingEnter("");
+    }
+  }, [pendingEnter, session.phase, session.tenantId]);
 
   // 门店配置入口:按该商户租户读门店(代理只读门槛),展开抽屉。
   async function openStores(tenantId: string, name: string) {
@@ -170,6 +189,9 @@ function AgencyDesk({ session }: { session: MerchantSession }) {
       <h1 className="tk-title">代理工作台</h1>
       <p className="tk-lead">这里只列已授权的商家。进入后你的一切动作仍以商家授予的范围为准。</p>
       {enterError ? <p className="tk-warn" data-role="notice">{enterError}</p> : null}
+      {pendingEnter ? (
+        <p className="tk-state" data-state="loading" data-field="entering">正在受控进入商户工作台…</p>
+      ) : null}
 
       {inside ? (
         <section className="tk-section" data-section="inside-banner">
@@ -177,7 +199,7 @@ function AgencyDesk({ session }: { session: MerchantSession }) {
             当前位于 <strong>{insideName || "商户工作台"}</strong>。
             <a className="tk-quiet" href="/agency" data-action="back-console">返回商户列表</a>
           </p>
-          <AgentBanner tenantName={insideName} access={access} />
+          <AgentBanner tenantName={insideName} access={access} backHref="/agency" />
         </section>
       ) : null}
 

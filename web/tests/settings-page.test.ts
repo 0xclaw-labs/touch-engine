@@ -138,6 +138,31 @@ describe("其余区域与纪律", () => {
     expect(desk).toContain('data-action="retry"');
   });
 
+  it("修复轮 3/F2①:页面级 access 门控 —— 店员无配置权限呈现受限视图(403 语义)", () => {
+    expect(desk).toContain('data-state="restricted"');
+    expect(desk).toContain('data-field="restricted-403"');
+    expect(desk).toContain("当前账号没有成员与权限的管理能力（403）");
+    // 门控条件:staff 且有效权限为空(access/effective 每请求实时读取)
+    expect(desk).toContain('session.role === "staff"');
+    expect(desk).toContain("myPerms.length === 0");
+    // 受限视图仍保留 my-access(透明展示自己当前授权)
+    expect(desk).toContain("<MyAccessSection");
+  });
+
+  it("修复轮 3/F2②:被授 storefront 后有「前往门店首页配置」直达入口(既有门店配置面)", () => {
+    expect(desk).toContain('data-field="page-config-entry"');
+    expect(desk).toContain('data-action="goto-page-config"');
+    expect(desk).toContain('href="/work/stores"');
+    // 入口按 storefront:configure 门控
+    expect(desk).toContain('perms.includes("storefront:configure")');
+  });
+
+  it("修复轮 3/F1:代理横幅带「返回代理台」入口(不动 2628 共享壳)", () => {
+    expect(desk).toContain('backHref="/agency"');
+    expect(desk).toContain('data-action="back-agency"');
+    expect(desk).toContain("返回代理台");
+  });
+
   it("移动优先:无固定像素宽,不写桌面专用布局", () => {
     expect(desk).not.toMatch(/width:\s*\d{3,}px/);
     expect(desk).not.toMatch(/min-width:\s*\d{3,}px/);

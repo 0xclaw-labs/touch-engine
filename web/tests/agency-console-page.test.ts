@@ -58,6 +58,23 @@ describe("A1 控制台结构", () => {
     expect(desk).toContain('data-action="back-console"');
   });
 
+  it("修复轮 3/F1:进入必须等切换落地(phase=ready 且租户命中)再跳,不与硬跳竞速", () => {
+    expect(desk).toContain("setPendingEnter(tenantId)");
+    expect(desk).toContain('session.phase === "ready" && session.tenantId === pendingEnter');
+    expect(desk).toContain('data-field="entering"');
+    // enter() 内不得紧跟硬跳(竞速会让 localStorage 记忆停留在旧租户)
+    expect(desk).not.toMatch(/switchTenant\(tenantId\);\s*window\.location/);
+    // 切换失败要给出产品语句并退出等待态
+    expect(desk).toContain("受控进入没有完成");
+  });
+
+  it("修复轮 3/F1:acting-for 横幅带「返回代理台」入口(backHref=/agency)", () => {
+    expect(desk).toContain('backHref="/agency"');
+    const settings = read("components/work/settings/settings-desk.tsx");
+    expect(settings).toContain('data-action="back-agency"');
+    expect(settings).toContain("返回代理台");
+  });
+
   it("门店配置入口:按商户租户读门店,再进入 /work/stores;权限以服务端为准", () => {
     expect(desk).toContain('data-section="store-config"');
     expect(desk).toContain('data-action="open-stores"');
