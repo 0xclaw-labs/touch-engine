@@ -6,7 +6,7 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   resolve: {
-    alias: { "@": path.resolve(root, "src") },
+    alias: { "@": path.resolve(root, "src"), "@painuo/login-page": path.resolve(root, "vendor/login-page/src/index.ts") },
   },
   test: {
     environment: "node",

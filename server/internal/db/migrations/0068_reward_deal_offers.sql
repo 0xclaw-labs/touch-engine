@@ -25,9 +25,14 @@ CREATE TABLE IF NOT EXISTS deal_offers (
     status            TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'retired')),
     note              TEXT NOT NULL DEFAULT '',
     created_by        TEXT NOT NULL DEFAULT '',
-    created_at        TEXT NOT NULL,
-    UNIQUE (tenant_id, kind, provider, provider_offer_id)
+    created_at        TEXT NOT NULL
 );
+
+-- 外部商品的平台唯一性: 同租户同平台同 provider_offer_id 只挂一个目录行。
+-- 部分索引: merchant_benefit(本地券)不受此限,商家可建多个本地优惠。
+CREATE UNIQUE INDEX IF NOT EXISTS uq_deal_offers_external_product
+    ON deal_offers(tenant_id, provider, provider_offer_id)
+    WHERE kind = 'external_product' AND provider_offer_id <> '';
 
 CREATE INDEX IF NOT EXISTS idx_deal_offers_campaign
     ON deal_offers(tenant_id, campaign_id, status);
