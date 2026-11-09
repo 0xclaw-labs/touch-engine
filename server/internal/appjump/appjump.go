@@ -71,18 +71,27 @@ type Options struct {
 
 // Service owns the jump-grant surface over the shared sqlite handle.
 type Service struct {
-	db  *sql.DB
-	now func() time.Time
+	db *sql.DB
+	// Now is the clock for mint/expiry decisions. Production leaves it nil
+	// (wall clock); httpapi tests may point it past the TTL to drive expiry.
+	Now func() time.Time
 	ttl time.Duration
 }
 
-// New builds a Service. A nil now/ttl falls back to wall clock / DefaultTTL.
+// New builds a Service. A zero TTL falls back to DefaultTTL.
 func New(database *sql.DB, opts Options) *Service {
 	ttl := opts.TTL
 	if ttl <= 0 {
 		ttl = DefaultTTL
 	}
-	return &Service{db: database, now: time.Now, ttl: ttl}
+	return &Service{db: database, Now: time.Now, ttl: ttl}
+}
+
+func (s *Service) now() time.Time {
+	if s.Now == nil {
+		return time.Now()
+	}
+	return s.Now()
 }
 
 func rfc3339(t time.Time) string { return t.UTC().Format(time.RFC3339) }

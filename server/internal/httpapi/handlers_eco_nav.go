@@ -4,6 +4,13 @@ package httpapi
 // {app_id, launch_target_id}; public-ai's shell launch is the only authority
 // that mints the one-time code and the target URL. Nothing about the current
 // campaign, assets, payer or project is accepted (DisallowUnknownFields).
+//
+// HUI-2222 (wave2, M11): the hand-off to the browser is two-phase with 3546
+// credential discipline. Mint answers a short-lived single-use jump token
+// (jtg_, SHA-256 hashed at rest, bound to principal+tenant) — never the
+// launch URL. Redeem claims the grant transactionally and only then releases
+// the shell's URL, so a leaked mint response cannot carry a usable target
+// and a leaked URL cannot be replayed.
 
 import (
 	"encoding/json"
@@ -14,6 +21,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/bianjiefilm/touch-engine/server/internal/appjump"
 	"github.com/bianjiefilm/touch-engine/server/internal/identity"
 )
 
@@ -103,5 +111,67 @@ func (s *Server) handleEcoNavSwitch(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadGateway, "launch_url_rejected", "the shell returned an unsafe launch_url")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"launch_url": launchURL})
+	// HUI-2222: hand the URL to the browser only through a short-lived
+	// single-use grant. The mint response never carries the launch_url.
+	if s.Jumps == nil {
+		fail(w, http.StatusServiceUnavailable, "jump_unavailable", "jump grants are not wired; no launch was handed out")
+		return
+	}
+	minted, err := s.Jumps.Mint(c.Member.TenantID, c.Principal.ID, appID, targetID, launchURL)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "the jump credential could not be recorded")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"jump_token": minted.Token,
+		"grant_id":   minted.Grant.ID,
+		"expires_at": minted.Grant.ExpiresAt,
+	})
+}
+
+// handleEcoNavRedeem claims a jump grant and releases the shell's launch URL
+// exactly once. Expired answers 410 (honest expiry, same as 3546); used,
+// revoked, foreign-bound and malformed tokens all answer the uniform 404 so
+// a probe cannot tell which check failed.
+func (s *Server) handleEcoNavRedeem(w http.ResponseWriter, r *http.Request) {
+	c := callerFrom(r)
+	if c == nil || c.Member == nil {
+		fail(w, http.StatusForbidden, "not_member", "membership required")
+		return
+	}
+	if !c.Member.Enabled {
+		fail(w, http.StatusForbidden, "member_disabled", "member disabled")
+		return
+	}
+	var in struct {
+		JumpToken string `json:"jump_token"`
+	}
+	dec := json.NewDecoder(io.LimitReader(r.Body, 4<<10))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&in); err != nil {
+		fail(w, http.StatusBadRequest, "bad_request", "jump_token is required")
+		return
+	}
+	if s.Jumps == nil {
+		fail(w, http.StatusServiceUnavailable, "jump_unavailable", "jump grants are not wired; nothing to redeem")
+		return
+	}
+	grant, err := s.Jumps.Redeem(in.JumpToken, c.Principal.ID, c.Member.TenantID)
+	if err != nil {
+		switch {
+		case errors.Is(err, appjump.ErrExpired):
+			fail(w, http.StatusGone, "jump_expired", "this jump credential has expired; request a new switch")
+		case errors.Is(err, appjump.ErrUsed), errors.Is(err, appjump.ErrRevoked),
+			errors.Is(err, appjump.ErrNotFound), errors.Is(err, appjump.ErrTokenShape):
+			fail(w, http.StatusNotFound, "not_found", "no redeemable jump credential")
+		default:
+			fail(w, http.StatusInternalServerError, "internal", "the jump credential could not be redeemed")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"launch_url":       grant.LaunchURL,
+		"app_id":           grant.AppID,
+		"launch_target_id": grant.LaunchTargetID,
+	})
 }

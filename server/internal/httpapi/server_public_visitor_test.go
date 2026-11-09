@@ -417,6 +417,7 @@ func TestEcoNavSwitchRequiresSessionAndTarget(t *testing.T) {
 	}
 }
 
+// HUI-2222 两阶段跳转:mint 只回短时单用途凭据,launch_url 只在 redeem 出现。
 func TestEcoNavSwitchReturnsValidatedLaunchURL(t *testing.T) {
 	f := newFixture(t, false)
 	status, _, out := f.do(t, "POST", "/api/v1/eco-nav/switch", "sess-owner-a", f.tenA,
@@ -424,13 +425,29 @@ func TestEcoNavSwitchReturnsValidatedLaunchURL(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("switch = %d %v", status, out)
 	}
+	token, _ := out["jump_token"].(string)
+	if token == "" {
+		t.Fatalf("mint must answer a jump_token, got %v", out)
+	}
+	if out["expires_at"] == "" || out["grant_id"] == "" {
+		t.Fatalf("mint must answer expires_at and grant_id: %v", out)
+	}
+	for _, forbidden := range []string{"launch_url", "campaign_id", "asset_ref", "payer", "project_id"} {
+		if _, ok := out[forbidden]; ok {
+			t.Fatalf("switch mint response leaks %s: %v", forbidden, out)
+		}
+	}
+	// 兑换:合法凭据一次,launch_url 原样交还。
+	status, _, out = f.do(t, "POST", "/api/v1/eco-nav/switch/redeem", "sess-owner-a", f.tenA,
+		`{"jump_token":"`+token+`"}`)
+	if status != http.StatusOK {
+		t.Fatalf("redeem = %d %v", status, out)
+	}
 	if out["launch_url"] != "https://goboost.modelxing.com/projects?code=one-time" {
 		t.Fatalf("launch_url = %v", out["launch_url"])
 	}
-	for _, forbidden := range []string{"campaign_id", "asset_ref", "payer", "project_id"} {
-		if _, ok := out[forbidden]; ok {
-			t.Fatalf("switch response leaks %s: %v", forbidden, out)
-		}
+	if out["app_id"] != "goboost" || out["launch_target_id"] != "ti-goboost-web" {
+		t.Fatalf("redeem must echo the contract ids: %v", out)
 	}
 }
 

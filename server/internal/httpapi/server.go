@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bianjiefilm/touch-engine/server/internal/appjump"
 	"github.com/bianjiefilm/touch-engine/server/internal/authz"
 	"github.com/bianjiefilm/touch-engine/server/internal/brandctx"
 	"github.com/bianjiefilm/touch-engine/server/internal/channeladmission"
@@ -115,6 +116,11 @@ type Server struct {
 	// only when FEATURE_PUBLIC_CACHE is on (one cache-policy decision); alias
 	// create/disable/rebind all bumpEpoch, so 0 stale requests.
 	TpCache *readcache.Cache[store.TouchpointRows]
+
+	// Jumps (HUI-2222 wave2, M11) guards the cross-app SSO jump hand-off:
+	// short-lived single-use credentials between mint and the browser's
+	// single redemption. Wired in New; nil answers 503 fail-closed.
+	Jumps *appjump.Service
 
 	// Participation (HUI-3546) owns the participation/attempt/handoff
 	// tables. Constructed always; its routes register only under
@@ -206,6 +212,8 @@ func New(cfg config.Config, database *sql.DB, idc *identity.Client, upc *upload.
 			Epoch: st.Epoch,
 		}),
 		Participation: participation.New(database, nil, participation.Options{}),
+		// HUI-2222: default 60s single-use hand-off window for app switches.
+		Jumps: appjump.New(database, appjump.Options{}),
 		PublishHandoff: publishhandoff.New(database, publishhandoff.Options{
 			MediaSecret:      cfg.InternalToken,
 			MediaBaseURL:     cfg.PublishHandoffMediaBaseURL,
@@ -376,6 +384,8 @@ func (s *Server) Handler() http.Handler {
 	// HUI-2628: authenticated app switch. The browser sends only two ids; this
 	// server bridges to public-ai shell launch and never constructs a URL.
 	mux.Handle("POST /api/v1/eco-nav/switch", s.requireSession(s.handleEcoNavSwitch))
+	// HUI-2222: single-use redemption of the minted jump credential.
+	mux.Handle("POST /api/v1/eco-nav/switch/redeem", s.requireSession(s.handleEcoNavRedeem))
 	mux.Handle("GET /api/v1/session/memberships", s.requirePrincipal(s.handleSessionMemberships))
 	mux.Handle("GET /api/v1/workbench", s.requireSession(s.handleWorkbench))
 
