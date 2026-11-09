@@ -54,6 +54,7 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"handoff_credentials",
 		"lead_audit",
 		"lead_forms",
+		"lead_receipts",
 		"lead_submissions",
 		"leads_outbox",
 		"lib_assets",

@@ -109,12 +109,20 @@ type LeadSubmission struct {
 	Attempts             int    `json:"attempts"`
 	SourceVersion        int    `json:"source_version"`
 	RevokedAt            string `json:"revoked_at,omitempty"`
+	// HUI-4594 receiver projection: the trusted receiver's persisted ACK.
+	// Empty receiver_state = nothing confirmed ingested yet (still 待同步).
+	ReceiverState       string `json:"receiver_state,omitempty"`
+	ReceiptID           string `json:"receipt_id,omitempty"`
+	// Revocation waterline (HUI-4594): >0 once revoked; late replays of older
+	// revisions cannot resurrect the contact past this watermark.
+	RevokeSourceRevision int   `json:"revoke_source_revision,omitempty"`
 	CreatedAt            string `json:"created_at"`
 	UpdatedAt            string `json:"updated_at"`
 }
 
 const leadCols = `id,tenant_id,campaign_id,store_id,link_id,form_id,submission_ref,name,phone,wechat,` +
-	`marketing_optin,consent_notice_version,consent_at,sync_state,sync_error,attempts,source_version,revoked_at,created_at,updated_at`
+	`marketing_optin,consent_notice_version,consent_at,sync_state,sync_error,attempts,source_version,revoked_at,created_at,updated_at,` +
+	`receiver_state,receipt_id,revoke_source_revision`
 
 func scanLead(sc interface{ Scan(...any) error }) (LeadSubmission, error) {
 	var l LeadSubmission
@@ -122,7 +130,8 @@ func scanLead(sc interface{ Scan(...any) error }) (LeadSubmission, error) {
 	var mkt int
 	err := sc.Scan(&l.ID, &l.TenantID, &l.CampaignID, &l.StoreID, &l.LinkID, &l.FormID, &l.SubmissionRef,
 		&l.Name, &l.Phone, &wechat, &mkt, &l.ConsentNoticeVersion, &l.ConsentAt,
-		&l.SyncState, &syncErr, &l.Attempts, &l.SourceVersion, &revokedAt, &l.CreatedAt, &l.UpdatedAt)
+		&l.SyncState, &syncErr, &l.Attempts, &l.SourceVersion, &revokedAt, &l.CreatedAt, &l.UpdatedAt,
+		&l.ReceiverState, &l.ReceiptID, &l.RevokeSourceRevision)
 	if err != nil {
 		return LeadSubmission{}, err
 	}
@@ -399,8 +408,12 @@ func (s *Store) RevokeLeadSubmission(ref, revokeEventID, revokePayload string) (
 		return LeadSubmission{}, errors.New("store: cannot revoke lead in state " + cur.SyncState)
 	}
 	rv := now()
+	// HUI-4594: freeze the revocation waterline at the revoke fact's source
+	// version (source_version+1, matching what the handler builds). Fetches
+	// serve a tombstone past this point and stored ACKs of older revisions are
+	// refused — a late replay cannot resurrect the contact.
 	if _, err := tx.Exec(
-		`UPDATE lead_submissions SET sync_state='revoked',revoked_at=?,updated_at=? WHERE submission_ref=?`,
+		`UPDATE lead_submissions SET sync_state='revoked',revoked_at=?,revoke_source_revision=source_version+1,updated_at=? WHERE submission_ref=?`,
 		rv, rv, ref); err != nil {
 		return LeadSubmission{}, err
 	}
