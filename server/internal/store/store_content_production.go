@@ -209,6 +209,12 @@ func (s *Store) GetProductionHandoff(tenantID, id string) (ProductionHandoff, er
 	return h, err
 }
 
+// GetProductionHandoffByIdempotencyKey is the tenant-scoped replay lookup for
+// the merchant initiate face (same key = same request; unknown = ErrNotFound).
+func (s *Store) GetProductionHandoffByIdempotencyKey(tenantID, key string) (ProductionHandoff, error) {
+	return s.productionHandoffByIdempotencyKey(tenantID, contentpack.NormalizeText(key))
+}
+
 // GetProductionHandoffByID returns one handoff WITHOUT tenant scoping (the
 // trusted producer seam). Callers MUST treat the returned row's TenantID /
 // StoreID / PackID as the only authority — request input can never override
@@ -289,61 +295,102 @@ func (s *Store) productionResultByEvent(sourceApp, eventID string) (ProductionRe
 	return r, err
 }
 
-// RegisterProductionResult is the trusted-producer append transaction:
-//   - replay: same (source_app, event_id) + same digest returns the SAME row
-//     (never a second registration, never a second charge);
-//   - conflict: same key + different digest is refused;
-//   - watermark: a NEW event whose revision does not advance past the stored
-//     watermark is stale (旧稿迟到); the current adoption is never touched;
-//   - canceled is terminal: new results are refused, replays still resolve;
-//   - task_ref: once the handoff records a task, receipts must name it.
-//
-// On accepted produced/failed/canceled receipts the handoff row follows
-// (status, last_charge_ref, last_result_revision) so the merchant list shows
-// independent 处理中/已产出/失败/取消 states.
+// RegisterProductionResult is the convenience whole-transaction form (admit +
+// append in one call; store-level tests and receipts that need no candidate
+// registration in between). The HTTP producer seam uses AdmitProductionResult
+// first, registers the 3553 candidate in between, then AppendProductionResult
+// — the唯一候选登记事务 sits inside the admitted window.
 func (s *Store) RegisterProductionResult(in ProductionResultInput) (ProductionResult, bool, error) {
+	_, prev, replayed, err := s.AdmitProductionResult(in)
+	if err != nil {
+		return ProductionResult{}, replayed, err
+	}
+	if replayed {
+		return prev, true, nil
+	}
+	r, err := s.AppendProductionResult(in)
+	return r, false, err
+}
+
+// AdmitProductionResult runs the trusted-producer admission checks WITHOUT
+// writing:
+//   - replay: same (source_app, event_id) + same digest returns the existing
+//     row (never a second registration, never a second charge);
+//   - conflict: same key + different digest is refused;
+//   - canceled is terminal: new results are refused, replays still resolve;
+//   - task_ref: once the handoff records a task, receipts must name it;
+//   - watermark: a NEW event whose revision does not advance past the stored
+//     watermark is stale (旧稿迟到); the current adoption is never touched.
+//
+// The returned handoff row is the tenant/store/pack authority for the caller
+// (request input can never override the mapping — 票面).
+func (s *Store) AdmitProductionResult(in ProductionResultInput) (ProductionHandoff, ProductionResult, bool, error) {
 	sourceApp := contentpack.NormalizeText(in.SourceApp)
 	eventID := contentpack.NormalizeText(in.EventID)
 	if sourceApp == "" || eventID == "" {
-		return ProductionResult{}, false, contentpack.NewValidationError(contentpack.ReasonMissingTitle, "source_app/event_id")
+		return ProductionHandoff{}, ProductionResult{}, false, contentpack.NewValidationError(contentpack.ReasonMissingTitle, "source_app/event_id")
 	}
 	if in.ResultRevision < 1 {
-		return ProductionResult{}, false, contentpack.NewValidationError(contentpack.ReasonBadIdempotencyKey, "result_revision")
+		return ProductionHandoff{}, ProductionResult{}, false, contentpack.NewValidationError(contentpack.ReasonBadIdempotencyKey, "result_revision")
 	}
-	outcome := contentpack.NormalizeText(in.Outcome)
+	outcome := normalizeProductionOutcome(in.Outcome)
 	if outcome == "" {
-		outcome = ProductionOutcomeProduced
-	}
-	switch outcome {
-	case ProductionOutcomeProduced, ProductionOutcomeFailed, ProductionOutcomeCanceled:
-	default:
-		return ProductionResult{}, false, contentpack.NewValidationError(contentpack.ReasonBadContentKind, "outcome")
+		return ProductionHandoff{}, ProductionResult{}, false, contentpack.NewValidationError(contentpack.ReasonBadContentKind, "outcome")
 	}
 	h, err := s.GetProductionHandoffByID(contentpack.NormalizeText(in.HandoffID))
 	if err != nil {
-		return ProductionResult{}, false, err
+		return ProductionHandoff{}, ProductionResult{}, false, err
 	}
 	// 幂等优先于一切终态判断:丢失响应的重放必须总能解析回原行。
-	if prev, err := s.productionResultByEvent(sourceApp, eventID); err == nil {
+	prev, err := s.productionResultByEvent(sourceApp, eventID)
+	if err == nil {
 		if prev.HandoffID != h.ID || prev.PayloadDigest() != contentpack.NormalizeText(in.Digest) {
-			return ProductionResult{}, false, ErrIdempotencyConflict
+			return ProductionHandoff{}, ProductionResult{}, false, ErrIdempotencyConflict
 		}
-		return prev, true, nil
+		return h, prev, true, nil
 	} else if !errors.Is(err, ErrNotFound) {
-		return ProductionResult{}, false, err
+		return ProductionHandoff{}, ProductionResult{}, false, err
 	}
 	if h.Status == ProductionStatusCanceled {
-		return ProductionResult{}, false, ErrHandoffCanceled
+		return ProductionHandoff{}, ProductionResult{}, false, ErrHandoffCanceled
 	}
 	if h.TaskRef != "" && contentpack.NormalizeText(in.TaskRef) != h.TaskRef {
-		return ProductionResult{}, false, ErrTaskRefMismatch
+		return ProductionHandoff{}, ProductionResult{}, false, ErrTaskRefMismatch
 	}
 	if in.ResultRevision <= h.LastResultRevision {
-		return ProductionResult{}, false, ErrStaleResult
+		return ProductionHandoff{}, ProductionResult{}, false, ErrStaleResult
+	}
+	return h, ProductionResult{}, false, nil
+}
+
+func normalizeProductionOutcome(raw string) string {
+	outcome := contentpack.NormalizeText(raw)
+	if outcome == "" {
+		return ProductionOutcomeProduced
+	}
+	switch outcome {
+	case ProductionOutcomeProduced, ProductionOutcomeFailed, ProductionOutcomeCanceled:
+		return outcome
+	}
+	return ""
+}
+
+// AppendProductionResult inserts one admitted receipt row and advances the
+// handoff row (status, last_charge_ref, last_result_revision) so the merchant
+// list shows independent 处理中/已产出/失败/取消 states.
+func (s *Store) AppendProductionResult(in ProductionResultInput) (ProductionResult, error) {
+	h, err := s.GetProductionHandoffByID(contentpack.NormalizeText(in.HandoffID))
+	if err != nil {
+		return ProductionResult{}, err
+	}
+	outcome := normalizeProductionOutcome(in.Outcome)
+	if outcome == "" {
+		return ProductionResult{}, contentpack.NewValidationError(contentpack.ReasonBadContentKind, "outcome")
 	}
 	r := ProductionResult{
 		ID: newID("cpr_"), TenantID: h.TenantID, HandoffID: h.ID,
-		SourceApp: sourceApp, EventID: eventID, Outcome: outcome,
+		SourceApp: contentpack.NormalizeText(in.SourceApp), EventID: contentpack.NormalizeText(in.EventID),
+		Outcome: outcome,
 		TaskRef: contentpack.NormalizeText(in.TaskRef), ResultRevision: in.ResultRevision,
 		ChargeRef: contentpack.NormalizeText(in.ChargeRef), VersionID: contentpack.NormalizeText(in.VersionID),
 		DeclaredSHA: strings.ToLower(contentpack.NormalizeText(in.DeclaredSHA)),
@@ -355,9 +402,8 @@ func (s *Store) RegisterProductionResult(in ProductionResultInput) (ProductionRe
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		r.ID, r.TenantID, r.HandoffID, r.SourceApp, r.EventID, r.Outcome, r.TaskRef, r.ResultRevision,
 		r.ChargeRef, r.VersionID, contentpack.NormalizeText(in.Digest), r.DeclaredSHA, r.MeasuredSHA, r.Reason, r.CreatedAt); err != nil {
-		return ProductionResult{}, false, err
+		return ProductionResult{}, err
 	}
-	// 交接行跟随(produced/failed/canceled 独立可辨;水位只进不退)。
 	newStatus := h.Status
 	switch outcome {
 	case ProductionOutcomeProduced:
@@ -374,9 +420,9 @@ func (s *Store) RegisterProductionResult(in ProductionResultInput) (ProductionRe
 	if _, err := s.DB.Exec(
 		`UPDATE store_content_production_handoffs SET status=?, last_charge_ref=?, last_result_revision=?, updated_at=? WHERE id=?`,
 		newStatus, charge, r.ResultRevision, now(), h.ID); err != nil {
-		return ProductionResult{}, false, err
+		return ProductionResult{}, err
 	}
-	return r, false, nil
+	return r, nil
 }
 
 // PayloadDigest exposes the stored digest for comparisons (kept off the JSON
