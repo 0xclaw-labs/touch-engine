@@ -705,6 +705,12 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("POST /api/v1/tenant-exports/{id}/revoke", s.requireSession(s.handleTenantExportRevoke))
 	}
 
+	// HUI-4591 订购收费账单(M12 商家面 + 受信权威缝):管理面不加 FEATURE 开关
+	// (仓内惯例);权威缝无凭据注册时 503 fail-closed 诚实关闭(真实支付网关
+	// 无凭据 = 工程面完整 + 诚实未验证)。
+	s.registerBillingRoutes(mux)
+	s.registerBillingAuthorityRoutes(mux)
+
 	// HUI-3553 顾客侧内容快照读(1670/1896 消费):登记制开关
 	// FEATURE_CONTENT_PACKS(默认 off;off = 路由不注册 + handler gate 再答
 	// 统一 404 —— 双保险同款)。GET-only 白名单字段;blocked/授权过期版本

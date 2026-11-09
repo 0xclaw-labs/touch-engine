@@ -346,12 +346,19 @@ const subscriptionStatusExpired = "expired"
 // (when the participation domain is live), and any caller-known channel
 // state. Channel stays unchecked here: no live channel source exists in this
 // deployment, and an unknown state must not invent a refusal.
+//
+// HUI-4591 接线:订阅期限换按租户事实(billing_subscriptions.paid_until,真实
+// 服务期由 1671 裁决器自然判到期);无投影行的租户回退进程级 Cfg,旧行为逐
+// 字节保留(unconfirmed 不发明拒绝;Cfg=expired 用过去标记)。
 func (s *Server) rewardPromiseDeadlines(camp store.Campaign, participationUntil string) *rewardops.GrantDeadlines {
 	dl := rewardops.GrantDeadlines{
 		CampaignUntil:      camp.EndsAt,
 		ParticipationUntil: participationUntil,
 	}
-	if s.Cfg.SubscriptionStatus == subscriptionStatusExpired {
+	fact, effective := s.billingSubscriptionFact(camp.TenantID)
+	if fact.PaidUntil != "" {
+		dl.SubscriptionUntil = fact.PaidUntil
+	} else if effective == subscriptionStatusExpired {
 		dl.SubscriptionUntil = subscriptionExpiredMarker
 	}
 	return &dl

@@ -80,8 +80,10 @@ func newGuestRef() string {
 	return "guest_" + hex.EncodeToString(buf[:])
 }
 
-// Client payer_authorized is ignored. This deployment has no server-side payer
-// grant, so an agent cannot turn a personal wallet into the merchant payer.
+// Client payer_authorized is ignored. The payer authorization is resolved
+// server-side (HUI-4591 接线 4593 payer_grant_ref 真值): org_owner 恒持有
+// billing:manage_payer;agent 仅当激活代管关系含 renewal 且 payer_grant_ref
+// 非空。订阅资格按租户事实(HUI-4591 投影),无投影行回退进程级 Cfg。
 func (s *Server) handleAccountCharge(w http.ResponseWriter, r *http.Request) {
 	c := callerFrom(r)
 	if c.Member == nil {
@@ -98,14 +100,15 @@ func (s *Server) handleAccountCharge(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "bad_request", "charge request is not valid JSON")
 		return
 	}
+	_, effective := s.billingSubscriptionFact(c.Member.TenantID)
 	decision := activityspend.DecideCharge(activityspend.ChargeInput{
 		Capability:       body.Capability,
 		Invoked:          body.Invoked,
 		ActorRole:        c.Member.Role,
-		PayerAuthorized:  false,
+		PayerAuthorized:  s.callerHasPayerGrant(c),
 		PayerAccountID:   body.PayerAccountID,
 		PersonalWalletID: body.PersonalWalletID,
-		Subscription:     s.Cfg.SubscriptionStatus,
+		Subscription:     billingEntitlementStatus(effective),
 	})
 	writeJSON(w, http.StatusOK, decision)
 }
@@ -153,5 +156,7 @@ func (s *Server) separationFor(c *caller) (activityspend.SeparationView, error) 
 			book.Benefits = append(book.Benefits, fact)
 		}
 	}
-	return activityspend.Separation(book, activityspend.Subscription{Status: s.Cfg.SubscriptionStatus}, activityspend.ChargeDecision{}), nil
+	// HUI-4591 接线:订阅三栏状态按租户事实(有投影行用投影;无行回退 Cfg)。
+	_, effective := s.billingSubscriptionFact(c.Member.TenantID)
+	return activityspend.Separation(book, activityspend.Subscription{Status: billingEntitlementStatus(effective)}, activityspend.ChargeDecision{}), nil
 }

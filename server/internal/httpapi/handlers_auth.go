@@ -126,6 +126,10 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 		"features": map[string]any{
 			"service_desk": s.Cfg.FeatureServiceDesk,
 			"authz":        s.Cfg.FeatureAuthz,
+			// HUI-4591 M12: 生态收银台跳转引用(空 = 本部署未接入,页面诚实显示;
+			// URL 永远由生态 shell launch 铸造,这里只给 app/target 引用)。
+			"billing_cashier_app_id":    s.Cfg.CashierAppID,
+			"billing_cashier_target_id": s.Cfg.CashierTargetID,
 		},
 	}
 	if s.Cfg.FeatureBrand {

@@ -35,20 +35,20 @@ var (
 
 // HardwareStep is one step's recorded fact.
 type HardwareStep struct {
-	State      string
-	Operator   string
-	OccurredAt string
-	DeviceRef  string
+	State      string `json:"state"`
+	Operator   string `json:"operator"`
+	OccurredAt string `json:"occurred_at"`
+	DeviceRef  string `json:"device_ref"`
 }
 
 // HardwareFulfillment is the order-side delivery projection (five independent
 // step facts; 库层 billing_hardware_fulfillment 一行五组列)。
 type HardwareFulfillment struct {
-	Payment    HardwareStep
-	Shipment   HardwareStep
-	WriteCard  HardwareStep
-	Readback   HardwareStep
-	Acceptance HardwareStep
+	Payment    HardwareStep `json:"payment"`
+	Shipment   HardwareStep `json:"shipment"`
+	WriteCard  HardwareStep `json:"write_card"`
+	Readback   HardwareStep `json:"readback"`
+	Acceptance HardwareStep `json:"acceptance"`
 }
 
 // HardwareStepInput is one trusted delivery fact.
