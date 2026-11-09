@@ -104,17 +104,23 @@ func admissionFresh(now time.Time, validUntil string) (fresh, known bool) {
 	return now.Before(vu.AddDate(0, 0, 1)), true
 }
 
-// bindingMatches enforces tenant scope and app binding. Tenant scope "*"
-// applies platform-wide; a scoped record answers only its own tenant.
-// merchant_authorized records require a verified MerchantAppRef; platform_app
-// and none records never take a merchant app.
+// bindingMatches enforces tenant scope and app binding (v1 Record surface).
 func bindingMatches(in GateInput, r Record) bool {
-	if r.TenantScope != "*" && r.TenantScope != in.TenantID {
+	return scopeBindingMatch(r.TenantScope, r.AppBinding, in.TenantID, in.MerchantAppRef)
+}
+
+// scopeBindingMatch is the shared tenant-scope + app-binding primitive for the
+// v1 Gate and the action-capability JudgeActionRoute. Tenant scope "*" applies
+// platform-wide; a scoped record answers only its own tenant.
+// merchant_authorized records require a verified merchant app reference;
+// platform_app and none records never take a merchant app.
+func scopeBindingMatch(tenantScope, appBinding, tenantID, merchantAppRef string) bool {
+	if tenantScope != "*" && tenantScope != tenantID {
 		return false
 	}
-	switch r.AppBinding {
+	switch appBinding {
 	case "merchant_authorized":
-		return in.MerchantAppRef != ""
+		return merchantAppRef != ""
 	case "platform_app", "none":
 		return true
 	default:
