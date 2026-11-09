@@ -14,6 +14,10 @@ func TestOpenCreatesSchema(t *testing.T) {
 	defer d.Close()
 
 	want := []string{
+		// HUI-3546 增量轮(0056-0058): 匿名动作会话/恢复凭据/审计事件。
+		"action_session_credentials",
+		"action_session_events",
+		"action_sessions",
 		"activity_benefit_facts",
 		"agency_relations",
 		"agency_subaccount_trail",

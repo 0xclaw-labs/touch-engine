@@ -153,8 +153,9 @@ func scanSession(row rowScanner) (ActionSession, error) {
 // wiring lands with HUI-4584 via one assembly line, tests inject their stub.
 func (s *Service) SetActionDirectory(d ActionDirectory) { s.dir = d }
 
-// sessionsReady reports whether the directory port is wired.
-func (s *Service) sessionsReady() bool { return s.dir != nil }
+// SessionsReady reports whether the directory port is wired (httpapi gate
+// uses this to fail closed with 503 instead of pretending to serve).
+func (s *Service) SessionsReady() bool { return s.dir != nil }
 
 // liveAction resolves the action in real time. Unknown/unpublished collapses
 // into ErrNotFound (anti-enumeration: indistinguishable from a wrong id); a
@@ -180,7 +181,7 @@ func (s *Service) liveAction(ctx context.Context, actionID string) (ActionRef, e
 // directory readiness → visitor binding → real-time resolution → expectation
 // checks → idempotent replay → same-browser restore → create.
 func (s *Service) StartActionSession(ctx context.Context, in SessionStartInput) (SessionStarted, error) {
-	if !s.sessionsReady() {
+	if !s.SessionsReady() {
 		return SessionStarted{}, ErrDirectoryUnavailable
 	}
 	if strings.TrimSpace(in.VisitorID) == "" {
@@ -269,7 +270,7 @@ func (s *Service) StartActionSession(ctx context.Context, in SessionStartInput) 
 // and handoff surfaces (HUI-3553/1670); this records the customer's pick and
 // refuses when the action is live-disabled or the session has ended.
 func (s *Service) UpdateActionSessionContent(ctx context.Context, id, visitorID, contentPackVersion string) (ActionSession, error) {
-	if !s.sessionsReady() {
+	if !s.SessionsReady() {
 		return ActionSession{}, ErrDirectoryUnavailable
 	}
 	sess, err := s.getSessionForVisitor(ctx, id, visitorID)
@@ -357,7 +358,7 @@ type SessionResumeToken struct {
 // IssueResumeCredential: 只有当前合法访客能给自己 active 的会话签发;动作
 // 实时停用时拒绝(停用不再发放新的跨端凭据;同浏览器恢复与状态读不受影响)。
 func (s *Service) IssueResumeCredential(ctx context.Context, in ResumeCredentialInput) (SessionResumeToken, error) {
-	if !s.sessionsReady() {
+	if !s.SessionsReady() {
 		return SessionResumeToken{}, ErrDirectoryUnavailable
 	}
 	sess, err := s.getSessionForVisitor(ctx, in.SessionID, in.VisitorID)
@@ -473,7 +474,7 @@ func (s *Service) ExchangeResumeCredential(_ context.Context, in SessionExchange
 		return SessionExchangeResult{}, ErrSessionEnded
 	}
 	// 实时停用检查:签发后动作被停用/下架,兑换一律拒绝(快照不掩盖现状)。
-	if s.sessionsReady() {
+	if s.SessionsReady() {
 		if _, err := s.liveAction(context.Background(), sess.ActionID); err != nil {
 			return SessionExchangeResult{}, err
 		}
@@ -526,7 +527,7 @@ type SessionStatusView struct {
 // ActionSessionStatus reads the caller's own session with live availability
 // flags. Read-only: no state transition, no credential issuance.
 func (s *Service) ActionSessionStatus(ctx context.Context, id, visitorID string) (SessionStatusView, error) {
-	if !s.sessionsReady() {
+	if !s.SessionsReady() {
 		return SessionStatusView{}, ErrDirectoryUnavailable
 	}
 	sess, err := s.getSessionForVisitor(ctx, id, visitorID)
@@ -562,9 +563,11 @@ type AttachInput struct {
 }
 
 // AttachResult reports the session and its (new or existing) participation.
+// Created distinguishes a fresh upgrade (201) from an idempotent re-attach (200).
 type AttachResult struct {
 	Session       ActionSession
 	Participation Participation
+	Created       bool
 }
 
 // AttachParticipation upgrades an active session into the existing
@@ -577,7 +580,7 @@ type AttachResult struct {
 // never 已保留). Idempotent: an already-attached session returns its
 // participation unchanged.
 func (s *Service) AttachParticipation(ctx context.Context, in AttachInput) (AttachResult, error) {
-	if !s.sessionsReady() {
+	if !s.SessionsReady() {
 		return AttachResult{}, ErrDirectoryUnavailable
 	}
 	sess, err := s.getSessionForVisitor(ctx, in.SessionID, in.VisitorID)
@@ -599,7 +602,7 @@ func (s *Service) AttachParticipation(ctx context.Context, in AttachInput) (Atta
 		if perr != nil {
 			return AttachResult{}, perr
 		}
-		return AttachResult{Session: sess, Participation: p}, nil
+		return AttachResult{Session: sess, Participation: p, Created: false}, nil
 	}
 	content := sess.ContentPackVersion
 	if content == "" {
@@ -625,7 +628,7 @@ func (s *Service) AttachParticipation(ctx context.Context, in AttachInput) (Atta
 	if err := s.recordSessionEvent("participation_attached", sess, ""); err != nil {
 		return AttachResult{}, err
 	}
-	return AttachResult{Session: sess, Participation: p}, nil
+	return AttachResult{Session: sess, Participation: p, Created: true}, nil
 }
 
 // ---- cleanup --------------------------------------------------------------------
