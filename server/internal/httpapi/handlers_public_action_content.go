@@ -16,7 +16,10 @@
 //     http.ServeContent(服务器实测 MIME、ETag=sha、单/多 Range、206/416、
 //     HEAD 零体;download 用途 attachment);绝不以 HTML 冒充媒体;
 //   - 匿名读取与平台抓取不依赖商家 cookie;浏览/换稿/下载零生成零收费;
-//   - 会话引用(session_ref)只作审计;会话权威归 HUI-3546,引用不是授权源。
+//   - 会话引用(action_session_id):中央集成 2026-11-10 起在签发时刻校验
+//     (存在/active/tenant+动作匹配,见 checkMediaAccessSession);兑换时刻不
+//     校验(平台适配器凭已签 claim 取材,不持访客 cookie);引用不是授权源,
+//     会话权威归 HUI-3546,空引用保持可签发。
 package httpapi
 
 import (
@@ -26,8 +29,55 @@ import (
 	"time"
 
 	"github.com/bianjiefilm/touch-engine/server/internal/contentpack"
+	"github.com/bianjiefilm/touch-engine/server/internal/participation"
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
 )
+
+// checkMediaAccessSession validates an action_session reference at issuance
+// time (中央集成 2026-11-10): the session must exist, still be active, belong
+// to the version's tenant, and reference this content — either its action is
+// currently bound to the version's pack (the authoritative binding index) or
+// the session's selected content version IS this version (preview-time 换选
+// to a candidate). Everything else is rejected with the same code style as
+// the session surface: unknown/mismatched = 404 not_found (anti-enumeration),
+// ended = 409 session_ended, drift = 409 action_mismatch.
+func (s *Server) checkMediaAccessSession(w http.ResponseWriter, sessionID, tenantID, packID, versionID string) bool {
+	if s.Participation == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error":   "action_directory_unavailable",
+			"message": "the session authority is not wired on this deployment; refusing to issue (fail-closed)",
+		})
+		return false
+	}
+	ref, err := s.Participation.LookupSessionRef(sessionID)
+	switch {
+	case errors.Is(err, participation.ErrNotFound):
+		// 未知引用与跨租户引用同形 404:不泄漏存在性。
+		fail(w, http.StatusNotFound, "not_found", "session not found")
+		return false
+	case errors.Is(err, participation.ErrSessionEnded):
+		fail(w, http.StatusConflict, "session_ended", "this session has ended")
+		return false
+	case err != nil:
+		fail(w, http.StatusInternalServerError, "internal", "session check failed")
+		return false
+	}
+	if ref.TenantID != tenantID {
+		fail(w, http.StatusNotFound, "not_found", "session not found")
+		return false
+	}
+	// 动作匹配:会话的动作当前绑定到本版本所在包;或会话的换选内容正是本版本
+	// (预览期换到候选池另一包时,凭所选版本取材)。两者皆非 = 跨动作引用,
+	// 绝不为这条内容背书。
+	if b, berr := s.St.GetActionContentBinding(ref.TenantID, ref.ActionID); berr == nil && b.PackID == packID {
+		return true
+	}
+	if ref.ContentPackVersion == versionID {
+		return true
+	}
+	fail(w, http.StatusConflict, "action_mismatch", "this session does not reference this content")
+	return false
+}
 
 // actionContentBindingRef renders the拟契约 binding reference: "pack:<id>".
 // The actions PUT (content_binding_ref write) belongs to HUI-4584; the merge
@@ -177,22 +227,22 @@ func (s *Server) handlePublicActionContent(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"action_id":                      actionID,
-		"action_revision":                binding.ActionRevision,
-		"content_binding_ref":            actionContentBindingRef(packID),
-		"selected_content_pack_version":  v.ID,
-		"pack_id":                        packID,
-		"store_id":                       storeID,
-		"content_kind":                   v.ContentKind,
-		"title":                          v.Title,
-		"body":                           v.Body,
-		"topics":                         v.Topics,
-		"store_name":                     v.StoreName,
-		"price_note":                     v.PriceNote,
-		"valid_note":                     v.ValidNote,
-		"marking":                        v.Marking,
-		"media":                          media,
-		"candidates":                     candidates,
+		"action_id":                     actionID,
+		"action_revision":               binding.ActionRevision,
+		"content_binding_ref":           actionContentBindingRef(packID),
+		"selected_content_pack_version": v.ID,
+		"pack_id":                       packID,
+		"store_id":                      storeID,
+		"content_kind":                  v.ContentKind,
+		"title":                         v.Title,
+		"body":                          v.Body,
+		"topics":                        v.Topics,
+		"store_name":                    v.StoreName,
+		"price_note":                    v.PriceNote,
+		"valid_note":                    v.ValidNote,
+		"marking":                       v.Marking,
+		"media":                         media,
+		"candidates":                    candidates,
 	})
 }
 
@@ -227,6 +277,15 @@ func (s *Server) handlePublicMediaAccess(w http.ResponseWriter, r *http.Request)
 			fail(w, http.StatusInternalServerError, "internal", "distribution check failed")
 		}
 		return
+	}
+	// 中央集成接线(2026-11-10, HUI-3553←HUI-3546): action_session_id 非空时在
+	// 签发时刻校验会话(存在/active/tenant 匹配/动作与内容匹配);空引用保持
+	// 现状可签发(平台适配器凭已签 claim 取材不持访客 cookie——校验只在签发
+	// 时刻,兑换时刻不校验会话)。会话权威是 3546 的行,引用不是授权源。
+	if sid := strings.TrimSpace(in.ActionSessionID); sid != "" {
+		if !s.checkMediaAccessSession(w, sid, v.TenantID, v.PackID, v.ID) {
+			return
+		}
 	}
 	known := map[string]versionMedia{}
 	for _, m := range collectVersionMedia(v) {

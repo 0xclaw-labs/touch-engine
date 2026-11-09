@@ -664,6 +664,44 @@ func (s *Service) CleanupSessions(ctx context.Context, now time.Time, retention 
 
 // ---- session lookups ------------------------------------------------------------
 
+// SessionRef is the server-internal projection of one session reference for
+// trusted cross-package issuance checks (中央集成 2026-11-10: HUI-3553
+// media-access 签发时刻校验). Scope ids and the content reference only — no
+// visitor key (the visitor binding is the session's only access secret and
+// never leaves this package), no snapshot text.
+type SessionRef struct {
+	TenantID           string
+	StoreID            string
+	ActionID           string
+	ContentPackVersion string
+}
+
+// LookupSessionRef resolves a session reference at a trusted server-internal
+// issuance point. The session must exist and still be active — sessions carry
+// no TTL of their own; ended is the only expiry. Unknown ids answer
+// ErrNotFound (uniform, no existence leak); ended sessions answer
+// ErrSessionEnded. This is NOT an authorization: callers must still check the
+// returned scope against the resource being issued for.
+func (s *Service) LookupSessionRef(id string) (SessionRef, error) {
+	row := s.db.QueryRow(`SELECT `+sessionCols+` FROM action_sessions WHERE id=?`, strings.TrimSpace(id))
+	sess, err := scanSession(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SessionRef{}, ErrNotFound
+	}
+	if err != nil {
+		return SessionRef{}, fmt.Errorf("participation: session ref lookup: %w", err)
+	}
+	if sess.Status != SessionActive {
+		return SessionRef{}, ErrSessionEnded
+	}
+	return SessionRef{
+		TenantID:           sess.TenantID,
+		StoreID:            sess.StoreID,
+		ActionID:           sess.ActionID,
+		ContentPackVersion: sess.ContentPackVersion,
+	}, nil
+}
+
 // getSessionForVisitor reads a session bound to the caller's own visitor key.
 // Any mismatch — id or visitor — answers ErrNotFound so sequential or guessed
 // ids have no probe surface.

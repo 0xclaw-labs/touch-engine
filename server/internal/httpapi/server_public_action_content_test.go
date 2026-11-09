@@ -48,7 +48,7 @@ type publicContentFixture struct {
 	mediaDir string
 }
 
-func newPublicContentFixture(t *testing.T, packsPublicOn bool) *publicContentFixture {
+func newPublicContentFixture(t *testing.T, packsPublicOn bool, extraEnv ...string) *publicContentFixture {
 	t.Helper()
 	mediaDir := t.TempDir()
 	flag := func(on bool) string {
@@ -56,6 +56,10 @@ func newPublicContentFixture(t *testing.T, packsPublicOn bool) *publicContentFix
 			return "on"
 		}
 		return ""
+	}
+	extra := map[string]string{}
+	for i := 0; i+1 < len(extraEnv); i += 2 {
+		extra[extraEnv[i]] = extraEnv[i+1]
 	}
 	cfg := config.Load(func(k string) string {
 		switch k {
@@ -69,6 +73,9 @@ func newPublicContentFixture(t *testing.T, packsPublicOn bool) *publicContentFix
 			return flag(packsPublicOn)
 		case "TOUCH_MEDIA_DIR":
 			return mediaDir
+		}
+		if v, ok := extra[k]; ok {
+			return v
 		}
 		return ""
 	})
@@ -402,9 +409,11 @@ func TestMediaAccessIssuesControlledURLs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 正例:平台抓取用途,两个媒体一起取。
+	// 正例:平台抓取用途,两个媒体一起取(平台适配器凭已签 claim 取材,不持
+	// 访客 cookie——会话引用留空;带引用的签发校验由 server_media_access_
+	// session_test.go 单独覆盖)。
 	status, out := f.publicJSON(t, "POST", "/api/v1/public/content/"+versionID+"/media-access",
-		fmt.Sprintf(`{"action_session_id":"ses_1","media_ids":[%q,%q],"purpose":"platform_fetch"}`, videoID, coverID))
+		fmt.Sprintf(`{"media_ids":[%q,%q],"purpose":"platform_fetch"}`, videoID, coverID))
 	if status != http.StatusOK {
 		t.Fatalf("media-access = %d: %v", status, out)
 	}
