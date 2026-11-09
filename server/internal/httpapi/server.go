@@ -175,6 +175,24 @@ func New(cfg config.Config, database *sql.DB, idc *identity.Client, upc *upload.
 		LeadsLimiter:      leads.NewRateLimiter(leadsRatePerMinute, time.Minute),
 		StaffTokenLimiter: leads.NewRateLimiter(staffTokenRatePerMinute, time.Minute),
 		Matrix:            matrixFromConfig(cfg),
+		// HUI-3535 Walk C 修复中央接线：sa_* 实例 id 经 4584 store 解析（租户
+		// 服务端反查，绝不取客户端参数）。内部错误按 unknown 同形 404 fail-closed
+		// （无存在性泄漏）；disabled 区分登记但停用。
+		ResolvePublicActionInstance: func(instanceID string) (PublicActionInstance, PublicActionInstanceState) {
+			tenantID, storeID, err := st.StoreActionScope(instanceID)
+			if err != nil {
+				return PublicActionInstance{}, PublicActionInstanceUnknown
+			}
+			a, err := st.GetStoreActionByID(tenantID, storeID, instanceID)
+			if err != nil {
+				return PublicActionInstance{}, PublicActionInstanceUnknown
+			}
+			inst := PublicActionInstance{CatalogCode: a.CatalogCode, Platform: a.Platform, TenantID: tenantID}
+			if !a.Enabled {
+				return inst, PublicActionInstanceDisabled
+			}
+			return inst, PublicActionInstanceOK
+		},
 		PubCache: readcache.New[store.ResolvedRows](readcache.Options{
 			Capacity: publicCacheCapacity, TTL: publicCacheTTL, Jitter: publicCacheJitter,
 			Epoch: st.Epoch,
