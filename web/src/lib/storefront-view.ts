@@ -52,6 +52,8 @@ export interface StorefrontView {
   store: StorefrontStoreView;
   sections: StorefrontSectionView[];
   actions: StorefrontActionView[];
+  /** 活动卡原始数组(经 activityCards() 容忍解析后消费)。 */
+  activityCardsRaw: unknown;
 }
 
 // 4584 服务端动作 kind 白名单(store.ListPublicStoreActions 只放行已映射实例)。
@@ -128,6 +130,7 @@ export function parseStorefront(payload: unknown): StorefrontView | null {
     },
     sections: parseSections(rec.sections),
     actions: parseActions(rec.actions),
+    activityCardsRaw: rec.activity_cards,
   };
 }
 

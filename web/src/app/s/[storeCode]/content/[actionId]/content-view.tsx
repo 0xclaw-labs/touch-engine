@@ -232,7 +232,7 @@ function ContentViewInner() {
   useEffect(() => {
     if (contentState !== "ready" || !selectedVersion) return;
     const ids = (content?.media ?? [])
-      .filter((m) => m.availability === "ready" && (m.role === "video" || m.role === "cover"))
+      .filter((m) => m.availability === "ready")
       .map((m) => m.media_id);
     if (ids.length === 0) return;
     const seq = ++previewSeq.current;
@@ -261,7 +261,6 @@ function ContentViewInner() {
 
   const mediaById = new Map((content?.media ?? []).map((m) => [m.media_id, m]));
   const video = (content?.media ?? []).find((m) => m.role === "video");
-  const cover = (content?.media ?? []).find((m) => m.role === "cover");
   const videoUrl = video && video.availability === "ready" ? previewUrls[video.media_id]?.url : undefined;
 
   // 换一个:只在已采用候选池(3553 candidates);只改未交接草稿。
@@ -485,10 +484,19 @@ function ContentViewInner() {
               {videoUrl ? (
                 // 受控凭据 URL:短 TTL、绑定版本+用途,服务端逐层校验。
                 <video controls preload="metadata" src={videoUrl} data-testid="content-video" className="tk-media" />
-              ) : cover && cover.availability === "ready" && previewUrls[cover.media_id]?.url ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={previewUrls[cover.media_id].url} alt={content.title || "内容封面"} data-testid="content-cover" className="tk-media" />
               ) : null}
+              {(content.media ?? [])
+                .filter((m) => (m.role === "image" || m.role === "cover") && m.availability === "ready" && previewUrls[m.media_id]?.url)
+                .map((m) => (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    key={m.media_id}
+                    src={previewUrls[m.media_id].url}
+                    alt={content.title || (m.role === "cover" ? "内容封面" : `配图 ${m.order + 1}`)}
+                    data-testid={m.role === "cover" ? "content-cover" : `content-image-${m.order}`}
+                    className="tk-media"
+                  />
+                ))}
               <div data-testid="content-copy">
                 <p className="tk-public-value">{content.body || "文案在交接时一并给出。"}</p>
                 {(content.topics ?? []).length > 0 && <p className="tk-note">话题:{content.topics.join(" ")}</p>}

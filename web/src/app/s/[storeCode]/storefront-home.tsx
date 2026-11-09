@@ -110,7 +110,7 @@ function StorefrontHomeInner() {
   const width = usePageWidth();
   const columns = publicVisitorColumns(width);
   const visitorNote = publicVisitorCopy({ action: "browse" });
-  const cards = view ? activityCards((view as unknown as { activity_cards?: unknown }).activity_cards) : [];
+  const cards = view ? activityCards(view.activityCardsRaw) : [];
   const groups = view ? groupActions(view.storeCode, view.actions) : [];
   const storeNotice = view ? storeStateFace(view.store.state) : "";
   const actionsOpen = view?.store.state === "active";
