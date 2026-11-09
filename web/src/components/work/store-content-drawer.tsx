@@ -43,6 +43,7 @@ interface StorePackVersion {
   version_no: number;
   content_kind: string;
   status: string;
+  source?: string;
   title: string;
   body: string;
   topics?: string[];
@@ -103,6 +104,18 @@ function statusCopy(status: string): string {
 
 function kindCopy(kind: string): string {
   return kind === "video" ? "视频" : "图片";
+}
+
+// HUI-4595: 回流候选来源如实展示(真实制作生产方的成片,不是商家上传)。
+function sourceCopy(source?: string): string {
+  switch (source) {
+    case "product_photo_return":
+      return "制作回流";
+    case "merchant_upload":
+      return "商家上传";
+    default:
+      return source || "未注明来源";
+  }
 }
 
 function bytesCopy(n: number): string {
@@ -487,7 +500,7 @@ export function StoreContentDrawer({ storeId }: { storeId: string }) {
                       return (
                         <li key={version.id} data-version-id={version.id} data-status={version.status}>
                           <p className="tk-note">
-                            第 {version.version_no} 版 · {statusCopy(version.status)} · {version.title}
+                            第 {version.version_no} 版 · {statusCopy(version.status)} · {sourceCopy(version.source)} · {version.title}
                           </p>
                           <p className="tk-note">{version.body}</p>
                           <p className="tk-note">门店 {version.store_name} · 价格 {version.price_note} · 有效期 {version.valid_note}</p>
@@ -527,15 +540,28 @@ export function StoreContentDrawer({ storeId }: { storeId: string }) {
                                 </button>
                               </>
                             ) : !isBlocked && version.status === "candidate" ? (
-                              <button
-                                className="tk-button"
-                                type="button"
-                                data-action="adopt"
-                                disabled={busy === version.id + draftPlatform}
-                                onClick={() => void adopt(pack.id, version.id, draftPlatform)}
-                              >
-                                采用这一版({PLATFORMS.find((p) => p.id === draftPlatform)?.label ?? draftPlatform})
-                              </button>
+                              <>
+                                {/* HUI-4595: 回流候选采用前可预览真实成片(media-access
+                                    短 TTL 受控 URL,纯预览零计费);采用仍须显式。 */}
+                                <button
+                                  className="tk-quiet"
+                                  type="button"
+                                  data-action="preview-candidate"
+                                  disabled={busy === version.id + ":preview"}
+                                  onClick={() => void openMedia(version, "preview")}
+                                >
+                                  预览真实播放
+                                </button>
+                                <button
+                                  className="tk-button"
+                                  type="button"
+                                  data-action="adopt"
+                                  disabled={busy === version.id + draftPlatform}
+                                  onClick={() => void adopt(pack.id, version.id, draftPlatform)}
+                                >
+                                  采用这一版({PLATFORMS.find((p) => p.id === draftPlatform)?.label ?? draftPlatform})
+                                </button>
+                              </>
                             ) : null}
                             {!isBlocked && !isAdopted && version.status !== "retired" ? (
                               <button

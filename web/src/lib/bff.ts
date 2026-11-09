@@ -46,13 +46,16 @@ export function bffPathToUpstream(path: string[]): string {
   return "/api/v1/" + path.join("/");
 }
 
-// bffForwardsInternal reports whether a browser path would land on a Go
-// internal seam. HUI-4594: the public BFF must NOT relay internal paths at
-// all — the trusted leads-receiver seam answers registered service
-// identities only, and the relay must not even ferry the attempt.
-export function bffForwardsInternal(path: string[]): boolean {
-  const upstream = bffPathToUpstream(path);
-  return upstream.startsWith("/api/v1/internal/") || upstream.startsWith("/internal/");
+// HUI-4595 + HUI-4594（wave2 集成合一只留一份）：/api/v1/internal/* 是受信服务
+// 专用缝（成片回流 per content_return_producer tokens；线索接收 per registered
+// service identities）。公共 BFF 必须完全不转发——到达 internal 段的浏览器路径
+// 统一 404（与 Go 侧防枚举同形，零存在性泄漏），且连尝试都不产生上游调用。
+// 覆盖两种写法：经典 BFF 形态（/api/internal/... -> path[0]==="internal"）与
+// Go 绝对 URL 直通形态（/api/v1/internal/... -> ["v1","internal",...]）。
+export function bffPathRefusesInternal(path: string[]): boolean {
+  if (path.length > 0 && path[0] === "internal") return true;
+  if (path.length > 1 && path[0] === "v1" && path[1] === "internal") return true;
+  return false;
 }
 
 export async function proxyToServer(
@@ -72,16 +75,16 @@ export async function proxyToServer(
     );
   }
 
-  const incoming = new URL(req.url);
-  // HUI-4594: internal seams never travel through the public relay. The Go
-  // gate would refuse them anyway (fail-closed), but the BFF does not forward
-  // the attempt: uniform 404, zero upstream calls, zero log surface.
-  if (bffForwardsInternal(path)) {
+  // HUI-4595 + HUI-4594: internal 受信缝对公共 BFF 不可见（两票面硬性合一）。
+  // 拒绝发生在一切转发之前,与 Go 侧统一 404 同形,不给存在性提示,零上游调用。
+  if (bffPathRefusesInternal(path)) {
     return Response.json(
       { error: "not_found", message: "resource not found" },
       { status: 404 },
     );
   }
+
+  const incoming = new URL(req.url);
   const upstreamUrl =
     env.serverUrl.replace(/\/+$/, "") +
     bffPathToUpstream(path) +

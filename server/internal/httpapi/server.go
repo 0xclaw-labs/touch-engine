@@ -38,6 +38,7 @@ import (
 	"github.com/bianjiefilm/touch-engine/server/internal/leads"
 	"github.com/bianjiefilm/touch-engine/server/internal/matrixconsume"
 	"github.com/bianjiefilm/touch-engine/server/internal/participation"
+	"github.com/bianjiefilm/touch-engine/server/internal/production"
 	"github.com/bianjiefilm/touch-engine/server/internal/publishhandoff"
 	"github.com/bianjiefilm/touch-engine/server/internal/readcache"
 	"github.com/bianjiefilm/touch-engine/server/internal/redact"
@@ -135,11 +136,20 @@ type Server struct {
 	// everything (NOT_VERIFIED residual) — honest by construction.
 	PublishHandoff *publishhandoff.Service
 
+<<<<<<< HEAD
 	// DealCoupons (HUI-4590) is the authorization-backed external coupon
 	// adapter for the three group-buy platforms. Production stays nil until
 	// an official authorization exists: check/redeem then answer the honest
 	// 503 not_connected and no redemption fact is ever invented.
 	DealCoupons deals.Adapter
+=======
+	// HUI-4595 公共权威 seam:报价核验(统一账单)与制作任务提交(公共任务)。
+	// Always constructed; Ready() is checked at use so an unconfigured
+	// deployment answers honestly (quote_verified=false / status=recorded)
+	// instead of faking a verification or a task reference.
+	ProductionQuotes production.QuoteAuthority
+	ProductionTasks  *production.TaskSubmitter
+>>>>>>> touch/hui-4595-production
 }
 
 // Frozen cache budgets (HUI-2981 comparison report §2.1 — do not tune without
@@ -238,6 +248,10 @@ func New(cfg config.Config, database *sql.DB, idc *identity.Client, upc *upload.
 	// 适配器语义见 server_action_directory.go(unknown/未发布/停用一律
 	// fail-closed)。测试注入自己的目录桩时不经此处。
 	srv.Participation.SetActionDirectory(srv)
+	// HUI-4595: 公共权威 seam 装配(统一账单 quote + 平台任务)。配置不齐时
+	// 客户端仍构造但 Ready()=false,使用侧如实回答未接通(fail-closed)。
+	srv.ProductionQuotes = production.NewQuoteAuthority(cfg.BillingBaseURL, cfg.BillingToken, cfg.AppID)
+	srv.ProductionTasks = production.NewTaskSubmitter(cfg.TaskBaseURL, cfg.TaskToken, cfg.AppID)
 	return srv
 }
 
@@ -461,6 +475,14 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/stores/{id}/content-packs/{packId}/versions", s.requireSession(s.handleStoreContentPackVersionCreate))
 	mux.Handle("POST /api/v1/stores/{id}/content-packs/{packId}/versions/{versionId}/adopt", s.requireSession(s.handleStoreContentPackVersionAdopt))
 	mux.Handle("POST /api/v1/stores/{id}/content-packs/{packId}/versions/{versionId}/block", s.requireSession(s.handleStoreContentPackVersionBlock))
+
+	// HUI-4595 真实内容制作接线:发起面(商家会话,管理动作 manage_content_packs;
+	// 查询 read_list)与受信成片回流(仅 content_return_producer 角色服务;
+	// /api/v1/internal/* 不在公共 BFF 透传范围,web BFF 拒绝 internal 段)。
+	mux.Handle("POST /api/v1/stores/{id}/content-production-handoffs", s.requireSession(s.handleStoreContentProductionHandoffCreate))
+	mux.Handle("GET /api/v1/stores/{id}/content-production-handoffs", s.requireSession(s.handleStoreContentProductionHandoffList))
+	mux.Handle("GET /api/v1/stores/{id}/content-production-handoffs/capabilities", s.requireSession(s.handleStoreContentProductionCapabilities))
+	mux.Handle("POST /api/v1/internal/content-production-handoffs/{handoffId}/results", s.requireContentReturnProducer(s.handleContentProductionResultReturn))
 
 	mux.Handle("GET /api/v1/campaigns/{id}/links", s.requireSession(s.handleLinkList))
 	mux.Handle("POST /api/v1/campaigns/{id}/links", s.requireSession(s.handleLinkCreate))
