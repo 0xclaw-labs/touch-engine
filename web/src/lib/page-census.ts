@@ -108,6 +108,8 @@ const markerBook: readonly { route: string; markers: readonly Marker[] }[] = [
   { route: "/t/[code]", markers: [] },
   // HUI-1665:触点管理台页面是薄壳,交互全部在组件里,页面源零标记。
   { route: "/work/touchpoints", markers: [] },
+  // HUI-4584:门店渠道动作页,直接用原生控件(与 stores 列表页同风格)。
+  { route: "/work/stores/[id]/channels", markers: ["raw button", "raw input"] },
 ];
 
 function sameMarkers(recorded: readonly Marker[], scanned: readonly Marker[]): boolean {
