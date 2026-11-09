@@ -34,20 +34,20 @@ import (
 // ContentMedia is one verified real-media row (bytes live in the controlled
 // media directory, content-addressed; the database never stores bytes).
 type ContentMedia struct {
-	ID         string             `json:"id"`
-	TenantID   string             `json:"tenant_id"`
-	StoreID    string             `json:"store_id"`
-	Kind       upload.MediaKind   `json:"kind"`
-	MimeType   string             `json:"mime_type"`
-	ByteSize   int64              `json:"byte_size"`
-	SHA256     string             `json:"sha256"`
-	DurationMS int64              `json:"duration_ms"`
-	Width      int                `json:"width"`
-	Height     int                `json:"height"`
-	Filename   string             `json:"filename"`
-	MediaRef   string             `json:"media_ref"`
-	CreatedBy  string             `json:"created_by"`
-	CreatedAt  string             `json:"created_at"`
+	ID         string           `json:"id"`
+	TenantID   string           `json:"tenant_id"`
+	StoreID    string           `json:"store_id"`
+	Kind       upload.MediaKind `json:"kind"`
+	MimeType   string           `json:"mime_type"`
+	ByteSize   int64            `json:"byte_size"`
+	SHA256     string           `json:"sha256"`
+	DurationMS int64            `json:"duration_ms"`
+	Width      int              `json:"width"`
+	Height     int              `json:"height"`
+	Filename   string           `json:"filename"`
+	MediaRef   string           `json:"media_ref"`
+	CreatedBy  string           `json:"created_by"`
+	CreatedAt  string           `json:"created_at"`
 }
 
 const contentMediaCols = `id,tenant_id,store_id,kind,mime_type,byte_size,sha256,duration_ms,width,height,filename,media_ref,created_by,created_at`
@@ -1048,7 +1048,7 @@ func (s *Store) GetActionContentBindingAnyTenant(actionID string) (ActionContent
 }
 
 // ClearActionContentBinding is the「解绑」internal call (HUI-4584 actions PUT
-// 写入侧,中央集成 2026-11-10): the merchant put content_binding_ref='' on an
+// 写入侧,中央集成 2026-11-10): the merchant put content_binding_ref=” on an
 // action that previously carried one (or deleted the action row entirely), so
 // the authoritative binding index must follow. Deletes the
 // store_action_content_bindings row and appends one audit event on the last
