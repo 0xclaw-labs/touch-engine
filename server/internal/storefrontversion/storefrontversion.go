@@ -229,6 +229,30 @@ func ValidateDocument(doc Document) error {
 	return fmt.Errorf("storefrontversion: invalid document: %s", strings.Join(problems, ", "))
 }
 
+// DraftProblems is the save-time shape check: identical to FatalProblems but
+// an EMPTY document is a legal draft (a merchant starts from blank) — only
+// publish treats emptiness as page-level fatal. Everything structural
+// (duplicate ids, cross refs, oversize) is still refused at save.
+func DraftProblems(doc Document) []string {
+	var out []string
+	for _, p := range FatalProblems(doc) {
+		if p == "sections_empty" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// ValidateDraft is DraftProblems as an error.
+func ValidateDraft(doc Document) error {
+	problems := DraftProblems(doc)
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("storefrontversion: invalid draft: %s", strings.Join(problems, ", "))
+}
+
 // BuildSnapshots freezes the per-action whitelist payloads and the
 // action_revision refs from the live rows, in the order the sections declare
 // them. A section referencing an id that is not among the live rows is a
