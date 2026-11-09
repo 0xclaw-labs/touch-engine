@@ -77,6 +77,8 @@ const recorded: readonly { route: string; id: PatternId; regions: readonly strin
   { route: "/t/[code]", id: "public_consumer", regions: ["primary_action", "status", "empty"] },
   // HUI-1665 触点管理台:一卡一稳定链接的日常操作列表页。
   { route: "/work/touchpoints", id: "list", regions: ["primary_action", "status", "empty"] },
+  // HUI-4593 M13 成员与权限页(授权/撤回/代理协作/模板下发/白标授权)。
+  { route: "/work/settings", id: "settings", regions: ["primary_action", "status", "empty"] },
 ];
 
 export function patternIds(): string[] {
