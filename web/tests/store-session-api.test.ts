@@ -239,6 +239,7 @@ describe("parseHandoffStatus / statusFace:交接状态诚实", () => {
     expect(statusFace("failed")).toContain("没有完成");
     const unknown = statusFace("weird");
     expect(unknown).toContain("未知");
-    expect(unknown).not.toMatch(/成功/);
+    // 未知态必须明确否认成功(否定句允许出现「成功」字样)。
+    expect(unknown).toContain("不算发布成功");
   });
 });
