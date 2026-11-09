@@ -19,7 +19,7 @@ import styles from "./login.module.css";
 
 const LOGIN_SESSION_UNAVAILABLE_TEXT =
   "身份已验证，但暂时无法连接创作账号。请重试登录；如果持续失败，请联系管理员。";
-const LOGIN_UNREACHABLE = "连不上服务器，确认后端已启动后重试。";
+const LOGIN_UNREACHABLE = "暂时连不上服务器，请检查网络后重试；若持续失败请联系管理员。";
 
 const MESSAGES: Record<string, string> = {
   not_found: "没有找到这个内容。它可能已被删除，或者不在当前项目里。",
@@ -31,7 +31,7 @@ const MESSAGES: Record<string, string> = {
   rate_limited: "操作太频繁了，请稍后再试。",
   business_session_unavailable: LOGIN_SESSION_UNAVAILABLE_TEXT,
   forbidden: "这个操作需要项目的「可管理」权限。",
-  cloud_only: "这项能力要等云端部署后才开放，现在还不能用——不是故障。",
+  cloud_only: "这项功能即将上线，当前暂未开放——不是故障。",
 };
 
 /** 这些码的后端 message 里带具体数值，丢掉就等于让用户去猜。 */
@@ -77,7 +77,7 @@ function describeError(err: unknown): ErrorInfo {
     return {
       code: err.code,
       status: err.status,
-      message: "这个操作没能完成。",
+      message: "这次操作没有完成，请稍后重试",
       detail: err.message,
       retryAt,
       known: false,
@@ -87,7 +87,7 @@ function describeError(err: unknown): ErrorInfo {
   return {
     code: err instanceof TypeError ? "network" : "unknown",
     status: 0,
-    message: "这个操作没能完成。",
+    message: "这次操作没有完成，请稍后重试",
     detail: err instanceof Error ? err.message : "",
     known: false,
   };

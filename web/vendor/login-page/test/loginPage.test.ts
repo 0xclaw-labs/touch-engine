@@ -314,7 +314,7 @@ test("错误映射：密码 401 → 「用户名或密码不正确。」、500 �
   const t2 = await passwordFlow(async () => {
     throw new ApiFailure("boom", 500, "internal");
   });
-  assert.equal(alertText(t2), "连不上服务器，确认后端已启动后重试。");
+  assert.equal(alertText(t2), "暂时连不上服务器，请检查网络后重试；若持续失败请联系管理员。");
 
   const t3 = await passwordFlow(
     async () => {
