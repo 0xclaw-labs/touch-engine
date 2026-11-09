@@ -282,7 +282,7 @@ func countAudit(t *testing.T, s *Store, code string) int {
 func TestActionCapScanRoundTrip(t *testing.T) {
 	_, s := openMigratedDB(t)
 	r := actionCapFixture(func(x *channeladmission.ActionCapability) { x.TenantScope = "t_rt" })
-	created, err := s.UpsertActionCapability(r, ControlAudit{Actor: "ops", Reason: "初始", Action: "create"})
+	created, _, err := s.UpsertActionCapability(r, ControlAudit{Actor: "ops", Reason: "初始", Action: "create"})
 	if err != nil || !created {
 		t.Fatalf("upsert: created=%v err=%v", created, err)
 	}
@@ -313,7 +313,7 @@ func TestActionCapScanRoundTrip(t *testing.T) {
 // TestActionCapTenantScope: '*' 平台真值对每租户可见;定向行只在自己租户可见。
 func TestActionCapTenantScope(t *testing.T) {
 	_, s := openMigratedDB(t)
-	if _, err := s.UpsertActionCapability(actionCapFixture(func(x *channeladmission.ActionCapability) {
+	if _, _, err := s.UpsertActionCapability(actionCapFixture(func(x *channeladmission.ActionCapability) {
 		x.TenantScope = "t_x"
 	}), ControlAudit{Actor: "ops", Reason: "定向行", Action: "create"}); err != nil {
 		t.Fatal(err)
@@ -337,14 +337,14 @@ func TestActionCapTenantScope(t *testing.T) {
 func TestUpsertAuditIdempotent(t *testing.T) {
 	_, s := openMigratedDB(t)
 	r := actionCapFixture(func(x *channeladmission.ActionCapability) { x.TenantScope = "t_u" })
-	created, err := s.UpsertActionCapability(r, ControlAudit{Actor: "ops-a", Reason: "初值", Action: "create"})
+	created, _, err := s.UpsertActionCapability(r, ControlAudit{Actor: "ops-a", Reason: "初值", Action: "create"})
 	if err != nil || !created {
 		t.Fatalf("first upsert: created=%v err=%v", created, err)
 	}
 	if n := countAudit(t, s, "A99"); n != 1 {
 		t.Fatalf("audit after create = %d, want 1", n)
 	}
-	created, err = s.UpsertActionCapability(r, ControlAudit{Actor: "ops-a", Reason: "重复", Action: "create"})
+	created, updated, err := s.UpsertActionCapability(r, ControlAudit{Actor: "ops-a", Reason: "重复", Action: "create"})
 	if err != nil || created {
 		t.Fatalf("identical re-load: created=%v err=%v, want false/nil", created, err)
 	}
@@ -353,7 +353,7 @@ func TestUpsertAuditIdempotent(t *testing.T) {
 	}
 	r.Status = "unknown"
 	r.ReasonCode = "pending_external"
-	created, err = s.UpsertActionCapability(r, ControlAudit{Actor: "ops-b", Reason: "资格复核", Action: "update"})
+	created, updated, err = s.UpsertActionCapability(r, ControlAudit{Actor: "ops-b", Reason: "资格复核", Action: "update"})
 	if err != nil || created {
 		t.Fatalf("changed re-load: created=%v err=%v, want false (update path)", created, err)
 	}
@@ -377,7 +377,7 @@ func TestUpsertAuditIdempotent(t *testing.T) {
 func TestEmergencyToggleAudit(t *testing.T) {
 	_, s := openMigratedDB(t)
 	r := actionCapFixture(func(x *channeladmission.ActionCapability) { x.TenantScope = "t_e" })
-	if _, err := s.UpsertActionCapability(r, ControlAudit{Actor: "ops", Reason: "初值", Action: "create"}); err != nil {
+	if _, _, err := s.UpsertActionCapability(r, ControlAudit{Actor: "ops", Reason: "初值", Action: "create"}); err != nil {
 		t.Fatal(err)
 	}
 	found, err := s.SetActionCapabilityEmergency(r.ID, true, ControlAudit{Actor: "ops-oncall", Reason: "平台故障停用", Action: "emergency_disable"})
@@ -436,7 +436,7 @@ func TestSeedHashParity(t *testing.T) {
 			target = r
 		}
 	}
-	created, err := s.UpsertActionCapability(target, ControlAudit{Actor: "ops", Reason: "复核", Action: "update"})
+	created, updated, err := s.UpsertActionCapability(target, ControlAudit{Actor: "ops", Reason: "复核", Action: "update"})
 	if err != nil || created {
 		t.Fatalf("unchanged seed rewrite: created=%v err=%v, want false", created, err)
 	}

@@ -166,18 +166,18 @@ func validAuditAction(a string) bool {
 
 // ActionCapabilityAuditRow is one immutable controlled-change trail entry.
 type ActionCapabilityAuditRow struct {
-	ID           string
-	CapabilityID string
-	CatalogCode  string
-	Platform     string
-	Method       string
-	Scenario     string
-	TenantScope  string
-	Action       string
-	Actor        string
-	Reason       string
-	PayloadHash  string
-	CreatedAt    string
+	ID           string `json:"id"`
+	CapabilityID string `json:"capability_id"`
+	CatalogCode  string `json:"catalog_code"`
+	Platform     string `json:"platform"`
+	Method       string `json:"method"`
+	Scenario     string `json:"scenario"`
+	TenantScope  string `json:"tenant_scope"`
+	Action       string `json:"action"`
+	Actor        string `json:"actor"`
+	Reason       string `json:"reason"`
+	PayloadHash  string `json:"payload_hash"`
+	CreatedAt    string `json:"created_at"`
 }
 
 const auditCols = `id,capability_id,catalog_code,platform,method,scenario,tenant_scope,` +
@@ -214,20 +214,21 @@ func (s *Store) insertAudit(tx *sql.Tx, r channeladmission.ActionCapability, aud
 // no-op (no row change, no audit). The audit action is DERIVED by storage
 // (insert=create, update=update) so a mislabeled write can never pollute the
 // trail; audit.Action on the input is ignored here (reserved for emergency).
-func (s *Store) UpsertActionCapability(r channeladmission.ActionCapability, audit ControlAudit) (created bool, err error) {
+// Returns (created, updated): exactly one is true unless nothing changed.
+func (s *Store) UpsertActionCapability(r channeladmission.ActionCapability, audit ControlAudit) (created, updated bool, err error) {
 	if err := r.Validate(); err != nil {
-		return false, err
+		return false, false, err
 	}
 	hash := ActionCapabilityPayloadHash(r)
 	vals, err := actionCapVals(r, hash)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	placeholders := "?" + strings.Repeat(",?", len(vals)+1)
 
 	tx, err := s.DB.Begin()
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -247,20 +248,20 @@ func (s *Store) UpsertActionCapability(r channeladmission.ActionCapability, audi
 			VALUES(`+placeholders+`)`,
 			append(append([]any{r.ID}, vals...), now())...)
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		if err := s.insertAudit(tx, r, audit, hash); err != nil {
-			return false, err
+			return false, false, err
 		}
 		if err := tx.Commit(); err != nil {
-			return false, err
+			return false, false, err
 		}
-		return true, nil
+		return true, false, nil
 	case err != nil:
-		return false, err
+		return false, false, err
 	}
 	if curHash == hash {
-		return false, nil // unchanged controlled re-write: no write, no audit
+		return false, false, nil // unchanged controlled re-write: no write, no audit
 	}
 	audit.Action = "update"
 	r.ID = curID
@@ -275,15 +276,15 @@ func (s *Store) UpsertActionCapability(r channeladmission.ActionCapability, audi
 		vals[16], vals[17], vals[18], vals[19], vals[20], vals[21], vals[22], vals[23],
 		now(), curID)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	if err := s.insertAudit(tx, r, audit, hash); err != nil {
-		return false, err
+		return false, false, err
 	}
 	if err := tx.Commit(); err != nil {
-		return false, err
+		return false, false, err
 	}
-	return false, nil
+	return false, true, nil
 }
 
 // SetActionCapabilityEmergency flips the independent emergency veto on one

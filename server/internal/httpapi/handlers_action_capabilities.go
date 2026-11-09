@@ -166,24 +166,40 @@ func orEmptyMap(m map[string]string) map[string]string {
 
 // ---- 管理面:受控读写(internal token 平台权威 + 会话租户视图) -------------------
 
-// handleChannelActionList: internal token → 全量(含他租户定向行,O4/4592 消费);
-// 会话 → 租户可见视图('*'+本租户,1676 消费);两者皆无 → 401。
-func (s *Server) handleChannelActionList(w http.ResponseWriter, r *http.Request) {
+// channelActionsRead is the dual-auth read gate: internal token 且无会话 →
+// 平台全量(scope=platform,O4/4592 消费);否则走 requireSession 的会话语义
+// (BFF 总是同发 internal token + 会话) → 租户视图('*'+本租户,1676 消费),
+// 两者皆无 → 401(requireSession 内的 requireInternal 拒绝)。
+func (s *Server) channelActionsRead(platformNext, tenantNext http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hasSession := sessionTokenFromRequest(r, s.Cfg.SessionCookie) != ""
+		if !hasSession && s.Cfg.InternalToken != "" && r.Header.Get(internalTokenHeader) == s.Cfg.InternalToken {
+			platformNext(w, r)
+			return
+		}
+		s.requireSession(tenantNext).ServeHTTP(w, r)
+	})
+}
+
+// handleChannelActionPlatformList is the internal-token read: 全量(含他租户
+// 定向行)。永不暴露给商家会话。
+func (s *Server) handleChannelActionPlatformList(w http.ResponseWriter, r *http.Request) {
 	if !s.admissionGate(w) {
 		return
 	}
-	if s.Cfg.InternalToken != "" && r.Header.Get(internalTokenHeader) == s.Cfg.InternalToken {
-		rows, err := s.St.ListActionCapabilitiesAll()
-		if err != nil {
-			fail(w, http.StatusInternalServerError, "internal", "action capability lookup failed")
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"records": actionAdminPayloads(rows), "scope": "platform"})
+	rows, err := s.St.ListActionCapabilitiesAll()
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "action capability lookup failed")
 		return
 	}
+	writeJSON(w, http.StatusOK, map[string]any{"records": actionAdminPayloads(rows), "scope": "platform"})
+}
+
+// handleChannelActionTenantList is the session read: 租户可见视图。
+func (s *Server) handleChannelActionTenantList(w http.ResponseWriter, r *http.Request) {
 	c := callerFrom(r)
 	if c == nil || c.Member == nil {
-		fail(w, http.StatusUnauthorized, "unauthenticated", "internal token or session required")
+		fail(w, http.StatusUnauthorized, "unauthenticated", "no session")
 		return
 	}
 	rows, err := s.St.ListActionCapabilities(c.Member.TenantID)
@@ -195,6 +211,8 @@ func (s *Server) handleChannelActionList(w http.ResponseWriter, r *http.Request)
 }
 
 type actionAdminRecord struct {
+	// ID 是能力行主键(紧急停用端点的定位键);管理面可见,公开面绝不出现。
+	ID string `json:"id"`
 	publicCapabilityRoute
 	TenantScope string `json:"tenant_scope"`
 }
@@ -209,6 +227,7 @@ func actionAdminPayloads(rows []channeladmission.ActionCapability) []actionAdmin
 			}, row)
 			caps := d.Caps
 			out = append(out, actionAdminRecord{
+				ID: row.ID,
 				publicCapabilityRoute: publicCapabilityRoute{
 					Platform: row.Platform, Method: row.Method, Environment: env,
 					Scenario: row.Scenario, AppBinding: row.AppBinding, Status: row.Status,
@@ -258,24 +277,30 @@ func (s *Server) handleChannelActionUpsert(w http.ResponseWriter, r *http.Reques
 		})
 		return
 	}
-	created, err := s.St.UpsertActionCapability(body.ActionCapability, store.ControlAudit{
+	created, updated, err := s.St.UpsertActionCapability(body.ActionCapability, store.ControlAudit{
 		Actor: strings.TrimSpace(body.Actor), Reason: strings.TrimSpace(body.Reason),
 	})
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "internal", "controlled write failed")
 		return
 	}
-	if created {
+	switch {
+	case created:
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"record": body.ActionCapability, "result": "created",
 			"notice": "受控记录已写入并留审计；资格未知(unknown)不构成允许。",
 		})
-		return
+	case updated:
+		writeJSON(w, http.StatusOK, map[string]any{
+			"record": body.ActionCapability, "result": "updated",
+			"notice": "受控更新已写入并留审计；资格未知(unknown)不构成允许。",
+		})
+	default:
+		writeJSON(w, http.StatusOK, map[string]any{
+			"record": body.ActionCapability, "result": "unchanged",
+			"notice": "载荷指纹未变化,无写入、无审计追加。",
+		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"record": body.ActionCapability, "result": "unchanged",
-		"notice": "载荷指纹未变化,无写入、无审计追加。",
-	})
 }
 
 // handleChannelActionEmergency flips the independent emergency veto (只停对应

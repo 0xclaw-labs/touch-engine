@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -239,5 +241,263 @@ func TestPublicActionCapabilitiesNoSecrets(t *testing.T) {
 				t.Fatalf("public route leaks internal field %q", banned)
 			}
 		}
+	}
+}
+
+// ---- Task 5: 管理端受控读写(internal token 平台权威 + 会话租户视图) ----------
+
+// rawDo issues a request with explicit headers (no implicit internal token).
+func rawDo(t *testing.T, f *admissionFixture, method, path, session string, hdr map[string]string, body string) (int, map[string]any) {
+	t.Helper()
+	var reader *strings.Reader
+	if body == "" {
+		reader = strings.NewReader("")
+	} else {
+		reader = strings.NewReader(body)
+	}
+	req, err := http.NewRequest(method, f.ts.URL+path, reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	if session != "" {
+		req.Header.Set("X-Session-Token", session)
+	}
+	if tenant := f.tenA; tenant != "" && session != "" {
+		req.Header.Set("X-Tenant-ID", tenant)
+	}
+	res, err := f.ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	raw, _ := io.ReadAll(res.Body)
+	var out map[string]any
+	_ = json.Unmarshal(raw, &out)
+	return res.StatusCode, out
+}
+
+func internalHdr() map[string]string {
+	return map[string]string{"X-Internal-Token": "test-internal-secret", "Content-Type": "application/json"}
+}
+
+func noAuthHdr() map[string]string {
+	return map[string]string{"Content-Type": "application/json"}
+}
+
+// TestChannelActionsReadAuth: 无凭据 401;会话=租户视图('*'+本租户,scope=tenant);
+// internal token=平台全量(scope=platform)。
+func TestChannelActionsReadAuth(t *testing.T) {
+	f := newAdmissionFixture(t, true)
+	status, _ := rawDo(t, f, http.MethodGet, "/api/v1/channel-actions", "", noAuthHdr(), "")
+	if status != http.StatusUnauthorized {
+		t.Fatalf("no auth = %d, want 401", status)
+	}
+	// 会话读与 BFF 同形:internal token + 会话同时携带(纯 token 无会话才是平台面)。
+	hdr := internalHdr()
+	delete(hdr, "Content-Type")
+	status, body := rawDo(t, f, http.MethodGet, "/api/v1/channel-actions", "sess-owner-a", hdr, "")
+	if status != http.StatusOK || body["scope"] != "tenant" {
+		t.Fatalf("session read = %d scope=%v, want 200/tenant", status, body["scope"])
+	}
+	recs, _ := body["records"].([]any)
+	if len(recs) != 45*6 { // 45 行 × 6 环境展开
+		t.Fatalf("tenant view records = %d, want %d", len(recs), 45*6)
+	}
+	status, body = rawDo(t, f, http.MethodGet, "/api/v1/channel-actions", "", internalHdr(), "")
+	if status != http.StatusOK || body["scope"] != "platform" {
+		t.Fatalf("internal read = %d scope=%v, want 200/platform", status, body["scope"])
+	}
+}
+
+// TestChannelActionsUpsertControlled: 受控写入留审计;三态响应(created/updated/
+// unchanged);缺 reason 400;非法枚举与 unknown 开奖励 422(模型层拒绝)。
+func TestChannelActionsUpsertControlled(t *testing.T) {
+	f := newAdmissionFixture(t, true)
+
+	// 无 token → 401(requireInternal 中间件)。
+	status, _ := rawDo(t, f, http.MethodPost, "/api/v1/channel-actions", "sess-owner-a", noAuthHdr(), `{}`)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("no token upsert = %d, want 401 (商家会话永不写准入真值)", status)
+	}
+
+	rec := map[string]any{
+		"catalog_code": "A91", "platform": "newplat", "method": "manual_material",
+		"scenario": "store_promo", "action_kind": "publish", "label": "测试新动作",
+		"suggested_only": true, "app_binding": "none", "tenant_scope": "*",
+		"status": "unknown",
+		"environments": map[string]any{
+			"desktop_browser": map[string]string{"navigation": "unknown", "media_handoff": "unknown", "platform_receipt": "unknown", "reward_eligibility": "unknown"},
+			"ios_safari":      map[string]string{"navigation": "unknown", "media_handoff": "unknown", "platform_receipt": "unknown", "reward_eligibility": "unknown"},
+			"android_browser": map[string]string{"navigation": "unknown", "media_handoff": "unknown", "platform_receipt": "unknown", "reward_eligibility": "unknown"},
+			"ios_wechat":      map[string]string{"navigation": "unknown", "media_handoff": "unknown", "platform_receipt": "unknown", "reward_eligibility": "unknown"},
+			"android_wechat":  map[string]string{"navigation": "unknown", "media_handoff": "unknown", "platform_receipt": "unknown", "reward_eligibility": "unknown"},
+			"target_app":      map[string]string{"navigation": "unknown", "media_handoff": "unknown", "platform_receipt": "unknown", "reward_eligibility": "unknown"},
+		},
+		"field_support": map[string]string{}, "required_inputs": []string{"content_pack_version"},
+		"evidence_grade": "unverified", "official_sources": []string{"https://example.test/x"},
+		"checked_at": "2026-11-09", "valid_until": "2027-02-07",
+		"missing": []string{"接入核验"}, "reason_code": "pending_external", "reason_text": "未核验",
+		"seed_version": 1,
+	}
+	write := func(mut map[string]any) string {
+		b, err := json.Marshal(mut)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	full := func() map[string]any {
+		m := map[string]any{}
+		for k, v := range rec {
+			m[k] = v
+		}
+		m["actor"] = "platform-ops"
+		m["reason"] = "新增待核验路线"
+		return m
+	}
+
+	// 缺 reason → 400。
+	noReason := full()
+	delete(noReason, "reason")
+	if status, _ = rawDo(t, f, http.MethodPost, "/api/v1/channel-actions", "", internalHdr(), write(noReason)); status != http.StatusBadRequest {
+		t.Fatalf("missing reason = %d, want 400", status)
+	}
+	// 非法枚举 status=allowed → 422(allowed 不是状态;unknown 永不等价 allowed)。
+	bad := full()
+	bad["status"] = "allowed"
+	if status, _ = rawDo(t, f, http.MethodPost, "/api/v1/channel-actions", "", internalHdr(), write(bad)); status != http.StatusUnprocessableEntity {
+		t.Fatalf("status allowed = %d, want 422", status)
+	}
+	// unknown 状态配 reward=supported → 422(unknown 永不开奖励)。
+	bad = full()
+	bad["status"] = "unknown"
+	envs := bad["environments"].(map[string]any)["desktop_browser"].(map[string]string)
+	envs["reward_eligibility"] = "supported"
+	if status, _ = rawDo(t, f, http.MethodPost, "/api/v1/channel-actions", "", internalHdr(), write(bad)); status != http.StatusUnprocessableEntity {
+		t.Fatalf("unknown+reward supported = %d, want 422", status)
+	}
+	// 还原共享底图,后续 full() 不被本次负例污染。
+	envs["reward_eligibility"] = "unknown"
+
+	// 合法创建 → 201 created。
+	if status, body := rawDo(t, f, http.MethodPost, "/api/v1/channel-actions", "", internalHdr(), write(full())); status != http.StatusCreated || body["result"] != "created" {
+		t.Fatalf("create = %d result=%v, want 201/created", status, body["result"])
+	}
+	// 原样重发 → 200 unchanged,审计不增。
+	if status, body := rawDo(t, f, http.MethodPost, "/api/v1/channel-actions", "", internalHdr(), write(full())); status != http.StatusOK || body["result"] != "unchanged" {
+		t.Fatalf("repeat = %d result=%v, want 200/unchanged", status, body["result"])
+	}
+	if n, err := f.s.St.CountActionCapabilityAudit("A91"); err != nil || n != 1 {
+		t.Fatalf("audit after unchanged = %d err=%v, want 1", n, err)
+	}
+	// 内容变化 → 200 updated,审计 +1。
+	chg := full()
+	chg["reason"] = "主体控制台核验完成"
+	chg["status"] = "admitted"
+	chg["reason_code"] = "admitted"
+	if status, body := rawDo(t, f, http.MethodPost, "/api/v1/channel-actions", "", internalHdr(), write(chg)); status != http.StatusOK || body["result"] != "updated" {
+		t.Fatalf("update = %d result=%v, want 200/updated", status, body["result"])
+	}
+	if n, err := f.s.St.CountActionCapabilityAudit("A91"); err != nil || n != 2 {
+		t.Fatalf("audit after update = %d err=%v, want 2", n, err)
+	}
+	// 公开面立即反映更新后的真值。
+	gstatus, gbody := actionCapsGet(t, f, "/api/v1/public/actions/A91/capabilities")
+	gr := actionRoute(t, gbody, "manual_material", "desktop_browser")
+	if gstatus != http.StatusOK || routeStr(gr, "status") != "admitted" {
+		t.Fatalf("public reflects controlled update: %d %v", gstatus, gr)
+	}
+}
+
+// findA01H5ID locates the seeded A01 h5_share row id via the internal read.
+func findA01H5ID(t *testing.T, f *admissionFixture) string {
+	t.Helper()
+	status, body := rawDo(t, f, http.MethodGet, "/api/v1/channel-actions", "", internalHdr(), "")
+	if status != http.StatusOK {
+		t.Fatalf("internal read = %d", status)
+	}
+	recs, _ := body["records"].([]any)
+	for _, raw := range recs {
+		r, _ := raw.(map[string]any)
+		if r["id"] == "cap_a01_h5_share" {
+			return r["id"].(string)
+		}
+	}
+	t.Fatal("cap_a01_h5_share not found in internal read")
+	return ""
+}
+
+// TestChannelActionsEmergency: 紧急停用只停对应方法/动作(独立否决);恢复后
+// 公开面回到原真值;缺 reason 400;未知 id 404。
+func TestChannelActionsEmergency(t *testing.T) {
+	f := newAdmissionFixture(t, true)
+	id := findA01H5ID(t, f)
+
+	// 缺 reason → 400。
+	if status, _ := rawDo(t, f, http.MethodPost, "/api/v1/channel-actions/"+id+"/emergency", "", internalHdr(), `{"disabled":true}`); status != http.StatusBadRequest {
+		t.Fatalf("missing reason = %d, want 400", status)
+	}
+	// 未知 id → 404。
+	if status, _ := rawDo(t, f, http.MethodPost, "/api/v1/channel-actions/cap_nope/emergency", "", internalHdr(), `{"disabled":true,"reason":"x"}`); status != http.StatusNotFound {
+		t.Fatalf("unknown id = %d, want 404", status)
+	}
+
+	// 停用 → 公开面 A01 h5_share 答 emergency_disabled。
+	if status, _ := rawDo(t, f, http.MethodPost, "/api/v1/channel-actions/"+id+"/emergency", "", internalHdr(), `{"disabled":true,"reason":"平台故障临时停用","actor":"ops-oncall"}`); status != http.StatusOK {
+		t.Fatalf("disable = %d", status)
+	}
+	_, body := actionCapsGet(t, f, "/api/v1/public/actions/A01/capabilities")
+	r := actionRoute(t, body, "h5_share", "desktop_browser")
+	if routeBool(r, "allowed") || routeStr(r, "reason") != "emergency_disabled" {
+		t.Fatalf("disabled route = %v/%s, want false/emergency_disabled", routeBool(r, "allowed"), routeStr(r, "reason"))
+	}
+	// 只停对应方法:同动作 manual_material 路由不受影响(仍是 not_admitted),
+	// 其他动作(A02)不受影响。
+	m := actionRoute(t, body, "manual_material", "desktop_browser")
+	if routeStr(m, "reason") != "not_admitted" {
+		t.Fatalf("manual route after emergency = %s, want not_admitted (紧急停用只停对应方法)", routeStr(m, "reason"))
+	}
+	_, body2 := actionCapsGet(t, f, "/api/v1/public/actions/A02/capabilities")
+	r2 := actionRoute(t, body2, "js_media_handoff", "desktop_browser")
+	if routeStr(r2, "reason") != "pending_external" {
+		t.Fatalf("A02 after A01 emergency = %s, want pending_external (无关动作不受影响)", routeStr(r2, "reason"))
+	}
+
+	// 恢复 → 公开面回到原真值(not_admitted)。
+	if status, _ := rawDo(t, f, http.MethodPost, "/api/v1/channel-actions/"+id+"/emergency", "", internalHdr(), `{"disabled":false,"reason":"平台恢复"}`); status != http.StatusOK {
+		t.Fatalf("enable = %d", status)
+	}
+	_, body = actionCapsGet(t, f, "/api/v1/public/actions/A01/capabilities")
+	r = actionRoute(t, body, "h5_share", "desktop_browser")
+	if routeStr(r, "reason") != "not_admitted" {
+		t.Fatalf("restored route = %s, want not_admitted", routeStr(r, "reason"))
+	}
+
+	// 审计:两次 toggle 都留痕(actor/reason)。
+	astatus, abody := rawDo(t, f, http.MethodGet, "/api/v1/channel-actions/A01/audit", "", internalHdr(), "")
+	if astatus != http.StatusOK {
+		t.Fatalf("audit read = %d", astatus)
+	}
+	audit, _ := abody["audit"].([]any)
+	if len(audit) != 2 {
+		t.Fatalf("audit entries = %d, want 2 (disable+enable)", len(audit))
+	}
+	first, _ := audit[0].(map[string]any)
+	if first["action"] != "emergency_disable" || first["actor"] != "ops-oncall" || first["reason"] != "平台故障临时停用" {
+		t.Fatalf("disable audit entry = %v", first)
+	}
+}
+
+// TestChannelActionsWriteIsInternalOnly: 写面在无 token 的会话下也不可达。
+func TestChannelActionsWriteIsInternalOnly(t *testing.T) {
+	f := newAdmissionFixture(t, true)
+	if status, _ := rawDo(t, f, http.MethodPost, "/api/v1/channel-actions/cap_a01_h5_share/emergency", "sess-owner-a", noAuthHdr(), `{"disabled":true,"reason":"x"}`); status != http.StatusUnauthorized {
+		t.Fatalf("session emergency = %d, want 401", status)
+	}
+	if status, _ := rawDo(t, f, http.MethodGet, "/api/v1/channel-actions/A01/audit", "sess-owner-a", noAuthHdr(), ""); status != http.StatusUnauthorized {
+		t.Fatalf("session audit = %d, want 401", status)
 	}
 }

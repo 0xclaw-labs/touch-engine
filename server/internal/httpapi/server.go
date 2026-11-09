@@ -663,7 +663,7 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("GET /api/v1/public/links/{code}/channel-admission", http.HandlerFunc(s.handlePublicChannelAdmission))
 		// HUI-3535 (2026-11-09 增量): 动作级能力投影(B04)与平台端受控读写。
 		mux.Handle("GET /api/v1/public/actions/{id}/capabilities", http.HandlerFunc(s.handlePublicActionCapabilities))
-		mux.Handle("GET /api/v1/channel-actions", http.HandlerFunc(s.handleChannelActionList))
+		mux.Handle("GET /api/v1/channel-actions", s.channelActionsRead(s.handleChannelActionPlatformList, s.handleChannelActionTenantList))
 		mux.Handle("POST /api/v1/channel-actions", s.requireInternal(s.handleChannelActionUpsert))
 		mux.Handle("POST /api/v1/channel-actions/{id}/emergency", s.requireInternal(s.handleChannelActionEmergency))
 		mux.Handle("GET /api/v1/channel-actions/{code}/audit", s.requireInternal(s.handleChannelActionAudit))
