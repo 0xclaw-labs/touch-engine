@@ -65,6 +65,11 @@ type Server struct {
 	Log     *log.Logger
 	closeDB func()
 
+	// Media (HUI-3553 B05) is the controlled real-media store: verified
+	// upload bytes live here content-addressed; the controlled media GET
+	// serves from it. Bytes never enter the database.
+	Media *upload.MediaStore
+
 	// CopyModel replaces the platform text client when tests inject one.
 	// Production leaves it nil: missing credentials stay fail-closed.
 	CopyModel copyjob.TextModel
@@ -158,6 +163,7 @@ func New(cfg config.Config, database *sql.DB, idc *identity.Client, upc *upload.
 	st := store.New(database)
 	return &Server{
 		Cfg: cfg, St: st, ID: idc, Upload: upc, Log: logger,
+		Media:             upload.NewMediaStore(cfg.MediaDir, maxMediaUploadBytes),
 		LeadsLimiter:      leads.NewRateLimiter(leadsRatePerMinute, time.Minute),
 		StaffTokenLimiter: leads.NewRateLimiter(staffTokenRatePerMinute, time.Minute),
 		Matrix:            matrixFromConfig(cfg),
@@ -387,6 +393,18 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/content-handoffs/{handoffId}/queue-view", s.requireServiceProducer(s.handleContentHandoffQueueView))
 	mux.Handle("POST /api/v1/content-pack-versions/{versionId}/media-handoff", s.requireSession(s.handleMediaHandoffMint))
 	mux.Handle("GET /api/v1/media-handoffs/{token}", s.requireSession(s.handleMediaHandoffRedeem))
+
+	// HUI-3553 (TOUCH-ALL-20261109) 门店根内容包:内容归 tenant/store,campaign
+	// 可空;真实媒体上传/列取;建版本/明确采用/阻止新分发。管理面不加 FEATURE
+	// 开关(仓内惯例),授权同旧内容包端点(manage_content_packs / read_list)。
+	// 顾客可触达的公开内容读面/受控媒体在下方公共注册点(FEATURE_CONTENT_PACKS)。
+	mux.Handle("POST /api/v1/stores/{id}/content-packs", s.requireSession(s.handleStoreContentPackCreate))
+	mux.Handle("GET /api/v1/stores/{id}/content-packs", s.requireSession(s.handleStoreContentPackList))
+	mux.Handle("POST /api/v1/stores/{id}/content-media", s.requireSession(s.handleStoreContentMediaUpload))
+	mux.Handle("GET /api/v1/stores/{id}/content-media", s.requireSession(s.handleStoreContentMediaList))
+	mux.Handle("POST /api/v1/stores/{id}/content-packs/{packId}/versions", s.requireSession(s.handleStoreContentPackVersionCreate))
+	mux.Handle("POST /api/v1/stores/{id}/content-packs/{packId}/versions/{versionId}/adopt", s.requireSession(s.handleStoreContentPackVersionAdopt))
+	mux.Handle("POST /api/v1/stores/{id}/content-packs/{packId}/versions/{versionId}/block", s.requireSession(s.handleStoreContentPackVersionBlock))
 
 	mux.Handle("GET /api/v1/campaigns/{id}/links", s.requireSession(s.handleLinkList))
 	mux.Handle("POST /api/v1/campaigns/{id}/links", s.requireSession(s.handleLinkCreate))
@@ -658,6 +676,12 @@ func (s *Server) Handler() http.Handler {
 	if s.Cfg.FeatureContentPacks {
 		mux.Handle("GET /api/v1/public/links/{code}/content-choices", http.HandlerFunc(s.handlePublicContentChoices))
 		mux.Handle("GET /api/v1/public/links/{code}/content-snapshot", http.HandlerFunc(s.handlePublicContentSnapshot))
+		// HUI-3553 (TOUCH-ALL-20261109) B05: 门店动作的已采用内容读面与受控
+		// 真实媒体。tenant/store 从数据行解析,action_id 不是授权;受控媒体
+		// 支持 HEAD/Range/正确 MIME/短 TTL 续签,不依赖商家 cookie。
+		mux.Handle("GET /api/v1/public/actions/{actionId}/content", http.HandlerFunc(s.handlePublicActionContent))
+		mux.Handle("POST /api/v1/public/content/{version}/media-access", http.HandlerFunc(s.handlePublicMediaAccess))
+		mux.Handle("GET /api/v1/public/content/media/{token}", http.HandlerFunc(s.handlePublicControlledMedia))
 	}
 	// HUI-1671 B3 真实奖励交付: /work 管理面(无开关)、受信预留(internal token)、
 	// 公共 Summary(FEATURE_REWARD_OPS 默认 off)注册段集中在一个方法里。

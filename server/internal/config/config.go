@@ -112,6 +112,10 @@ type Config struct {
 	HTTPAddr string
 	// DBPath is the sqlite database file path.
 	DBPath string
+	// MediaDir is the controlled real-media directory (HUI-3553 B05): uploaded
+	// content bytes land here content-addressed by sha256; the database never
+	// stores bytes. Default data/media (worktree-isolated like data/).
+	MediaDir string
 	// Env is "development" or "production".
 	Env string
 	// AppID is the platform app id (JWT aud), e.g. touch-engine.
@@ -246,6 +250,7 @@ func Load(get func(string) string) Config {
 		ServiceRegistryErrors:          serviceProblems,
 		HTTPAddr:                       firstNonEmpty(get("TOUCH_HTTP_ADDR"), "127.0.0.1:18240"),
 		DBPath:                         firstNonEmpty(get("TOUCH_DB_PATH"), "data/touch.db"),
+		MediaDir:                       firstNonEmpty(get("TOUCH_MEDIA_DIR"), "data/media"),
 		Env:                            firstNonEmpty(get("TOUCH_ENV"), "development"),
 		AppID:                          firstNonEmpty(get("TOUCH_APP_ID"), "touch-engine"),
 		InternalToken:                  get("TOUCH_INTERNAL_TOKEN"),

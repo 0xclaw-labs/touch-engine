@@ -3,19 +3,28 @@
 import { useCallback, useEffect, useState } from "react";
 import { failureText, useSession } from "@/components/work/merchant-session";
 import { LoadErrorState } from "@/components/work/load-error-state";
+import { StoreContentDrawer } from "@/components/work/store-content-drawer";
 import { surfaceLabel } from "@/lib/product-finish";
 
 // HUI-3553 素材页三入口:上传已有内容 / 从素材库选择 / 帮我制作。
+// TOUCH-ALL-20261109 增量:门店内容包抽屉(真实上传/候选/采用/换版/受控
+// 预览下载)挂在本页,内容包脱离活动成为门店根资产(campaign 可空)。
 // 纪律:
 //   - 商家全程不填 asset_id/version 技术字段:素材用选择器挑(选择器内部携带
 //     素材 ID),来源/类型/授权声明直接展示;
 //   - 「帮我制作」只在真实 handoff 能力存在时可用;本票未接制作引擎,按钮
 //     如实禁用并显示原因,绝不阻塞前两个入口;
-//   - 候选提交后可预览、编辑文案(= 新版本)、明确采用;采用前顾客侧不读它。
+//   - 候选提交后可预览、编辑文案(= 新版本)、明确采用;采用前顾客侧不读它;
+//   - 浏览/换稿/下载零生成零收费。
 
 interface Campaign {
   id: string;
   title: string;
+}
+
+interface StoreOption {
+  id: string;
+  name: string;
 }
 
 interface LibraryItem {
@@ -237,6 +246,8 @@ export default function MaterialsPage() {
   const [phase, setPhase] = useState<"loading" | "error" | "ready">("loading");
   const [error, setError] = useState("");
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [stores, setStores] = useState<StoreOption[]>([]);
+  const [storeID, setStoreID] = useState("");
   const [library, setLibrary] = useState<LibraryItem[]>([]);
   const [libraryNote, setLibraryNote] = useState("");
   const [packs, setPacks] = useState<ContentPack[]>([]);
@@ -273,6 +284,11 @@ export default function MaterialsPage() {
     }
     const items = Array.isArray(campaignRes.data.items) ? (campaignRes.data.items as Campaign[]) : [];
     setCampaigns(items);
+    // 门店根内容包:默认选第一家门店(可与活动无关)。
+    const storesRes = await session.api("GET", "stores").catch(() => null);
+    const storeItems = storesRes && storesRes.ok && Array.isArray(storesRes.data.items) ? (storesRes.data.items as StoreOption[]) : [];
+    setStores(storeItems);
+    setStoreID((cur) => cur || storeItems[0]?.id || "");
     const lib = await session.api("GET", "assets");
     if (lib.status === 404) {
       setLibrary([]);
@@ -433,8 +449,31 @@ export default function MaterialsPage() {
             </button>
           </section>
           <section className="tk-section">
-            <h2 className="tk-section-title">最近的内容包</h2>
-            {packs.length === 0 ? <p className="tk-note">还没有内容包。提交候选后,去活动详情页预览并采用。</p> : null}
+            <h2 className="tk-section-title">门店内容包(不需要先建活动)</h2>
+            {stores.length === 0 ? (
+              <p className="tk-note tk-unknown">还没有门店。先在门店管理里建门店,再在这里组织内容包。</p>
+            ) : (
+              <>
+                <label className="tk-label">
+                  选择门店
+                  <select
+                    className="tk-select"
+                    aria-label="选择门店"
+                    value={storeID}
+                    onChange={(event) => setStoreID(event.target.value)}
+                  >
+                    {stores.map((st) => (
+                      <option key={st.id} value={st.id}>{st.name}</option>
+                    ))}
+                  </select>
+                </label>
+                {storeID ? <StoreContentDrawer storeId={storeID} /> : null}
+              </>
+            )}
+          </section>
+          <section className="tk-section">
+            <h2 className="tk-section-title">最近的活动内容包</h2>
+            {packs.length === 0 ? <p className="tk-note">活动还没有内容包。门店内容包在上方抽屉里维护。</p> : null}
             <ul className="tk-list">
               {packs.map((pack) => (
                 <li key={pack.id} data-pack-id={pack.id}>
