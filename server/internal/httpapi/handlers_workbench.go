@@ -53,9 +53,11 @@ func (s *Server) workbenchFacts(ctx context.Context, c *caller) (workbench.Facts
 	if err != nil {
 		return workbench.Facts{}, err
 	}
+	// HUI-4591 接线:订阅状态按租户事实(无投影行回退 Cfg,旧行为保留)。
+	_, effectiveSub := s.billingSubscriptionFact(c.Member.TenantID)
 	facts := workbench.Facts{
 		Seat:                   s.workbenchSeat(c),
-		SubscriptionStatus:     s.Cfg.SubscriptionStatus,
+		SubscriptionStatus:     billingEntitlementStatus(effectiveSub),
 		Benefits:               []workbench.BenefitFact{},
 		LeadsCapture:           s.Cfg.FeatureLeadsCapture,
 		LibraryEnabled:         s.Cfg.FeatureAssetLib,

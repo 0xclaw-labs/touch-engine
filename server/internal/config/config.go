@@ -250,6 +250,14 @@ type Config struct {
 	BrandBaseURL string
 	BrandToken   string
 
+	// Eco cashier jump params (HUI-4591 M12): the billing page reuses the
+	// eco-nav app switch to jump to the ecosystem cashier. Empty (default)
+	// means the cashier app is not wired in this deployment: the page answers
+	// honestly "生态收银台未接入" instead of inventing a jump target. The URL
+	// itself is always minted by public-ai shell launch — never constructed here.
+	CashierAppID    string
+	CashierTargetID string
+
 	// SubscriptionStatus is the Touch package fact used to restrict new
 	// premium capabilities. It is not a wallet balance. Empty means unconfirmed.
 	// HUI-1992: this process does not start a production recharge.
@@ -332,6 +340,8 @@ func Load(get func(string) string) Config {
 		WecomCallbackCorpID:            strings.TrimSpace(get(EnvWecomCallbackCorpID)),
 		BrandBaseURL:                   strings.TrimSpace(get("PLATFORM_BRAND_BASE_URL")),
 		BrandToken:                     get("PLATFORM_BRAND_TOKEN"),
+		CashierAppID:                   strings.TrimSpace(get("TOUCH_CASHIER_APP_ID")),
+		CashierTargetID:                strings.TrimSpace(get("TOUCH_CASHIER_TARGET_ID")),
 		SubscriptionStatus:             firstNonEmpty(get("TOUCH_SUBSCRIPTION_STATUS"), "unconfirmed"),
 	}
 }
