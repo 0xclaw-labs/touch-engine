@@ -109,18 +109,33 @@ func TestLeadSyncStateMachine(t *testing.T) {
 	})
 	mustNoErr(t, err)
 
-	// delivered before pending is a conflict (compare-and-set)
-	if err := s.MarkLeadDelivered("sub_1"); err == nil {
-		t.Fatal("accepted->crm_received must conflict")
-	}
+	// HUI-4594: crm_received is ACK-only. Without the receiver's persisted ACK
+	// the row must stay in pending_sync no matter what the transport says.
 	mustNoErr(t, s.MarkLeadSyncPending("sub_1"))
 	mustNoErr(t, s.MarkLeadSyncPending("sub_1")) // idempotent
-	mustNoErr(t, s.MarkLeadDelivered("sub_1"))
-	mustNoErr(t, s.MarkLeadDelivered("sub_1")) // idempotent
+	mustNoErr(t, s.MarkOutboxForwarded("ev_1", "ntf_ev_1"))
 	got, err := s.GetLeadSubmissionByRef("sub_1")
 	mustNoErr(t, err)
-	if got.SyncState != "crm_received" {
-		t.Fatalf("state = %q, want crm_received", got.SyncState)
+	if got.SyncState != "pending_sync" || got.ReceiverState != "" {
+		t.Fatalf("transport alone must not end sync: %+v", got)
+	}
+	// the persisted ACK is the only path to crm_received (idempotent on replay)
+	if _, _, err := s.AckLeadReceipt(ten, "sub_1", "leads-ingest", LeadAck{
+		ReceiptID: "rcp_sm_1", SourceEventID: "ev_1", SubmissionID: "sub_1",
+		SourceRevision: 1, ReceiverState: ReceiverStateStored,
+	}); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+	// second ack under a new receipt id stays idempotent at the state level
+	if _, _, err := s.AckLeadReceipt(ten, "sub_1", "leads-ingest", LeadAck{
+		ReceiptID: "rcp_sm_2", SourceEventID: "ev_1", SubmissionID: "sub_1",
+		SourceRevision: 1, ReceiverState: ReceiverStateStored,
+	}); err != nil {
+		t.Fatalf("second ack: %v", err)
+	}
+	got, _ = s.GetLeadSubmissionByRef("sub_1")
+	if got.SyncState != "crm_received" || got.ReceiverState != "stored" {
+		t.Fatalf("state = %q receiver %q, want crm_received/stored", got.SyncState, got.ReceiverState)
 	}
 
 	// sync errors never move a crm_received row
@@ -143,6 +158,29 @@ func TestLeadSyncStateMachine(t *testing.T) {
 	got, _ = s.GetLeadSubmissionByRef("sub_2")
 	if got.SyncState != "rejected" {
 		t.Fatalf("state = %q, want rejected", got.SyncState)
+	}
+
+	// HUI-4594 repair: a later delivered verdict proves the dead-letter call
+	// wrong; the row returns to 待同步, never straight to crm_received
+	mustNoErr(t, s.RepairLeadToPending("sub_2"))
+	got, _ = s.GetLeadSubmissionByRef("sub_2")
+	if got.SyncState != "pending_sync" || got.ReceiverState != "" {
+		t.Fatalf("repair = %q/%q, want pending_sync with empty receiver", got.SyncState, got.ReceiverState)
+	}
+	// repair is idempotent at the target state and conflicts from live states:
+	// accepted means the fact never left, so a repair claim must not pass
+	if err := s.RepairLeadToPending("sub_2"); err != nil {
+		t.Fatalf("repair at target must be idempotent: %v", err)
+	}
+	if _, _, err := s.SubmitLead(NewLeadSubmission{
+		TenantID: ten, CampaignID: cmp, SubmissionRef: "sub_3", DedupKey: "dk_3",
+		NoticeVersion: "v1", ConsentAt: "2026-09-19T00:00:00Z",
+		OutboxEventID: "ev_3", OutboxPayload: `{}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RepairLeadToPending("sub_3"); err == nil {
+		t.Fatal("accepted -> repair must conflict (compare-and-set)")
 	}
 }
 

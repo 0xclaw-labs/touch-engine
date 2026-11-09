@@ -473,11 +473,11 @@ func (s *Store) MarkLeadSyncPending(ref string) error {
 	return s.transitionLead(ref, []string{"accepted", "pending_sync"}, "pending_sync", "")
 }
 
-// MarkLeadDelivered: pending_sync -> crm_received when deliveries report
-// delivered. A row already closed as rejected can still be repaired when a
-// later read of the same notify event says delivered. It never invents receipt.
-func (s *Store) MarkLeadDelivered(ref string) error {
-	return s.transitionLead(ref, []string{"pending_sync", "rejected", "crm_received"}, "crm_received", "")
+// RepairLeadToPending: rejected -> pending_sync when a later read of the same
+// notify event proves the dead-letter verdict was wrong (HUI-4594). It does
+// NOT claim ingestion — only the receiver's persisted ACK ends the sync.
+func (s *Store) RepairLeadToPending(ref string) error {
+	return s.transitionLead(ref, []string{"rejected"}, "pending_sync", "")
 }
 
 // MarkLeadRejected: target refused (dead letter / publish rejection).

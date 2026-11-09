@@ -1,10 +1,14 @@
 // forwarder.go: reliable, revocable delivery of lead facts to the acquisition
 // side via platform-notify directed events.
 //
-// 语义(票面 + HUI-1734):
+// 语义(HUI-1747 票面 + HUI-1734 + HUI-4594 裁定):
 //   - notify 持久接受(2xx)即确认源 → 线索 pending_sync("待同步");
-//   - deliveries delivered → crm_received;dead / subscription_disabled → rejected;
-//     已拒绝的行若后来同一 notify 事件变成 delivered，再写成 crm_received;
+//   - HUI-4594: notify 投递成功(delivered)≠落库——delivered 只记传输层事实
+//     (notify_delivered 审计),同步状态停留在待同步;crm_received 只由受信
+//     接收方的持久化 ACK(五元组)写成(store.AckLeadReceipt);
+//   - deliveries dead / subscription_disabled → rejected;已拒绝的行若后来
+//     同一 notify 事件变成 delivered,说明死信判定错了 → 修复回待同步
+//     (接收方 ACK 与否仍未知,不跳到 crm_received);
 //   - 传输失败/未确认 → 停留在待同步并记账,**不伪报入库**,不阻塞内容预览;
 //   - 撤销是终态:forwarder 发现撤销行时把未发的 submit 事实标记 suppressed
 //     (零网络);已发出的靠 revoke 事实(更高 source_version)收敛,
@@ -48,8 +52,8 @@ func NewForwarder(st *store.Store, poster Poster, logger *log.Logger) *Forwarder
 // TickResult summarizes one pass (for tests and observability).
 type TickResult struct {
 	Published  int // facts accepted by notify this pass
-	Confirmed  int // deliveries confirmed delivered this pass
 	Rejected   int // dead/disabled deliveries this pass
+	Repaired   int // rejected rows restored to pending this pass (verdict was wrong)
 	Suppressed int // facts withheld because their lead was revoked
 	Failed     int // transport failures this pass
 }
@@ -109,14 +113,16 @@ func (f *Forwarder) Tick(ctx context.Context) TickResult {
 			_ = f.St.AppendLeadAudit(lead.TenantID, lead.SubmissionRef, "sync_pending", `{"via":"notify"}`, "system")
 		}
 	}
-	// second phase: confirmations for facts already accepted by notify
+	// second phase: transport verdicts for facts already accepted by notify.
+	// HUI-4594: a delivered verdict is transport-layer truth only; ending the
+	// sync requires the receiver's persisted ACK.
 	f.confirmDeliveries(ctx, &res)
 	return res
 }
 
-// confirmDeliveries polls notify's deliveries endpoint for pending_sync leads
-// and resolves them. A row already marked rejected is polled again only so a
-// later delivered status on the same notify event can repair it. Queries are
+// confirmDeliveries polls notify's deliveries endpoint for pending_sync and
+// rejected leads. A rejected row is polled again so a later delivered status on
+// the same notify event can repair the wrong dead-letter verdict. Queries are
 // read-only on the notify side (零副作用).
 func (f *Forwarder) confirmDeliveries(ctx context.Context, res *TickResult) {
 	f.confirmState(ctx, res, StatePendingSync, false)
@@ -150,10 +156,17 @@ func (f *Forwarder) confirmState(ctx context.Context, res *TickResult, state str
 		verdict, reason := resolveDeliveries(deliveries)
 		switch verdict {
 		case "delivered":
-			if err := f.St.MarkLeadDelivered(lead.SubmissionRef); err == nil {
-				res.Confirmed++
-				_ = f.St.AppendLeadAudit(lead.TenantID, lead.SubmissionRef, "sync_delivered", `{"by":"deliveries"}`, "system")
+			if repair {
+				// the dead verdict was wrong: back to 待同步 (ingestion still
+				// unproven — only the receiver ACK ends the sync)
+				if err := f.St.RepairLeadToPending(lead.SubmissionRef); err == nil {
+					res.Repaired++
+					_ = f.St.AppendLeadAudit(lead.TenantID, lead.SubmissionRef, "sync_repaired", `{"by":"deliveries"}`, "system")
+				}
+				continue
 			}
+			// 传输层事实留痕;同步状态不动(待同步可见),入库以 ACK 为准
+			_ = f.St.AppendLeadAudit(lead.TenantID, lead.SubmissionRef, "notify_delivered", `{"by":"deliveries"}`, "system")
 		case "dead":
 			if repair {
 				continue
