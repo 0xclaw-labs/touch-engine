@@ -579,6 +579,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/campaigns/{id}/leads", s.requireSession(s.handleLeadList))
 	mux.Handle("GET /api/v1/campaigns/{id}/lead-stats", s.requireSession(s.handleLeadStats))
 	mux.Handle("GET /api/v1/campaigns/{id}/leads/{ref}/audit", s.requireSession(s.handleLeadAudit))
+	// HUI-4594 M11: tenant-wide authorized-lead view (待同步与已获客分开口径).
+	mux.Handle("GET /api/v1/work/leads", s.requireSession(s.handleWorkLeads))
 
 	// dashboard read surface (HUI-1677 FEAT-0178): gated by FEATURE_DASHBOARD
 	// (default off; off = route not registered AND handler gate answers uniform

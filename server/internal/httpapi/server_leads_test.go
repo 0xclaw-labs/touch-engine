@@ -207,6 +207,8 @@ type leadsFixture struct {
 	stub         *notifyStub
 	code         string // active campaign short code
 	campaignID   string
+	baseStoreID  string // manager-scoped store for the /work/leads matrix
+	tenB         string
 	forwarder    *leads.Forwarder
 	adminSession string
 }
@@ -238,6 +240,11 @@ func newLeadsFixtureWithConfig(t *testing.T, cfg config.Config) *leadsFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// HUI-4594: a store-scoped manager for the /work/leads filtering matrix
+	baseStore, err := st.CreateStore(tenA.ID, "基准门店", "", "test")
+	if err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
 	for _, m := range []struct{ tenant, principal, role string }{
 		{tenA.ID, "usr_owner_a", "org_owner"},
 		{tenA.ID, "usr_staff_a", "staff"},
@@ -247,11 +254,15 @@ func newLeadsFixtureWithConfig(t *testing.T, cfg config.Config) *leadsFixture {
 			t.Fatalf("seed: %v", err)
 		}
 	}
+	if _, err := st.CreateMemberScoped(tenA.ID, "usr_sm_a", "store_manager", "sm", "test", true, baseStore.ID); err != nil {
+		t.Fatalf("seed manager: %v", err)
+	}
 
 	idsrv := fakeIdentity(t, map[string]identitySession{
 		"sess-owner-a": {"usr_owner_a", "a@example.com"},
 		"sess-staff-a": {"usr_staff_a", "staff@example.com"},
 		"sess-owner-b": {"usr_owner_b", "b@example.com"},
+		"sess-sm-a":    {"usr_sm_a", "sm@example.com"},
 	})
 	idc := &identity.Client{BaseURL: idsrv.URL, Token: "identity-token", AppID: "touch-engine", HTTP: idsrv.Client()}
 	upc := &upload.Client{BaseURL: "http://upload.test", Token: "upload-token", AppID: "touch-engine"}
@@ -262,6 +273,7 @@ func newLeadsFixtureWithConfig(t *testing.T, cfg config.Config) *leadsFixture {
 
 	f := &leadsFixture{
 		s: s, ts: ts, tenA: tenA.ID, stub: stub, adminSession: "sess-owner-a",
+		baseStoreID: baseStore.ID, tenB: tenB.ID,
 		forwarder: leads.NewForwarder(s.St, newTestPoster(stub), log.New(io.Discard, "", 0)),
 	}
 

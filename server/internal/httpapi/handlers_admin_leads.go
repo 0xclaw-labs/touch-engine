@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"github.com/bianjiefilm/touch-engine/server/internal/authz"
+	"github.com/bianjiefilm/touch-engine/server/internal/store"
 )
 
 // POST /api/v1/campaigns/{id}/lead-form — enable/configure the fixed light form.
@@ -106,4 +107,80 @@ func (s *Server) handleLeadAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": rows})
+}
+
+// GET /api/v1/work/leads — HUI-4594 M11: the tenant-wide authorized-lead view
+// across both capture sources (campaign + store), with honest stats. The
+// merchant is the authorized source domain, so contact fields are in scope
+// here (same discipline as the campaign lead list), but only inside the
+// standard membership middleware and the caller's store scope:
+//   - org_owner / tenant-level staff / active agent: whole tenant;
+//   - store_manager / store-scoped staff: rows of their own store only.
+//
+// 口径(裁定书): 已获客只数 receiver 确认(持久化 ACK 的 crm_received);
+// 待同步(pending_sync) 是独立桶,永不算已获客;撤回单列。
+func (s *Server) handleWorkLeads(w http.ResponseWriter, r *http.Request) {
+	if !s.leadsGate(w) {
+		return
+	}
+	c := callerFrom(r)
+	scopeStore := callerStoreScope(c) // '' = tenant level
+	if !s.requireScopedAction(c, authz.ActionReadList, authz.RecordScope{
+		TenantID: c.Member.TenantID, StoreID: scopeStore,
+	}, false, w) {
+		return
+	}
+	rows, err := s.St.ListLeadsByTenant(c.Member.TenantID, 200)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "lead list failed")
+		return
+	}
+	items := make([]map[string]any, 0, len(rows))
+	for _, lead := range rows {
+		if scopeStore != "" && lead.StoreID != scopeStore {
+			continue // store-scope members only see their own store's rows
+		}
+		items = append(items, workLeadView(lead))
+	}
+	counts, err := s.St.CountTenantLeadStates(c.Member.TenantID)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "lead stats failed")
+		return
+	}
+	stats := map[string]int{"authorized_total": 0, "pending_sync": 0, "receiver_received": 0, "revoked": 0}
+	for _, row := range counts {
+		stats["authorized_total"] += row.Count
+		switch {
+		case row.SyncState == "revoked":
+			stats["revoked"] += row.Count
+		case row.SyncState == "crm_received" && row.ReceiverState != "":
+			stats["receiver_received"] += row.Count // 持久化 ACK 落库=已获客
+		case row.SyncState == "pending_sync":
+			stats["pending_sync"] += row.Count // 待同步≠已获客
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "stats": stats})
+}
+
+// workLeadView is the whitelisted item shape: provenance + sync/receiver
+// projection. Internal bookkeeping (dedup_key, consent_ip_fp, attempts,
+// sync_error text) never leaves.
+func workLeadView(lead store.LeadSubmission) map[string]any {
+	revoked := lead.SyncState == "revoked" || lead.RevokedAt != ""
+	return map[string]any{
+		"submission_ref":         lead.SubmissionRef,
+		"capture_source":         lead.CaptureSource,
+		"campaign_id":            lead.CampaignID,
+		"store_id":               lead.StoreID,
+		"name":                   lead.Name,
+		"phone":                  lead.Phone,
+		"marketing_optin":        lead.MarketingOptin,
+		"consent_notice_version": lead.ConsentNoticeVersion,
+		"consent_at":             lead.ConsentAt,
+		"sync_state":             lead.SyncState,
+		"receiver_state":         lead.ReceiverState,
+		"has_receipt":            lead.ReceiptID != "",
+		"revoked":                revoked,
+		"created_at":             lead.CreatedAt,
+	}
 }
