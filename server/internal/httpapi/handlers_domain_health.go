@@ -39,6 +39,19 @@ func (s *Server) domainHealthTargets() []domainTarget {
 }
 
 func (s *Server) handleDomainHealth(w http.ResponseWriter, r *http.Request) {
+	overall, items := s.domainHealthSnapshot(r.Context())
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":     overall,
+		"service":    "touch-server",
+		"checked_at": domainHealthRFC3339(time.Now()),
+		"targets":    items,
+	})
+}
+
+// domainHealthSnapshot runs the same honest probe and returns the verdict for
+// reuse by the ops operations view (HUI-4592 O6). 行为与原 handleDomainHealth
+// 逐字节一致(抽取复用,不改语义)。
+func (s *Server) domainHealthSnapshot(ctx context.Context) (string, []map[string]any) {
 	client := &http.Client{Timeout: domainHealthTimeout}
 	targets := s.domainHealthTargets()
 	items := make([]map[string]any, 0, len(targets))
@@ -70,9 +83,9 @@ func (s *Server) handleDomainHealth(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		item["url"] = tg.url
-		ctx, cancel := context.WithTimeout(r.Context(), domainHealthTimeout)
+		probeCtx, cancel := context.WithTimeout(ctx, domainHealthTimeout)
 		start := time.Now()
-		req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, tg.url, nil)
+		req, rerr := http.NewRequestWithContext(probeCtx, http.MethodGet, tg.url, nil)
 		if rerr != nil {
 			cancel()
 			item["status"] = "invalid_config"
@@ -106,10 +119,5 @@ func (s *Server) handleDomainHealth(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, item)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":     overall,
-		"service":    "touch-server",
-		"checked_at": domainHealthRFC3339(time.Now()),
-		"targets":    items,
-	})
+	return overall, items
 }
