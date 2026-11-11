@@ -165,11 +165,13 @@ func (a *KuaishouAdapter) Submit(ctx context.Context, h publishhandoff.Handoff, 
 		return nil // 已有平台任务:先回查纪律,绝不重复创建
 	}
 	if job.stage == "creating" {
-		return fmt.Errorf("adapters: kuaishou create in-flight unknown (先前调用结果未知);请使用查询核对既有任务,不重复创建作品")
+		// in-flight 未知:拒重复创建(顾客可恢复=先用查询核对)。
+		return fmt.Errorf("%w: kuaishou create in-flight unknown (先前调用结果未知);请使用查询核对既有任务,不重复创建作品", ErrCustomerActionRequired)
 	}
 	token, err := a.loadToken(h.TenantID, h.ID, now)
 	if err != nil {
-		return err
+		// 授权缺失/过期:顾客可恢复(重新授权)。
+		return fmt.Errorf("%w: %v", ErrCustomerActionRequired, err)
 	}
 	refs, err := decodeRefs(job.mediaRefs)
 	if err != nil {
@@ -177,7 +179,7 @@ func (a *KuaishouAdapter) Submit(ctx context.Context, h publishhandoff.Handoff, 
 	}
 	videoRef, ok := refs["video"]
 	if !ok || strings.TrimSpace(videoRef) == "" {
-		return fmt.Errorf("adapters: kuaishou controlled media refs missing/expired: 请回到交接页重新获取后再提交(交接与内容版本不变)")
+		return fmt.Errorf("%w: kuaishou controlled media refs missing/expired: 请回到交接页重新获取后再提交(交接与内容版本不变)", ErrCustomerActionRequired)
 	}
 	coverRef := refs["cover"]
 	if err := a.setStage(h.TenantID, h.ID, "uploading", now); err != nil {

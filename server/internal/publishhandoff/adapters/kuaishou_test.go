@@ -372,3 +372,27 @@ func TestKsTokenExchangeFailureConsumesState(t *testing.T) {
 		t.Fatal("failed exchange must consume the one-time state (防重放)")
 	}
 }
+
+func TestKsSubmitPreconditionErrorsAreCustomerRecoverable(t *testing.T) {
+	d := adapterTestDB(t)
+	a := NewKuaishouAdapter(d, ksConfig(&fakeKsPlatform{uploadRef: "up_1"}))
+	if _, err := a.Prepare(context.Background(), ksRequest("oauth_server_push", true)); err != nil {
+		t.Fatal(err)
+	}
+	h := ksRequest("oauth_server_push", true).Handoff.Handoff
+	// 未授权提交:顾客可恢复(重新授权),不是服务器错误。
+	err := a.Submit(context.Background(), h, publishhandoff.PrepareResult{})
+	if !errors.Is(err, ErrCustomerActionRequired) {
+		t.Fatalf("submit without token must wrap ErrCustomerActionRequired, got %v", err)
+	}
+	// creating 态拒重复创建:同样顾客可恢复(先用查询)。
+	now := time.Now().UTC()
+	if _, err := d.Exec(`UPDATE kuaishou_publish_jobs SET stage='creating' WHERE handoff_id=?`, h.ID); err != nil {
+		t.Fatal(err)
+	}
+	_ = now
+	err = a.Submit(context.Background(), h, publishhandoff.PrepareResult{})
+	if !errors.Is(err, ErrCustomerActionRequired) {
+		t.Fatalf("creating-stage resubmit must wrap ErrCustomerActionRequired, got %v", err)
+	}
+}
