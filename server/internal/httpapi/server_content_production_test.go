@@ -2,12 +2,13 @@ package httpapi
 
 // server_content_production_test.go: HUI-4595 真实内容制作接线 HTTP 验收。
 //
-// 覆盖:
-//   - capabilities 如实申报(生产方未配=诚实关闭;配置后可用);
-//   - 发起面: 空包首作合法(T05,503 诚实降级下行照常落库)/幂等重放同一行/
-//     authz(staff 403,无会话 401)/跨租户包 404/binding 形状/quote seam
-//     (账单桩确认→verified;pending→422 不落行;未配置→申报值如实标注)/
-//     受信生产方已配→201;
+// 覆盖(wave2 集成后:quote 权威=4591 本仓投影,库层裁决,申报路径已退场):
+//   - capabilities 如实申报(生产方未配=诚实关闭;账单权威缝注册后报价态如实);
+//   - 发起面: 空包首作合法(T05,生产方未配 503 诚实降级下行照常落库)/
+//     无投影报价 404 fail-closed/幂等重放同一行/authz(staff 403,无会话 401)/
+//     跨租户包 404/binding 形状/quote 权威接线(五拒绝码: not_found/cross_tenant
+//     →404 同形掩蔽、not_confirmed→422、already_consumed→409、capability_
+//     mismatch→422;通过→核验+消费,消费引用=handoff id)/受信生产方已配→201;
 //   - 受信回流: 无服务身份 401/错 token 401/错角色 403/注册表未配 503/
 //     未知 handoff 404(反枚举)/两端哈希不符 422 零登记/kind 错配 422/
 //     全链 produced 201(候选+版本视图)/同键同负载重放 200 同一行/
@@ -29,6 +30,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bianjiefilm/touch-engine/server/internal/billing"
 	"github.com/bianjiefilm/touch-engine/server/internal/config"
 	"github.com/bianjiefilm/touch-engine/server/internal/db"
 	"github.com/bianjiefilm/touch-engine/server/internal/identity"
@@ -246,6 +248,48 @@ func produceFields(handoffID string, revision int, eventID string) map[string]st
 	return produceFieldsFor(handoffID, revision, eventID, mp4FixtureBytes(1), pngFixtureBytes(2))
 }
 
+// seedQuoteRow seeds one billing_ai_usage projection row directly (store 级
+// 种子;权威缝→投影→发起消费的完整 HTTP 链路在接线测试里单独走通)。state
+// 传空 = confirmed。
+func seedQuoteRow(t *testing.T, f *productionFixture, tenantID, quoteRef, capability, state string) {
+	t.Helper()
+	if state == "" {
+		state = billing.QuoteStateConfirmed
+	}
+	_, _, err := f.s.St.RecordBillingAIUsage(store.NewBillingAIUsage{
+		TenantID: tenantID, QuoteRef: quoteRef, Capability: capability,
+		Quantity: 1, AmountMinor: 8900, Currency: "CNY", State: state,
+	}, "2026-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatalf("seed quote row %s: %v", quoteRef, err)
+	}
+}
+
+// seedQuoteViaAuthority feeds one confirmed quote projection row through the
+// trusted billing authority seam (4591 权威缝真实 HTTP 链路,不是 store 直插)。
+func (f *productionFixture) seedQuoteViaAuthority(t *testing.T, tenantID, quoteRef string) {
+	t.Helper()
+	body := fmt.Sprintf(`{"tenant_id":%q,"source":"eco-billing","event_id":"seed-%s","type":"ai_usage_recorded",
+		"quote_ref":%q,"capability":"content_production","quantity":1,"amount_minor":8900,"currency":"CNY"}`,
+		tenantID, quoteRef, quoteRef)
+	req, err := http.NewRequest("POST", f.ts.URL+"/api/v1/billing/authority/events", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("authority request: %v", err)
+	}
+	req.Header.Set("X-Internal-Token", "test-internal-secret")
+	req.Header.Set("X-Service-ID", "bill-svc")
+	req.Header.Set("X-Service-Token", "bill-secret")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := f.ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("authority do: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusCreated && res.StatusCode != http.StatusOK {
+		t.Fatalf("authority seed %s: status %d", quoteRef, res.StatusCode)
+	}
+}
+
 // produceFieldsFor declares hashes computed from the ACTUAL bytes being sent
 // (两端一致的正例形态;负例显式改写声明哈希)。
 func produceFieldsFor(handoffID string, revision int, eventID string, video, cover []byte) map[string]string {
@@ -292,13 +336,41 @@ func TestContentProductionCapabilitiesHonestClosure(t *testing.T) {
 	if out2["quote_authority_configured"] != false || out2["task_authority_configured"] != false {
 		t.Fatalf("unwired seams must answer false: %+v", out2)
 	}
+
+	// 账单权威缝(billing_authority)已注册:quote 态如实转真(任务权威仍未接)。
+	f3 := newProductionFixture(t, productionConfigOpts{
+		serviceTokens: producerTokens + ";bill-svc:bill-secret",
+		serviceRoles:  producerRoles + ";bill-svc:billing_authority",
+	})
+	code3, out3 := f3.do(t, "GET", "/api/v1/stores/"+f3.storeA+"/content-production-handoffs/capabilities", "sess-owner-a", f3.tenA, "")
+	if code3 != 200 || out3["quote_authority_configured"] != true || out3["task_authority_configured"] != false {
+		t.Fatalf("billing authority wired: %d %+v", code3, out3)
+	}
 }
 
 // ---- merchant initiate face ----------------------------------------------------
 
 func TestContentProductionHandoffCreateEmptyPackLegalAndHonestClosure(t *testing.T) {
-	f := newProductionFixture(t, productionConfigOpts{})
+	// 无投影报价:quote 权威(4591 本仓投影)裁决 fail-closed,404 同形掩蔽,
+	// 不落行(申报路径已随 wave2 集成退场)。
+	f0 := newProductionFixture(t, productionConfigOpts{})
+	body0 := fmt.Sprintf(`{"content_pack_ref":"pack:%s","quote_ref":"quote_ghost","idempotency_key":"key-0"}`, f0.packA)
+	code0, out0 := f0.do(t, "POST", "/api/v1/stores/"+f0.storeA+"/content-production-handoffs", "sess-owner-a", f0.tenA, body0)
+	if code0 != http.StatusNotFound || out0["error"] != "not_found" {
+		t.Fatalf("unknown quote must be 404 not_found, got %d %+v", code0, out0)
+	}
+	_, list0 := f0.do(t, "GET", "/api/v1/stores/"+f0.storeA+"/content-production-handoffs", "sess-owner-a", f0.tenA, "")
+	if items, _ := list0["handoffs"].([]any); len(items) != 0 {
+		t.Fatalf("refused quote must not leave a row, got %d", len(items))
+	}
+
+	// 已确认投影报价 + 生产方未配:空包首作合法(T05);503 诚实降级,行照常
+	// 落库去重,报价已核验(权威=本仓投影,不再有申报态)。
+	f := newProductionFixture(t, productionConfigOpts{
+		serviceTokens: "bill-svc:bill-secret", serviceRoles: "bill-svc:billing_authority",
+	})
 	body := fmt.Sprintf(`{"content_pack_ref":"pack:%s","quote_ref":"quote_confirmed_1","idempotency_key":"key-1","note":"首次制作"}`, f.packA)
+	seedQuoteRow(t, f, f.tenA, "quote_confirmed_1", "content_production", "")
 	// staff 403。
 	codeStaff, _ := f.do(t, "POST", "/api/v1/stores/"+f.storeA+"/content-production-handoffs", "sess-staff-a", f.tenA, body)
 	if codeStaff != http.StatusForbidden {
@@ -313,13 +385,18 @@ func TestContentProductionHandoffCreateEmptyPackLegalAndHonestClosure(t *testing
 		t.Fatalf("want production_unavailable: %+v", out)
 	}
 	h, _ := out["handoff"].(map[string]any)
-	if h == nil || h["status"] != "recorded" || h["quote_verified"] != false {
-		t.Fatalf("handoff must be recorded with declared quote: %+v", out)
+	if h == nil || h["status"] != "recorded" || h["quote_verified"] != true {
+		t.Fatalf("handoff must be recorded with the adjudicated (confirmed) quote: %+v", out)
 	}
 	if h["pack_id"] != f.packA {
 		t.Fatalf("pack ref must resolve: %+v", h)
 	}
-	// 同幂等键重放:200 同一行(replayed),不新建。
+	// 报价消费引用=handoff id(4591 契约:建行成功后消费)。
+	usage, err := f.s.St.GetBillingAIUsage(f.tenA, "quote_confirmed_1")
+	if err != nil || usage.State != billing.QuoteStateConsumed || usage.ConsumedByRef != h["id"].(string) {
+		t.Fatalf("quote must be consumed by the handoff: %+v err %v", usage, err)
+	}
+	// 同幂等键重放:200 同一行(replayed),不新建、不重新核价、不重复消费。
 	code2, out2 := f.do(t, "POST", "/api/v1/stores/"+f.storeA+"/content-production-handoffs", "sess-owner-a", f.tenA, body)
 	if code2 != 200 || out2["replayed"] != true {
 		t.Fatalf("replay: %d %+v", code2, out2)
@@ -327,6 +404,10 @@ func TestContentProductionHandoffCreateEmptyPackLegalAndHonestClosure(t *testing
 	h2, _ := out2["handoff"].(map[string]any)
 	if h2["id"] != h["id"] {
 		t.Fatalf("replay must return same handoff: %v vs %v", h2["id"], h["id"])
+	}
+	usage2, _ := f.s.St.GetBillingAIUsage(f.tenA, "quote_confirmed_1")
+	if usage2.ConsumedByRef != usage.ConsumedByRef {
+		t.Fatalf("replay must not re-consume the quote: %+v", usage2)
 	}
 }
 
@@ -364,40 +445,62 @@ func TestContentProductionHandoffCreateNegatives(t *testing.T) {
 	}
 }
 
-func TestContentProductionHandoffCreateWithProducerAndQuoteSeam(t *testing.T) {
-	// 账单桩:confirmed→verified;pending→422 不落行。
-	billing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var in struct {
-			QuoteRef string `json:"quote_ref"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&in)
-		status := "pending"
-		if strings.Contains(in.QuoteRef, "confirmed") {
-			status = "confirmed"
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"quote": map[string]any{"quote_ref": in.QuoteRef, "amount_minor": 8900, "currency": "CNY", "status": status},
-		})
-	}))
-	defer billing.Close()
-
+func TestContentProductionQuoteAuthorityWiring(t *testing.T) {
+	// wave2 集成接线验收:quote 权威=4591 本仓投影(billing.AdjudicateQuoteRef
+	// × QuoteProjectionFor/ConsumeQuoteProjection)。权威缝真实 HTTP 链路落
+	// 投影 → 发起面库层裁决。五拒绝码 + 通过 + 重放/消费防重(T15)。
 	f := newProductionFixture(t, productionConfigOpts{
-		serviceTokens: producerTokens, serviceRoles: producerRoles,
-		billingURL: billing.URL, billingToken: "bill-token",
+		serviceTokens: producerTokens + ";bill-svc:bill-secret",
+		serviceRoles:  producerRoles + ";bill-svc:billing_authority",
 	})
-	// 未确认报价:422,不落行。
-	codePending, outPending := f.do(t, "POST", "/api/v1/stores/"+f.storeA+"/content-production-handoffs", "sess-owner-a", f.tenA,
-		fmt.Sprintf(`{"content_pack_ref":"pack:%s","quote_ref":"quote_pending_x","idempotency_key":"qp-1"}`, f.packA))
-	if codePending != http.StatusUnprocessableEntity || outPending["error"] != "quote_not_confirmed" {
-		t.Fatalf("pending quote: %d %+v", codePending, outPending)
+	initiate := func(quoteRef, key string) (int, map[string]any) {
+		return f.do(t, "POST", "/api/v1/stores/"+f.storeA+"/content-production-handoffs", "sess-owner-a", f.tenA,
+			fmt.Sprintf(`{"content_pack_ref":"pack:%s","quote_ref":%q,"idempotency_key":%q}`, f.packA, quoteRef, key))
 	}
-	_, handoffs := f.do(t, "GET", "/api/v1/stores/"+f.storeA+"/content-production-handoffs", "sess-owner-a", f.tenA, "")
-	if items, _ := handoffs["handoffs"].([]any); len(items) != 0 {
-		t.Fatalf("refused quote must not leave a row, got %d", len(items))
+	handoffCount := func() int {
+		_, list := f.do(t, "GET", "/api/v1/stores/"+f.storeA+"/content-production-handoffs", "sess-owner-a", f.tenA, "")
+		items, _ := list["handoffs"].([]any)
+		return len(items)
 	}
-	// 已确认报价 + 生产方已配:201,quote_verified=true。
-	codeOK, outOK := f.do(t, "POST", "/api/v1/stores/"+f.storeA+"/content-production-handoffs", "sess-owner-a", f.tenA,
-		fmt.Sprintf(`{"content_pack_ref":"pack:%s","quote_ref":"quote_confirmed_1","idempotency_key":"qk-1"}`, f.packA))
+
+	// ① 权威缝真实链路:ai_usage_recorded 事件落投影(confirmed/content_production)。
+	f.seedQuoteViaAuthority(t, f.tenA, "q_ok")
+
+	// ② quote_not_found:未知引用 → 404 同形掩蔽,不落行。
+	codeNF, outNF := initiate("q_missing", "k-nf")
+	if codeNF != http.StatusNotFound || outNF["error"] != "not_found" {
+		t.Fatalf("not_found: %d %+v", codeNF, outNF)
+	}
+	if handoffCount() != 0 {
+		t.Fatalf("refused quote must not leave a row")
+	}
+
+	// ③ quote_cross_tenant:别家租户的已确认引用 → 同一 404 掩码(不泄漏存在性)。
+	seedQuoteRow(t, f, f.tenB, "q_cross", "content_production", "")
+	codeCT, outCT := initiate("q_cross", "k-ct")
+	if codeCT != http.StatusNotFound || outCT["error"] != "not_found" {
+		t.Fatalf("cross_tenant must mask to 404 not_found: %d %+v", codeCT, outCT)
+	}
+	if handoffCount() != 0 {
+		t.Fatalf("refused cross-tenant quote must not leave a row")
+	}
+
+	// ④ quote_not_confirmed:非 confirmed 状态(failed)→ 422,不落行。
+	seedQuoteRow(t, f, f.tenA, "q_failed", "content_production", billing.QuoteStateFailed)
+	codeNC, outNC := initiate("q_failed", "k-nc")
+	if codeNC != http.StatusUnprocessableEntity || outNC["error"] != "quote_not_confirmed" {
+		t.Fatalf("not_confirmed: %d %+v", codeNC, outNC)
+	}
+
+	// ⑤ quote_capability_mismatch:confirmed 但能力类别不符 → 422。
+	seedQuoteRow(t, f, f.tenA, "q_other_cap", "ai_copywriting", "")
+	codeCM, outCM := initiate("q_other_cap", "k-cm")
+	if codeCM != http.StatusUnprocessableEntity || outCM["error"] != "quote_capability_mismatch" {
+		t.Fatalf("capability_mismatch: %d %+v", codeCM, outCM)
+	}
+
+	// ⑥ 通过:confirmed + content_production + 生产方已配 → 201,quote_verified=true。
+	codeOK, outOK := initiate("q_ok", "k-ok")
 	if codeOK != http.StatusCreated {
 		t.Fatalf("confirmed quote: %d %+v", codeOK, outOK)
 	}
@@ -405,10 +508,33 @@ func TestContentProductionHandoffCreateWithProducerAndQuoteSeam(t *testing.T) {
 	if h["quote_verified"] != true || h["status"] != "recorded" {
 		t.Fatalf("handoff must be verified+recorded (task authority unwired): %+v", h)
 	}
-	// 同键重放:200 同行且不重新核价(账单桩只被调用了 pending+confirmed 两次,
-	// 重放不增加调用——用桩内计数验证)。
-	f.do(t, "POST", "/api/v1/stores/"+f.storeA+"/content-production-handoffs", "sess-owner-a", f.tenA,
-		fmt.Sprintf(`{"content_pack_ref":"pack:%s","quote_ref":"quote_confirmed_1","idempotency_key":"qk-1"}`, f.packA))
+	// 消费引用=handoff id(4591 契约:建行成功后消费)。
+	usage, err := f.s.St.GetBillingAIUsage(f.tenA, "q_ok")
+	if err != nil || usage.State != billing.QuoteStateConsumed || usage.ConsumedByRef != h["id"].(string) {
+		t.Fatalf("quote must be consumed by the handoff: %+v err %v", usage, err)
+	}
+
+	// ⑦ 同键重放:200 同行,不重新核价、不重复消费(T15)。
+	codeRe, outRe := initiate("q_ok", "k-ok")
+	if codeRe != 200 || outRe["replayed"] != true {
+		t.Fatalf("replay: %d %+v", codeRe, outRe)
+	}
+	usageRe, _ := f.s.St.GetBillingAIUsage(f.tenA, "q_ok")
+	if usageRe.ConsumedByRef != usage.ConsumedByRef {
+		t.Fatalf("replay must not re-consume the quote: %+v", usageRe)
+	}
+
+	// ⑧ quote_already_consumed:同一报价换键再次发起 → 409(消费防重,不产生
+	// 第二笔制作)。
+	codeAC, outAC := initiate("q_ok", "k-ac")
+	if codeAC != http.StatusConflict || outAC["error"] != "quote_already_consumed" {
+		t.Fatalf("already_consumed: %d %+v", codeAC, outAC)
+	}
+
+	// 六次被拒/成功交互后:只有通过的那一行落库(其余码一律不落行)。
+	if got := handoffCount(); got != 1 {
+		t.Fatalf("exactly one handoff expected, got %d", got)
+	}
 }
 
 func TestContentProductionHandoffCreateSubmitsPlatformTask(t *testing.T) {
@@ -425,8 +551,9 @@ func TestContentProductionHandoffCreateSubmitsPlatformTask(t *testing.T) {
 		serviceTokens: producerTokens, serviceRoles: producerRoles,
 		taskURL: task.URL, taskToken: "task-token", featureTask: true,
 	})
+	seedQuoteRow(t, f, f.tenA, "quote_task_ok", "content_production", "")
 	code, out := f.do(t, "POST", "/api/v1/stores/"+f.storeA+"/content-production-handoffs", "sess-owner-a", f.tenA,
-		fmt.Sprintf(`{"content_pack_ref":"pack:%s","quote_ref":"q_declared","idempotency_key":"tk-1"}`, f.packA))
+		fmt.Sprintf(`{"content_pack_ref":"pack:%s","quote_ref":"quote_task_ok","idempotency_key":"tk-1"}`, f.packA))
 	if code != http.StatusCreated {
 		t.Fatalf("create with task: %d %+v", code, out)
 	}
@@ -439,7 +566,7 @@ func TestContentProductionHandoffCreateSubmitsPlatformTask(t *testing.T) {
 	}
 	// 幂等重放:不重复提交任务。
 	f.do(t, "POST", "/api/v1/stores/"+f.storeA+"/content-production-handoffs", "sess-owner-a", f.tenA,
-		fmt.Sprintf(`{"content_pack_ref":"pack:%s","quote_ref":"q_declared","idempotency_key":"tk-1"}`, f.packA))
+		fmt.Sprintf(`{"content_pack_ref":"pack:%s","quote_ref":"quote_task_ok","idempotency_key":"tk-1"}`, f.packA))
 	if len(taskBodies) != 1 {
 		t.Fatalf("retry must not resubmit the task, got %d submissions", len(taskBodies))
 	}
@@ -479,9 +606,11 @@ func TestContentProductionResultReturnAuth(t *testing.T) {
 	}
 }
 
-// seedProductionHandoff seeds one recorded handoff via the merchant API.
+// seedProductionHandoff seeds one recorded handoff via the merchant API
+// (先种已确认报价投影行:quote 权威=4591 本仓投影,wave2 集成后无投影即拒)。
 func seedProductionHandoff(t *testing.T, f *productionFixture) map[string]any {
 	t.Helper()
+	seedQuoteRow(t, f, f.tenA, "quote_confirmed_1", "content_production", "")
 	body := fmt.Sprintf(`{"content_pack_ref":"pack:%s","quote_ref":"quote_confirmed_1","idempotency_key":"seed-%s"}`, f.packA, f.storeA)
 	code, out := f.do(t, "POST", "/api/v1/stores/"+f.storeA+"/content-production-handoffs", "sess-owner-a", f.tenA, body)
 	if code != http.StatusCreated && code != http.StatusServiceUnavailable {
@@ -674,7 +803,8 @@ func TestContentProductionFullLoopEmptyStoreToAdoptedMedia(t *testing.T) {
 	f := newProductionFixture(t, productionConfigOpts{serviceTokens: producerTokens, serviceRoles: producerRoles})
 	// 全新门店(无活动、无任何已采用内容)已隐含:fixture pack 无版本无采用。
 
-	// 1) 商家发起(空包合法)。
+	// 1) 商家发起(空包合法;先种已确认报价投影行——quote 权威=4591 本仓投影)。
+	seedQuoteRow(t, f, f.tenA, "quote_confirmed_1", "content_production", "")
 	code, out := f.do(t, "POST", "/api/v1/stores/"+f.storeA+"/content-production-handoffs", "sess-owner-a", f.tenA,
 		fmt.Sprintf(`{"content_pack_ref":"pack:%s","quote_ref":"quote_confirmed_1","idempotency_key":"loop-key","note":"首作"}`, f.packA))
 	if code != http.StatusCreated {

@@ -7,8 +7,9 @@ import { surfaceLabel } from "@/lib/product-finish";
 // HUI-4595 门店真实制作接线(/work/materials「帮我制作」区)。
 // 纪律(票面/裁定书,复用 production-panel/production.ts 诚实表述家风):
 //   - 能力如实申报:受信生产方未注册=按钮禁用+原因,绝不伪进度;
-//   - 发起前必须已有「已确认报价引用」(quote_ref,来自账单权威);账单权威未
-//     接入时如实标注「报价按申报记录,费用状态以账单为准」;
+//   - 发起前必须已有「已确认报价引用」(quote_ref,来自账单权威;wave2 集成
+//     后权威=本仓账单投影,核验不过发起即拒);账单权威未接入时如实标注
+//     「报价须先经账单权威确认,费用状态以账单为准」;
 //   - 反复恢复同一制作请求不新建制作工程:幂等键自动生成并在成功后原样
 //     展示,重试走同一键(同一发起只回同一 handoff);
 //   - 状态独立可辨:未提交/处理中/已产出/失败/已取消;task_ref 是真实平台
@@ -246,7 +247,7 @@ export function StoreProductionPanel({ storeId }: { storeId: string }) {
             </label>
             <p className="tk-note" data-field="quote-note">
               报价在生成前确认、生成前可见;重复提交同一发起不会重复计费。
-              {caps && !caps.quote_authority_configured ? " 账单权威未接入:报价引用先按申报记录,费用状态以账单为准。" : ""}
+              {caps && !caps.quote_authority_configured ? " 账单权威未接入:报价引用须先经账单权威确认并落进投影,否则发起会被拒;费用状态以账单为准。" : ""}
             </p>
             <button
               className="tk-button"
