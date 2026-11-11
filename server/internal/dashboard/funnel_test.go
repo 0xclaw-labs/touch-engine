@@ -289,8 +289,10 @@ func TestOperationsSummaryContract(t *testing.T) {
 			t.Fatalf("contract field %q missing in %s", field, raw)
 		}
 	}
-	if len(decoded) != 5 {
-		t.Fatalf("contract is exactly five fields, got %s", raw)
+	// 老契约五个字段名与取值逐字不动;TOUCH-ALL-20261109-v1 轮新增 todos 块
+	// (附加字段,老消费者按字段名读取不受影响)。
+	if len(decoded) != 6 {
+		t.Fatalf("contract is five legacy fields plus the additive todos block, got %s", raw)
 	}
 	// 零事实=真实 0,不是 UNKNOWN:今天没发券就是 0。
 	zero := BuildOperationsSummary(now, SummaryFacts{})
