@@ -37,6 +37,7 @@ import (
 	"github.com/bianjiefilm/touch-engine/server/internal/contentpack"
 	"github.com/bianjiefilm/touch-engine/server/internal/participation"
 	"github.com/bianjiefilm/touch-engine/server/internal/publishhandoff"
+	"github.com/bianjiefilm/touch-engine/server/internal/publishhandoff/adapters"
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
 )
 
@@ -362,6 +363,11 @@ func (s *Server) writeActionHandoffError(w http.ResponseWriter, err error) {
 	case errors.Is(err, publishhandoff.ErrUnsupported):
 		fail(w, http.StatusUnprocessableEntity, "unsupported_by_adapter",
 			"该平台适配器未提供此能力(诚实缺位,不伪造成功)")
+	case errors.Is(err, adapters.ErrCustomerActionRequired):
+		// HUI-4587 窄补丁:提交前顾客侧前置条件缺失(未授权/授权过期/受控引用
+		// 过期/平台调用 in-flight 未知)——顾客可恢复,状态机不推进。
+		fail(w, http.StatusUnprocessableEntity, "customer_action_required",
+			"该路线需要顾客侧动作才能继续：请回交接页重新授权或重取素材后再提交")
 	case errors.Is(err, publishhandoff.ErrReceiptUnverified):
 		fail(w, http.StatusUnprocessableEntity, "receipt_unverified",
 			"callback signature could not be verified; nothing was recorded as confirmed")

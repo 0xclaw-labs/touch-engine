@@ -264,6 +264,9 @@ func New(cfg config.Config, database *sql.DB, idc *identity.Client, upc *upload.
 	// 适配器语义见 server_action_directory.go(unknown/未发布/停用一律
 	// fail-closed)。测试注入自己的目录桩时不经此处。
 	srv.Participation.SetActionDirectory(srv)
+	// HUI-4585/4586/4587/4588: 平台适配器注册(凭据不齐=不注册,1670 诚实
+	// 回退面接管;详见 server_publish_adapters.go)。
+	registerPublishAdapters(database, srv, cfg)
 	// HUI-4595: 公共权威 seam 装配(统一账单 quote + 平台任务)。配置不齐时
 	// 客户端仍构造但 Ready()=false,使用侧如实回答未接通(fail-closed)。
 	srv.ProductionQuotes = production.NewQuoteAuthority(cfg.BillingBaseURL, cfg.BillingToken, cfg.AppID)
@@ -923,6 +926,9 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("POST /api/v1/public/handoffs/{id}/query", http.HandlerFunc(s.handlePublicActionHandoffQuery))
 		mux.Handle("POST /api/v1/public/handoffs/{id}/cancel", http.HandlerFunc(s.handlePublicActionHandoffCancel))
 		mux.Handle("POST /api/v1/public/handoff-callbacks/{platform}", http.HandlerFunc(s.handlePublicHandoffCallback))
+		// HUI-4587 快手 OAuth 回跳(浏览器 302;state 校验/token 交换在 adapter;
+		// 与上方 POST 验签回调同前缀不同方法/段,无通配冲突)。
+		mux.Handle("GET /api/v1/public/handoff-callbacks/kuaishou/oauth", http.HandlerFunc(s.handleKuaishouOAuthCallback))
 	}
 
 	return s.withRequestLog(mux)

@@ -217,6 +217,16 @@ type Config struct {
 	// answer wrong_binding (fail-closed; 白标/多租户绝不借用他人 App).
 	PublishHandoffMerchantAppRef string
 
+	// Platform adapter credentials (HUI-4585/4586/4587 服务端保管;客户端永无
+	// secret).全部空缺省=对应适配器不注册,1670 诚实回退面接管。
+	PublishHandoffDouyinKey    string // PUBLISH_HANDOFF_DOUYIN_CLIENT_KEY (4585 官方 H5 关联参数)
+	PublishHandoffDouyinPath   string // PUBLISH_HANDOFF_DOUYIN_MINIAPP_PATH (仅独立获准专项路线配置)
+	PublishHandoffXhsAppID     string // PUBLISH_HANDOFF_XHS_APP_ID (4586 JS 公开鉴权参数,无 secret)
+	PublishHandoffKsID         string // PUBLISH_HANDOFF_KUAISHOU_CLIENT_ID (4587 网站应用)
+	PublishHandoffKsSecret     string // PUBLISH_HANDOFF_KUAISHOU_CLIENT_SECRET (仅服务器)
+	PublishHandoffKsAuthBase   string // PUBLISH_HANDOFF_KUAISHOU_AUTHORIZE_BASE (官方授权页基)
+	PublishHandoffKsReturnBase string // PUBLISH_HANDOFF_KUAISHOU_RETURN_BASE (同源 https 回跳基)
+
 	FeatureUpload           bool
 	FeatureNotify           bool
 	FeatureTask             bool
@@ -313,6 +323,13 @@ func Load(get func(string) string) Config {
 		PublishHandoffH5EntryBase:      strings.TrimRight(strings.TrimSpace(get("PUBLISH_HANDOFF_H5_ENTRY_BASE")), "/"),
 		PublishHandoffMiniappEntryBase: strings.TrimSpace(get("PUBLISH_HANDOFF_MINIAPP_ENTRY_BASE")),
 		PublishHandoffMerchantAppRef:   strings.TrimSpace(get("PUBLISH_HANDOFF_MERCHANT_APP_REF")),
+		PublishHandoffDouyinKey:        strings.TrimSpace(get("PUBLISH_HANDOFF_DOUYIN_CLIENT_KEY")),
+		PublishHandoffDouyinPath:       strings.TrimSpace(get("PUBLISH_HANDOFF_DOUYIN_MINIAPP_PATH")),
+		PublishHandoffXhsAppID:         strings.TrimSpace(get("PUBLISH_HANDOFF_XHS_APP_ID")),
+		PublishHandoffKsID:             strings.TrimSpace(get("PUBLISH_HANDOFF_KUAISHOU_CLIENT_ID")),
+		PublishHandoffKsSecret:         strings.TrimSpace(get("PUBLISH_HANDOFF_KUAISHOU_CLIENT_SECRET")),
+		PublishHandoffKsAuthBase:       strings.TrimSpace(get("PUBLISH_HANDOFF_KUAISHOU_AUTHORIZE_BASE")),
+		PublishHandoffKsReturnBase:     strings.TrimRight(strings.TrimSpace(get("PUBLISH_HANDOFF_KUAISHOU_RETURN_BASE")), "/"),
 		FeatureUpload:                  isTruthy(get(EnvFeatureUpload)),
 		FeatureNotify:                  isTruthy(get(EnvFeatureNotify)),
 		FeatureTask:                    isTruthy(get(EnvFeatureTask)),
