@@ -27,11 +27,11 @@ import (
 // (4585-4588). Missing credentials = adapter NOT registered (honest fallback).
 func registerPublishAdapters(database *sql.DB, srv *Server, cfg config.Config) {
 	// 4585 抖音:官方 H5 关联(share_id)与专项任务小程序路径。
-	if strings.TrimSpace(cfg.PublishHandoffDouyinClientKey) != "" {
+	if strings.TrimSpace(cfg.PublishHandoffDouyinKey) != "" {
 		srv.PublishHandoff.SetAdapter(adapters.NewDouyinAdapter(database, adapters.DouyinConfig{
-			ClientKey:   cfg.PublishHandoffDouyinClientKey,
+			ClientKey:   cfg.PublishHandoffDouyinKey,
 			AppRef:      cfg.PublishHandoffAppRef,
-			MiniappPath: cfg.PublishHandoffDouyinMiniappPath,
+			MiniappPath: cfg.PublishHandoffDouyinPath,
 		}))
 	}
 	// 4586 小红书:官方 JS 媒体交接(公开鉴权参数;无 secret 进浏览器)。
@@ -41,12 +41,12 @@ func registerPublishAdapters(database *sql.DB, srv *Server, cfg config.Config) {
 		}))
 	}
 	// 4587 快手:网站 OAuth+服务端投稿(secret 仅服务器)。
-	if strings.TrimSpace(cfg.PublishHandoffKsClientID) != "" && strings.TrimSpace(cfg.PublishHandoffKsClientSecret) != "" {
+	if strings.TrimSpace(cfg.PublishHandoffKsID) != "" && strings.TrimSpace(cfg.PublishHandoffKsSecret) != "" {
 		srv.PublishHandoff.SetAdapter(adapters.NewKuaishouAdapter(database, adapters.KuaishouConfig{
-			ClientID:       cfg.PublishHandoffKsClientID,
-			ClientSecret:   cfg.PublishHandoffKsClientSecret,
+			ClientID:       cfg.PublishHandoffKsID,
+			ClientSecret:   cfg.PublishHandoffKsSecret,
 			AppRef:         cfg.PublishHandoffAppRef,
-			AuthorizeBase:  firstNonEmptyStr(cfg.PublishHandoffKsAuthorizeBase, "https://open.kuaishou.com/oauth2/authorize"),
+			AuthorizeBase:  firstNonEmptyStr(cfg.PublishHandoffKsAuthBase, "https://open.kuaishou.com/oauth2/authorize"),
 			ReturnBase:     cfg.PublishHandoffKsReturnBase,
 			AuthorizeScope: "user_video_publish,user_video_info",
 		}))
