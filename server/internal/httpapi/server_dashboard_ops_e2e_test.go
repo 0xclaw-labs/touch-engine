@@ -491,3 +491,325 @@ func assertOpsAgainstIndependentSQL(t *testing.T, f *opsE2EFixture, dash map[str
 		t.Fatalf("official attempts: api=%v sql=%d", ev["official_attempts"], official)
 	}
 }
+
+// TestDashboardOpsLayerBlocksE2E(TOUCH-ALL-20261109-v1):六层证据/线索口径/
+// 费用对账/待办摘要经真实 API 面输出,测试内独立 SQL 复算对照。
+// 播种纪律:服务行为事件走 4589 真实写路径(store.RecordServiceEvent,即公共
+// 事件端点的同一入口);会话/交接/自报/线索/账单行是该生产者票的 append-only
+// 事实行,按 reward_official_facts 先例作事实夹具直插(其 HTTP 写面属生产者
+// 域,本票只读);参与/尝试仍走真实 HTTP 表面。
+func TestDashboardOpsLayerBlocksE2E(t *testing.T) {
+	f := newOpsE2EFixture(t)
+
+	// 参与与尝试(真实表面,供交接外键;参与行绑定访客 cookie)。
+	status, hdr, out := f.do(t, "POST", "/api/v1/participations", "", "", "",
+		fmt.Sprintf(`{"link_code":%q,"touchpoint_source":"nfc","idempotency_key":"idem-l1","rule_version":3}`, f.code))
+	if status != http.StatusCreated {
+		t.Fatalf("participation: %d %v", status, out)
+	}
+	ptID := out["id"].(string)
+	visitorCookie := cookiePair(hdr)
+	if status, _, out = f.do(t, "POST", "/api/v1/participations/"+ptID+"/attempts", "", "", visitorCookie,
+		`{"platform":"douyin","handoff_method":"h5"}`); status != http.StatusCreated {
+		t.Fatalf("attempt: %d %v", status, out)
+	}
+	attID := out["id"].(string)
+
+	// L1 点击:动作会话(3546 事实夹具;1 个窗口内会话两行 + 1 个窗外会话)。
+	now := time.Now().UTC()
+	inWin := now.Add(-time.Minute).Format(time.RFC3339)
+	outWin := now.Add(-48 * time.Hour).Format(time.RFC3339)
+	mustExec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := f.st.DB.Exec(q, args...); err != nil {
+			t.Fatalf("seed exec: %v", err)
+		}
+	}
+	mustExec(`INSERT INTO action_session_events(id,tenant_id,store_id,session_id,action_id,action_revision,kind,source,event_id,occurred_at)
+		VALUES('lse-1',?,?,'sess-1','sa-click',1,'created','touch-engine','ev-l1',?)`, f.tenA, f.storeID, inWin)
+	mustExec(`INSERT INTO action_session_events(id,tenant_id,store_id,session_id,action_id,action_revision,kind,source,event_id,occurred_at)
+		VALUES('lse-2',?,?,'sess-1','sa-click',1,'resumed','touch-engine','ev-l2',?)`, f.tenA, f.storeID, inWin)
+	mustExec(`INSERT INTO action_session_events(id,tenant_id,store_id,session_id,action_id,action_revision,kind,source,event_id,occurred_at)
+		VALUES('lse-3',?,?,'sess-2','sa-click',1,'created','touch-engine','ev-l3',?)`, f.tenA, f.storeID, outWin)
+	// L1/L2 服务行为(4589 真实写路径,动作实例入口):先落动作行再记事件。
+	mustExec(`INSERT INTO store_actions(id,tenant_id,store_id,catalog_code,platform,kind,label,enabled,revision,revoked,created_at,updated_at)
+		VALUES('sa-click',?,?,'A05','douyin','review','点评动作',1,1,0,?,?)`, f.tenA, f.storeID, inWin, inWin)
+	mustExec(`INSERT INTO store_actions(id,tenant_id,store_id,catalog_code,platform,kind,label,enabled,revision,revoked,created_at,updated_at)
+		VALUES('sa-off',?,?,'A05','douyin','review','停用动作',0,1,1,?,?)`, f.tenA, f.storeID, inWin, inWin)
+	if err := f.st.RecordActionEvent(f.tenA, f.storeID, "sa-click", "open", "ios_wechat"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.RecordActionEvent(f.tenA, f.storeID, "sa-click", "jump_attempt", "android_wechat"); err != nil {
+		t.Fatal(err)
+	}
+
+	// L3/L5/L6 交接与事件(1670 事实夹具)。
+	mustExec(`INSERT INTO publish_handoffs(id,tenant_id,store_id,campaign_id,link_code,participation_id,attempt_id,
+		platform,entry_mode,scenario,idempotency_key,status,evidence_source,media_json,text_json,visitor_id,
+		action_id,action_session_id,action_revision,method,environment,created_at,updated_at)
+		VALUES('ph-e2e',?,?,?,'LNK-e2e',?,?,'douyin','h5','storefront_publish','idem-e2e','platform_confirmed',
+		'customer_action','[]','{}','vis-e2e','sa-click','sess-e2e',1,'h5','ios_wechat',?,?)`,
+		f.tenA, f.storeID, f.campID, ptID, attID, inWin, inWin)
+	// 1670 v2 六层事实 kind(冻结词汇;幂等=(tenant,handoff,source,event_id))。
+	mustExec(`INSERT INTO publish_handoff_events(id,tenant_id,handoff_id,kind,source,event_id,created_at)
+		VALUES('phe-v2-1',?,'ph-e2e','customer_click','web','evc-1',?)`, f.tenA, inWin)
+	mustExec(`INSERT INTO publish_handoff_events(id,tenant_id,handoff_id,kind,source,event_id,created_at)
+		VALUES('phe-v2-2',?,'ph-e2e','customer_click','web','evc-2',?)`, f.tenA, inWin)
+	mustExec(`INSERT INTO publish_handoff_events(id,tenant_id,handoff_id,kind,source,event_id,created_at)
+		VALUES('phe-v2-3',?,'ph-e2e','wake_attempt','web','evw-1',?)`, f.tenA, inWin)
+	mustExec(`INSERT INTO publish_handoff_events(id,tenant_id,handoff_id,kind,source,event_id,created_at)
+		VALUES('phe-v2-4',?,'ph-e2e','media_handoff','web','evm-1',?)`, f.tenA, inWin)
+	mustExec(`INSERT INTO publish_handoff_events(id,tenant_id,handoff_id,kind,source,event_id,created_at)
+		VALUES('phe-v2-5',?,'ph-e2e','customer_self_report','web','evs-1',?)`, f.tenA, inWin)
+	mustExec(`INSERT INTO publish_handoff_events(id,tenant_id,handoff_id,kind,evidence_source,receipt_id,created_at)
+		VALUES('phe-v2-6',?,'ph-e2e','staff_confirm','staff_observation','rcp-staff-1',?)`, f.tenA, inWin)
+	mustExec(`INSERT INTO publish_handoff_events(id,tenant_id,handoff_id,kind,evidence_source,receipt_id,created_at)
+		VALUES('phe-v2-7',?,'ph-e2e','platform_confirm','official_receipt','rcp-plat-1',?)`, f.tenA, inWin)
+	mustExec(`INSERT INTO publish_handoff_events(id,tenant_id,handoff_id,kind,evidence_source,created_at)
+		VALUES('phe-e2e-1',?,'ph-e2e','editor_open_proved','verifier_proof',?)`, f.tenA, inWin)
+	mustExec(`INSERT INTO publish_handoff_events(id,tenant_id,handoff_id,kind,evidence_source,created_at)
+		VALUES('phe-e2e-2',?,'ph-e2e','editor_open_proved','verifier_proof',?)`, f.tenA, inWin) // 重放不重复
+	mustExec(`INSERT INTO publish_handoff_events(id,tenant_id,handoff_id,kind,evidence_source,created_at)
+		VALUES('phe-e2e-3',?,'ph-e2e','staff_saw_submit','staff_observation',?)`, f.tenA, inWin)
+	mustExec(`INSERT INTO publish_handoff_events(id,tenant_id,handoff_id,kind,evidence_source,receipt_id,created_at)
+		VALUES('phe-e2e-4',?,'ph-e2e','official_confirmed','official_receipt','rcp-e2e-1',?)`, f.tenA, inWin)
+	// L4 顾客自报(事实夹具)。
+	mustExec(`INSERT INTO customer_publish_attempts(id,tenant_id,campaign_id,link_code,platform,publisher_subject,
+		copy_text,content_version,account_label,status,self_reported,created_at,updated_at)
+		VALUES('sr-e2e',?,?,'LNK-e2e','douyin','activity_customer','文案','v1','账号','exported',1,?,?)`,
+		f.tenA, f.campID, inWin, inWin)
+
+	// 线索(4594 口径事实夹具):campaign 待同步 / campaign 已获客 / 门店待同步。
+	mkLead := func(id, campID, storeID, capture, syncState, receiver, phone string) {
+		t.Helper()
+		mustExec(`INSERT INTO lead_submissions(id,tenant_id,campaign_id,store_id,link_id,form_id,session_id,capture_source,
+			submission_ref,dedup_key,name,phone,wechat,marketing_optin,consent_notice_version,consent_at,consent_ip_fp,
+			sync_state,sync_error,attempts,source_version,revoked_at,created_at,updated_at,receiver_state,receipt_id,revoke_source_revision)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?,?,?,0)`,
+			id, f.tenA, campID, storeID, "", "form-"+id, "", capture,
+			"ref-"+id, "dk-"+id, "顾客", phone, "", 1, "v1", inWin, "fp",
+			syncState, "", 0, 1, inWin, inWin, receiver, "", 0)
+	}
+	mkLead("lead-e2e-1", f.campID, f.storeID, "campaign", "pending_sync", "", "13900000001")
+	mkLead("lead-e2e-2", f.campID, f.storeID, "campaign", "crm_received", "stored", "13900000002")
+	mkLead("lead-e2e-3", "", f.storeID, "store", "pending_sync", "", "13900000003")
+
+	// 费用对账(4591 投影事实夹具)。
+	mustExec(`INSERT INTO billing_orders(id,tenant_id,kind,action,amount_minor,currency,status,idempotency_key,created_at,updated_at)
+		VALUES('sub-e2e',?,'subscription','new',19900,'FEN','active','idem-sub-e2e',?,?)`, f.tenA, inWin, inWin)
+	mustExec(`INSERT INTO billing_orders(id,tenant_id,kind,action,amount_minor,currency,status,idempotency_key,created_at,updated_at)
+		VALUES('sub-e2e-f',?,'subscription','renew',19900,'FEN','failed','idem-sub-e2e-f',?,?)`, f.tenA, inWin, inWin)
+	mustExec(`INSERT INTO billing_orders(id,tenant_id,kind,action,amount_minor,currency,status,idempotency_key,created_at,updated_at)
+		VALUES('hw-e2e',?,'hardware','purchase',50000,'FEN','active','idem-hw-e2e',?,?)`, f.tenA, inWin, inWin)
+	mustExec(`INSERT INTO billing_refunds(id,tenant_id,order_id,refund_ref,amount_minor,currency,reason,source,event_id,occurred_at,created_at)
+		VALUES('ref-e2e',?,'hw-e2e','rr-e2e',10000,'FEN','hardware return','authority','evt-ref-e2e',?,?)`, f.tenA, inWin, inWin)
+	mustExec(`INSERT INTO billing_ai_usage(id,tenant_id,quote_ref,amount_minor,currency,state,created_at)
+		VALUES('ai-e2e',?,'q-e2e',100,'FEN','consumed',?)`, f.tenA, inWin)
+
+	// 动作引用行已在服务事件前落库(4589 RecordActionEvent 要求实例启用)。
+
+	// ---- API 面输出 vs 独立复算 ----
+	start := now.Add(-time.Hour).Truncate(time.Second)
+	end := now.Add(time.Minute).Truncate(time.Second)
+	get := func(query string) (int, map[string]any) {
+		t.Helper()
+		return f.owner(t, "GET", fmt.Sprintf("/api/v1/dashboard/operations?window_start=%s&window_end=%s%s",
+			start.Format(time.RFC3339), end.Format(time.RFC3339), query), ``)
+	}
+	status, dash := get(`&action_id=sa-click&environment=ios_wechat`)
+	_ = status
+
+	// 环境筛选:open=1(ios_wechat),jump_attempt=0(窗口内那行是 android);会话行无环境维度。
+	layersAny, ok := dash["evidence_layers"].(map[string]any)
+	if !ok {
+		t.Fatalf("evidence_layers missing: %v", dash["evidence_layers"])
+	}
+	layers, _ := layersAny["layers"].([]any)
+	if len(layers) != 6 {
+		t.Fatalf("evidence layers = %d, want 6", len(layers))
+	}
+	layerByKey := map[string]map[string]any{}
+	for _, lAny := range layers {
+		l := lAny.(map[string]any)
+		layerByKey[l["key"].(string)] = l
+		defAny := l["definition"].(map[string]any)
+		for _, field := range []string{"source", "dedup_key", "denominator", "event_time", "window"} {
+			if defAny[field] == "" {
+				t.Fatalf("layer %s definition.%s empty", l["key"], field)
+			}
+		}
+	}
+	countsOf := func(key string) map[string]float64 {
+		t.Helper()
+		out := map[string]float64{}
+		for _, cAny := range layerByKey[key]["counts"].([]any) {
+			c := cAny.(map[string]any)
+			out[c["key"].(string)] = c["value"].(float64)
+		}
+		return out
+	}
+	click := countsOf("action_clicked")
+	if click["service_opens"] != 1 {
+		t.Fatalf("ios_wechat filter: service_opens = %v, want 1", click["service_opens"])
+	}
+	if click["action_sessions"] != 1 {
+		t.Fatalf("distinct session = %v, want 1 (sess-2 窗外)", click["action_sessions"])
+	}
+	invoke := countsOf("invoke_attempt")
+	if invoke["service_jump_attempts"] != 0 || invoke["editor_open_proved"] != 1 {
+		t.Fatalf("invoke layer under env filter = %v", invoke)
+	}
+	// 独立 SQL 复算(不经实现路径)。
+	q1 := func(query string, args ...any) int64 {
+		t.Helper()
+		var n int64
+		if err := f.st.DB.QueryRow(query, args...).Scan(&n); err != nil {
+			t.Fatalf("independent sql: %v", err)
+		}
+		return n
+	}
+	s, e := start.Format(time.RFC3339), end.Format(time.RFC3339)
+	sqlOpens := q1(`SELECT COUNT(*) FROM store_service_events WHERE tenant_id=? AND event_kind='open' AND environment='ios_wechat'
+		AND datetime(occurred_at)>=datetime(?) AND datetime(occurred_at)<=datetime(?)`, f.tenA, s, e)
+	if int64(click["service_opens"]) != sqlOpens {
+		t.Fatalf("service opens: api=%v sql=%d", click["service_opens"], sqlOpens)
+	}
+
+	// 无筛选全量:六层逐行断言 + 线索 + 费用。
+	status, dash = get(``)
+	if status != http.StatusOK {
+		t.Fatalf("operations = %d", status)
+	}
+	layersAny = dash["evidence_layers"].(map[string]any)
+	layers, _ = layersAny["layers"].([]any)
+	layerByKey = map[string]map[string]any{}
+	for _, lAny := range layers {
+		l := lAny.(map[string]any)
+		layerByKey[l["key"].(string)] = l
+	}
+	countsOf = func(key string) map[string]float64 {
+		t.Helper()
+		out := map[string]float64{}
+		for _, cAny := range layerByKey[key]["counts"].([]any) {
+			c := cAny.(map[string]any)
+			out[c["key"].(string)] = c["value"].(float64)
+		}
+		return out
+	}
+	wantLayers := []struct {
+		key   string
+		line  string
+		value float64
+	}{
+		{"action_clicked", "action_sessions", 1},
+		{"action_clicked", "service_opens", 1},
+		{"invoke_attempt", "service_jump_attempts", 1},
+		{"invoke_attempt", "editor_open_proved", 1}, // 重放事件不重复
+		{"handoff_media", "handoff_requested", 1},
+		{"handoff_media", "handoff_completed", 1}, // platform_confirmed 蕴含 ready 已达
+		{"user_reported", "user_reported", 1},
+		{"staff_confirmed", "staff_saw_submit", 1},
+		{"staff_confirmed", "staff_verified_work", 0},
+		{"staff_confirmed", "staff_confirm", 1},
+		{"platform_confirmed", "platform_confirmed_handoffs", 1},
+		{"platform_confirmed", "official_confirmed_events", 1},
+		{"platform_confirmed", "platform_confirm", 1},
+		{"action_clicked", "customer_click", 2},
+		{"invoke_attempt", "wake_attempt", 1},
+		{"handoff_media", "media_handoff_events", 1},
+		{"user_reported", "customer_self_report", 1},
+	}
+	for _, w := range wantLayers {
+		got := countsOf(w.key)
+		if got[w.line] != w.value {
+			t.Fatalf("layer %s line %s = %v, want %v", w.key, w.line, got[w.line], w.value)
+		}
+	}
+	if !strings.Contains(layersAny["note"].(string), "不相加") {
+		t.Fatalf("layers note missing: %v", layersAny["note"])
+	}
+
+	// 线索口径:待同步 2 ≠ 已获客 1;来源两分;unique contacts 3。
+	leads := dash["leads"].(map[string]any)
+	if leads["campaign_submitted"].(float64) != 2 || leads["store_submitted"].(float64) != 1 {
+		t.Fatalf("lead sources = %v", leads)
+	}
+	if leads["pending_sync"].(float64) != 2 || leads["receiver_confirmed"].(float64) != 1 {
+		t.Fatalf("lead sync buckets = %v (待同步不算已获客)", leads)
+	}
+	if leads["unique_contacts"].(float64) != 3 {
+		t.Fatalf("unique contacts = %v, want 3", leads["unique_contacts"])
+	}
+	if !strings.Contains(leads["note"].(string), "待同步不算已获客") {
+		t.Fatalf("leads note missing: %v", leads["note"])
+	}
+
+	// 费用对账:订阅实付 19900(active)+ failed 1;AI consumed 100;硬件 50000 + 退款 10000 分列。
+	cr := dash["cost_reconciliation"].(map[string]any)
+	if !cr["subscription_available"].(bool) || cr["subscription_paid_minor"].(float64) != 19900 {
+		t.Fatalf("subscription paid = %v", cr)
+	}
+	if cr["subscription_failed_orders"].(float64) != 1 {
+		t.Fatalf("failed orders listed apart = %v", cr)
+	}
+	if cr["ai_consumed_minor"].(float64) != 100 || cr["ai_refunded_minor"].(float64) != 0 {
+		t.Fatalf("ai reconciliation = %v", cr)
+	}
+	if !cr["hardware_available"].(bool) || cr["hardware_paid_minor"].(float64) != 50000 ||
+		cr["hardware_refund_minor"].(float64) != 10000 || cr["hardware_refunds"].(float64) != 1 {
+		t.Fatalf("hardware reconciliation = %v", cr)
+	}
+
+	// dims.actions 引用行(动作筛选数据源)。
+	dims := dash["dimensions"].(map[string]any)
+	actions, _ := dims["actions"].([]any)
+	if len(actions) != 2 {
+		t.Fatalf("dimension actions = %d, want 2", len(actions))
+	}
+
+	// filter_echo 带新维度;发布域按 ph.action_id/ph.environment 收窄(ph-e2e 带
+	// sa-click/ios_wechat):交接发起 1、点击事件 2 都落在同一动作。
+	status, dash = get(`&action_id=sa-click&environment=ios_wechat`)
+	echo := dash["filter_echo"].(map[string]any)
+	if echo["action_id"] != "sa-click" || echo["environment"] != "ios_wechat" {
+		t.Fatalf("filter echo wrong: %v", echo)
+	}
+	layersAny = dash["evidence_layers"].(map[string]any)
+	for _, lAny := range layersAny["layers"].([]any) {
+		l := lAny.(map[string]any)
+		if l["key"] == "handoff_media" {
+			for _, cAny := range l["counts"].([]any) {
+				c := cAny.(map[string]any)
+				if c["key"] == "handoff_requested" && c["value"].(float64) != 1 {
+					t.Fatalf("action+environment filter must narrow publish rows: %v", c)
+				}
+			}
+		}
+	}
+
+	// 未知环境 400(不静默匹配空集冒充真实零)。
+	if status, _ = f.owner(t, "GET",
+		fmt.Sprintf("/api/v1/dashboard/operations?window_start=%s&window_end=%s&environment=wechat_desktop",
+			start.Format(time.RFC3339), end.Format(time.RFC3339)), ``); status != http.StatusBadRequest {
+		t.Fatalf("unknown environment must 400, got %d", status)
+	}
+
+	// 摘要 todos:不可用动作 1(停用)+授权到期 0+待核销 0(本世界无权益)+账务异常 1。
+	status, sum := f.owner(t, "GET", "/api/v1/dashboard/operations-summary", ``)
+	if status != http.StatusOK {
+		t.Fatalf("summary = %d", status)
+	}
+	td, ok := sum["todos"].(map[string]any)
+	if !ok {
+		t.Fatalf("summary todos missing: %v", sum)
+	}
+	if td["unavailable_actions"].(float64) != 1 || td["billing_anomalies"].(float64) != 1 {
+		t.Fatalf("summary todos wrong: %v", td)
+	}
+	if td["authorization_expired"].(float64) != 0 || td["pending_redeem"].(float64) != 0 {
+		t.Fatalf("summary todos wrong (zero facts are true zeros): %v", td)
+	}
+	if _, ok := td["definitions"].(map[string]any); !ok {
+		t.Fatalf("todos definitions missing: %v", td)
+	}
+}

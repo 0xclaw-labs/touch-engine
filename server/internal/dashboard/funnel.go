@@ -154,17 +154,25 @@ type OpsFacts struct {
 
 	// 六层证据(TOUCH-ALL-20261109-v1):各自来源与去重键独立,层与层之间、
 	// 行与行之间都不相加;分类披露见 BuildOperations 的 evidence_layers。
+	// 1670 v2 六种事实 kind(customer_click/wake_attempt/media_handoff/
+	// customer_self_report/staff_confirm/platform_confirm)是发布域权威分层词汇。
 	LayerActionSessions   int64 // 3546 action_session_events kind='created'(distinct session)
 	LayerServiceOpens     int64 // 4589 store_service_events kind='open'(逐事件行)
 	LayerJumpAttempts     int64 // 4589 store_service_events kind='jump_attempt'(逐事件行)
+	LayerCustomerClick    int64 // 1670 v2 kind='customer_click'(逐事件行,弱证据永不升级)
+	LayerWakeAttempt      int64 // 1670 v2 kind='wake_attempt'(逐事件行,弱证据永不升级)
+	LayerMediaHandoff     int64 // 1670 v2 kind='media_handoff'(distinct handoff)
 	LayerEditorProved     int64 // 1670 publish_handoff_events kind='editor_open_proved'(distinct handoff)
 	LayerHandoffRequested int64 // 1670 publish_handoffs 创建行(idempotency_key UNIQUE)
 	LayerHandoffCompleted int64 // 1670 当前状态蕴含 handoff_ready 已达的 handoff 数
 	LayerUserReported     int64 // 顾客自报 attempt(self_reported=1,distinct attempt)
+	LayerSelfReportEvent  int64 // 1670 v2 kind='customer_self_report'(仅核验请求,不改状态)
 	LayerStaffSaw         int64 // publish_handoff_events kind='staff_saw_submit'(distinct handoff)
 	LayerStaffVerified    int64 // publish_handoff_events kind='staff_verified_work'(distinct handoff)
+	LayerStaffConfirm     int64 // 1670 v2 kind='staff_confirm'(distinct handoff,人工事实)
 	LayerPlatformHandoffs int64 // publish_handoffs status='platform_confirmed'(distinct handoff)
 	LayerOfficialEvents   int64 // publish_handoff_events kind='official_confirmed'(distinct handoff)
+	LayerPlatformConfirm  int64 // 1670 v2 kind='platform_confirm'(仅验签回执,distinct handoff)
 
 	// 线索口径(4594):本地提交/待同步/接收确认/撤销分列;待同步不算已获客。
 	Leads LeadsFacts
@@ -483,7 +491,8 @@ func layerDefs() map[string]Definition {
 	return map[string]Definition{
 		LayerActionClicked: {
 			Source: "action_session_events kind='created'(3546 动作页会话创建)+ store_service_events kind='open'" +
-				"(4589 卡片打开;service_id 兼收 sa_* 动作实例与 sv_* 服务行)",
+				"(4589 卡片打开;service_id 兼收 sa_* 动作实例与 sv_* 服务行)+ publish_handoff_events kind='customer_click'" +
+				"(1670 v2 冻结词汇:点击是弱证据,永不升级状态)",
 			DedupKey:    "会话行按 distinct session(source+event_id UNIQUE);卡片打开逐事件行计数(限流入口)",
 			Denominator: "distinct 动作会话 / 事件行;两者是不同事实,分列不相加",
 			EventTime:   "occurred_at(事件发生时刻,UTC)",
@@ -491,15 +500,16 @@ func layerDefs() map[string]Definition {
 		},
 		LayerInvokeAttempt: {
 			Source: "store_service_events kind='jump_attempt'(4589 跳转/唤起尝试)+ publish_handoff_events " +
-				"kind='editor_open_proved'(1670 可证实的编辑器打开)",
-			DedupKey: "尝试逐事件行;可证实唤起按 distinct handoff_id。可证实唤起比尝试更强," +
-				"按名披露不冒充尝试,也不相加",
+				"kind='wake_attempt'(1670 v2:唤起尝试,弱证据永不升级)+ kind='editor_open_proved'(可证实的编辑器打开)",
+			DedupKey: "尝试逐事件行((tenant,handoff,source,event_id) UNIQUE);可证实唤起按 distinct handoff_id。" +
+				"可证实唤起比尝试更强,按名披露不冒充尝试,也不相加",
 			Denominator: "事件行 / distinct handoff;分列",
 			EventTime:   "occurred_at / created_at(UTC)",
 			WindowNote:  windowNoteSecond + ";无官方回执的「已唤起成功」结构上不存在",
 		},
 		LayerHandoffMedia: {
 			Source: "publish_handoffs(1670 交接权威行):requested=创建行(idempotency_key UNIQUE);" +
+				"media_handoff 事件 kind='media_handoff'(1670 v2:素材交出≠发布,下载开始不算平台成功);" +
 				"completed=当前状态 ∈ {handoff_ready,editor_opened,submitting,awaiting_review,unknown,platform_confirmed}" +
 				"(状态机只前进,六态蕴含 handoff_ready 已达;状态机定义见 publishhandoff.transitions)",
 			DedupKey:    "distinct handoff(UNIQUE(tenant_id,idempotency_key):重放回原行)",
@@ -508,14 +518,14 @@ func layerDefs() map[string]Definition {
 			WindowNote:  windowNoteSecond + ";completed 按窗口内发起的行在当前时点的状态披露(当前态,可随推进变化)",
 		},
 		LayerUserReported: {
-			Source:      "customer_publish_attempts self_reported=1(顾客自报提交;自报不是发布,只进入待确认队列)",
+			Source:      "customer_publish_attempts self_reported=1(顾客自报提交)+ publish_handoff_events kind='customer_self_report'(1670 v2:仅核验请求,不改状态、不触发奖励;自报不是发布)",
 			DedupKey:    "distinct attempt(尝试行);同一参与多次自报多次计数,不冒充自然人数",
 			Denominator: "distinct attempt",
 			EventTime:   "customer_publish_attempts.created_at(UTC)",
 			WindowNote:  windowNoteSecond,
 		},
 		LayerStaffConfirmed: {
-			Source: "publish_handoff_events kind='staff_saw_submit'/'staff_verified_work'(distinct handoff)" +
+			Source: "publish_handoff_events kind='staff_saw_submit'/'staff_verified_work'/'staff_confirm'(1670 v2:人工事实,永不转官方;distinct handoff)" +
 				"+ reward_benefits evidence='staff_observed_submission'/'staff_verified_post'(distinct participation,见 evidence 区块)",
 			DedupKey:    "事件流 distinct handoff_id;权益行 distinct participation。两个分母不同,分列不相加",
 			Denominator: "distinct handoff / distinct participation",
@@ -535,8 +545,9 @@ func layerDefs() map[string]Definition {
 }
 
 // layersAppliedFor: which requested filters a layer can honestly honor.
-// Session/service facts carry action_id + environment; campaign-domain
-// publish facts carry platform but not environment/action.
+// Session/service facts carry action_id + environment; publish-domain facts
+// carry campaign/store/platform plus (v2 rows) action_id/environment on the
+// handoff row itself.
 func layersAppliedFor(layer string, f FilterSet) []string {
 	out := []string{}
 	add := func(cond bool, key string) {
@@ -544,15 +555,20 @@ func layersAppliedFor(layer string, f FilterSet) []string {
 			out = append(out, key)
 		}
 	}
+	publishDomain := func() {
+		add(f.CampaignID != "", "campaign_id")
+		add(f.StoreID != "", "store_id")
+		add(f.Platform != "", "platform")
+		add(f.ActionID != "", "action_id")
+		add(f.Environment != "", "environment")
+	}
 	switch layer {
 	case LayerActionClicked, LayerInvokeAttempt:
 		add(f.StoreID != "", "store_id")
 		add(f.ActionID != "", "action_id")
 		add(f.Environment != "", "environment")
 	case LayerHandoffMedia, LayerUserReported, LayerStaffConfirmed, LayerPlatformVerified:
-		add(f.CampaignID != "", "campaign_id")
-		add(f.StoreID != "", "store_id")
-		add(f.Platform != "", "platform")
+		publishDomain()
 	}
 	return out
 }
@@ -794,6 +810,7 @@ func buildEvidenceLayers(f OpsFacts, filters FilterSet) EvidenceLayersPanel {
 			Counts: []LayerCount{
 				layerLine("action_sessions", "动作会话(distinct session)", f.LayerActionSessions),
 				layerLine("service_opens", "卡片打开(逐事件行)", f.LayerServiceOpens),
+				layerLine("customer_click", "发布动作点击(1670 v2,逐事件行)", f.LayerCustomerClick),
 			},
 			Definition:     defs[LayerActionClicked],
 			AppliedFilters: layersAppliedFor(LayerActionClicked, filters),
@@ -802,6 +819,7 @@ func buildEvidenceLayers(f OpsFacts, filters FilterSet) EvidenceLayersPanel {
 			Key: LayerInvokeAttempt, Title: layerTitles[LayerInvokeAttempt], Available: true,
 			Counts: []LayerCount{
 				layerLine("service_jump_attempts", "跳转/唤起尝试(逐事件行)", f.LayerJumpAttempts),
+				layerLine("wake_attempt", "发布动作唤起尝试(1670 v2,逐事件行)", f.LayerWakeAttempt),
 				layerLine("editor_open_proved", "可证实的编辑器打开(distinct handoff)", f.LayerEditorProved),
 			},
 			Definition:     defs[LayerInvokeAttempt],
@@ -813,6 +831,7 @@ func buildEvidenceLayers(f OpsFacts, filters FilterSet) EvidenceLayersPanel {
 			Counts: []LayerCount{
 				layerLine("handoff_requested", "媒体交接发起", f.LayerHandoffRequested),
 				layerLine("handoff_completed", "媒体交接完成(交接就绪已达)", f.LayerHandoffCompleted),
+				layerLine("media_handoff_events", "媒体交接事件(1670 v2,distinct handoff)", f.LayerMediaHandoff),
 			},
 			Definition:     defs[LayerHandoffMedia],
 			AppliedFilters: layersAppliedFor(LayerHandoffMedia, filters),
@@ -821,6 +840,7 @@ func buildEvidenceLayers(f OpsFacts, filters FilterSet) EvidenceLayersPanel {
 			Key: LayerUserReported, Title: layerTitles[LayerUserReported], Available: true,
 			Counts: []LayerCount{
 				layerLine("user_reported", "顾客自报提交(distinct attempt)", f.LayerUserReported),
+				layerLine("customer_self_report", "顾客自报核验请求(1670 v2,不改状态)", f.LayerSelfReportEvent),
 			},
 			Definition:     defs[LayerUserReported],
 			AppliedFilters: layersAppliedFor(LayerUserReported, filters),
@@ -831,6 +851,7 @@ func buildEvidenceLayers(f OpsFacts, filters FilterSet) EvidenceLayersPanel {
 			Counts: []LayerCount{
 				layerLine("staff_saw_submit", "店员目测提交(distinct handoff)", f.LayerStaffSaw),
 				layerLine("staff_verified_work", "店员核对作品(distinct handoff)", f.LayerStaffVerified),
+				layerLine("staff_confirm", "店员确认(1670 v2,distinct handoff)", f.LayerStaffConfirm),
 				layerLine("staff_benefit_participations", "权益行店员确认(distinct participation)", countOr(evidenceMap(f), EvidenceStaffObserved)+countOr(evidenceMap(f), EvidenceStaffVerified)),
 			},
 			Definition:     defs[LayerStaffConfirmed],
@@ -841,6 +862,7 @@ func buildEvidenceLayers(f OpsFacts, filters FilterSet) EvidenceLayersPanel {
 			Counts: []LayerCount{
 				layerLine("platform_confirmed_handoffs", "平台确认交接(distinct handoff)", f.LayerPlatformHandoffs),
 				layerLine("official_confirmed_events", "官方确认事件(distinct handoff)", f.LayerOfficialEvents),
+				layerLine("platform_confirm", "平台证实回执(1670 v2,distinct handoff)", f.LayerPlatformConfirm),
 				layerLine("official_attempt_facts", "官方查询回执(distinct attempt)", f.OfficialConfirmedAttempts),
 			},
 			Definition:     defs[LayerPlatformVerified],

@@ -44,14 +44,20 @@ var layersFacts = OpsFacts{
 	LayerActionSessions:   7,
 	LayerServiceOpens:     3,
 	LayerJumpAttempts:     5,
+	LayerCustomerClick:    6,
+	LayerWakeAttempt:      4,
+	LayerMediaHandoff:     3,
 	LayerEditorProved:     2,
 	LayerHandoffRequested: 4,
 	LayerHandoffCompleted: 3,
 	LayerUserReported:     2,
+	LayerSelfReportEvent:  1,
 	LayerStaffSaw:         2,
 	LayerStaffVerified:    1,
+	LayerStaffConfirm:     1,
 	LayerPlatformHandoffs: 1,
 	LayerOfficialEvents:   1,
+	LayerPlatformConfirm:  1,
 	EvidenceByClass:       map[string]int64{"staff_observed_submission": 2},
 }
 
@@ -92,22 +98,22 @@ func TestLayerCountsMapFromFacts(t *testing.T) {
 		}
 		byKey[l.Key] = m
 	}
-	if byKey[LayerActionClicked]["action_sessions"] != 7 || byKey[LayerActionClicked]["service_opens"] != 3 {
+	if byKey[LayerActionClicked]["action_sessions"] != 7 || byKey[LayerActionClicked]["service_opens"] != 3 || byKey[LayerActionClicked]["customer_click"] != 6 {
 		t.Fatalf("click layer lines wrong: %v", byKey[LayerActionClicked])
 	}
-	if byKey[LayerInvokeAttempt]["service_jump_attempts"] != 5 || byKey[LayerInvokeAttempt]["editor_open_proved"] != 2 {
+	if byKey[LayerInvokeAttempt]["service_jump_attempts"] != 5 || byKey[LayerInvokeAttempt]["wake_attempt"] != 4 || byKey[LayerInvokeAttempt]["editor_open_proved"] != 2 {
 		t.Fatalf("invoke layer lines wrong: %v", byKey[LayerInvokeAttempt])
 	}
-	if byKey[LayerHandoffMedia]["handoff_requested"] != 4 || byKey[LayerHandoffMedia]["handoff_completed"] != 3 {
+	if byKey[LayerHandoffMedia]["handoff_requested"] != 4 || byKey[LayerHandoffMedia]["handoff_completed"] != 3 || byKey[LayerHandoffMedia]["media_handoff_events"] != 3 {
 		t.Fatalf("media handoff layer lines wrong: %v", byKey[LayerHandoffMedia])
 	}
-	if byKey[LayerUserReported]["user_reported"] != 2 {
-		t.Fatalf("user_reported line wrong: %v", byKey[LayerUserReported])
+	if byKey[LayerUserReported]["user_reported"] != 2 || byKey[LayerUserReported]["customer_self_report"] != 1 {
+		t.Fatalf("user_reported lines wrong: %v", byKey[LayerUserReported])
 	}
-	if byKey[LayerStaffConfirmed]["staff_saw_submit"] != 2 || byKey[LayerStaffConfirmed]["staff_verified_work"] != 1 {
+	if byKey[LayerStaffConfirmed]["staff_saw_submit"] != 2 || byKey[LayerStaffConfirmed]["staff_verified_work"] != 1 || byKey[LayerStaffConfirmed]["staff_confirm"] != 1 {
 		t.Fatalf("staff layer lines wrong: %v", byKey[LayerStaffConfirmed])
 	}
-	if byKey[LayerPlatformVerified]["platform_confirmed_handoffs"] != 1 || byKey[LayerPlatformVerified]["official_confirmed_events"] != 1 {
+	if byKey[LayerPlatformVerified]["platform_confirmed_handoffs"] != 1 || byKey[LayerPlatformVerified]["official_confirmed_events"] != 1 || byKey[LayerPlatformVerified]["platform_confirm"] != 1 {
 		t.Fatalf("platform layer lines wrong: %v", byKey[LayerPlatformVerified])
 	}
 }

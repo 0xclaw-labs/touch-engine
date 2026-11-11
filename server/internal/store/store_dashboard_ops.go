@@ -32,6 +32,49 @@ type OpsFilter struct {
 	Touchpoint         string
 	Platform           string
 	HandoffMethod      string
+	ActionID           string // 4584 动作实例 id;SQL 内 tenant/store 再收窄(fail-closed)
+	Environment        string // 3535 六环境;只落在有该维度的事实(store_service_events)
+}
+
+// OpsLeadsFacts is the store-side lead-truth fact set (4594 口径):
+// 待同步不算已获客——pending_sync 与 receiver_confirmed 是独立桶。
+type OpsLeadsFacts struct {
+	CampaignSubmitted       int64
+	StoreSubmitted          int64
+	PendingSync             int64
+	ReceiverConfirmed       int64
+	Revoked                 int64
+	ReceiverDeclaredRevoked int64
+	UniqueContacts          int64
+}
+
+// OpsCostReconFacts: 4591 投影只读。指针 = 窗口内没有该类支付事实(未录入,不冒充 0)。
+type OpsCostReconFacts struct {
+	SubscriptionPaidMinor    *int64
+	SubscriptionPaidOrders   int64
+	SubscriptionFailedOrders int64
+	AIConfirmedMinor         int64
+	AIConfirmedCount         int64
+	AIConsumedMinor          int64
+	AIConsumedCount          int64
+	AIRefundedMinor          int64
+	AIRefundedCount          int64
+	AIFailedMinor            int64
+	AIFailedCount            int64
+	HardwarePaidMinor        *int64
+	HardwarePaidOrders       int64
+	HardwareRefundMinor      int64
+	HardwareRefunds          int64
+}
+
+// OpsTodoFacts is the store-side to-do digest fact set (当前态队列+准入到期)。
+type OpsTodoFacts struct {
+	UnavailableActions  int64
+	MissingContent      int64
+	ActionAuthExpired   int64
+	AdmissionExpired    int64
+	PendingRedeem       int64
+	BillingFailedOrders int64
 }
 
 // DashboardOpsFacts is the store-computed fact set for the operations
@@ -46,6 +89,28 @@ type DashboardOpsFacts struct {
 	EvidenceByClass                map[string]int64
 	EvidenceDistinctParticipations int64
 	OfficialConfirmedAttempts      int64
+
+	// 六层证据(TOUCH-ALL-20261109-v1):各层来源/去重键独立,永不相加。
+	LayerActionSessions   int64 // 3546 action_session_events kind='created'(distinct session)
+	LayerServiceOpens     int64 // 4589 store_service_events kind='open'
+	LayerJumpAttempts     int64 // 4589 store_service_events kind='jump_attempt'
+	LayerEditorProved     int64 // 1670 publish_handoff_events kind='editor_open_proved'(distinct handoff)
+	LayerHandoffRequested int64 // 1670 publish_handoffs 创建行
+	LayerHandoffCompleted int64 // 1670 状态蕴含 handoff_ready 已达的行
+	LayerUserReported     int64 // 顾客自报 attempt(self_reported=1)
+	LayerSelfReportEvent  int64 // 1670 v2 kind='customer_self_report'(distinct handoff)
+	LayerStaffSaw         int64 // publish_handoff_events kind='staff_saw_submit'(distinct handoff)
+	LayerStaffVerified    int64 // publish_handoff_events kind='staff_verified_work'(distinct handoff)
+	LayerStaffConfirm     int64 // 1670 v2 kind='staff_confirm'(distinct handoff)
+	LayerPlatformHandoffs int64 // publish_handoffs status='platform_confirmed'
+	LayerOfficialEvents   int64 // publish_handoff_events kind='official_confirmed'(distinct handoff)
+	LayerPlatformConfirm  int64 // 1670 v2 kind='platform_confirm'(distinct handoff)
+	LayerCustomerClick    int64 // 1670 v2 kind='customer_click'(逐事件行)
+	LayerWakeAttempt      int64 // 1670 v2 kind='wake_attempt'(逐事件行)
+	LayerMediaHandoff     int64 // 1670 v2 kind='media_handoff'(distinct handoff)
+
+	Leads     OpsLeadsFacts
+	CostRecon OpsCostReconFacts
 
 	IssuedTotal       int64
 	IssuedFaceMinor   int64
@@ -292,6 +357,298 @@ func (s *Store) DashboardOps(tenantID, storeScope string, start, end time.Time, 
 		return facts, dims, err
 	}
 
+	// ---- 六层证据(TOUCH-ALL-20261109-v1):各层独立计数,只读,永不相加 ----
+	// L1 点击:3546 动作会话创建(distinct session;action_id 维度有原生列)。
+	sesCond := opsCond{clause: "e.tenant_id=? AND e.kind='created'", args: []any{tenantID}}
+	if cond := storeRef("e.store_id"); cond != "" {
+		sesCond = sesCond.with(" AND "+cond, storeArg()...)
+	}
+	if f.ActionID != "" {
+		sesCond = sesCond.with(" AND e.action_id=?", f.ActionID)
+	}
+	if facts.LayerActionSessions, err = s.opsScalar("layer_action_sessions",
+		`SELECT COUNT(DISTINCT e.session_id) FROM action_session_events e WHERE `+sesCond.clause+
+			fmt.Sprintf(inWin, "e.occurred_at", "e.occurred_at"),
+		append(append([]any{}, sesCond.args...), w.startTS, w.endTS)); err != nil {
+		return facts, dims, err
+	}
+
+	// L1/L2 服务行为(4589):store_service_events;service_id 兼收 sa_*/sv_*,
+	// action_id 筛选直接落该列;environment 是该表原生维度。
+	svcLine := func(kind string) (int64, error) {
+		cond := opsCond{clause: "v.tenant_id=? AND v.event_kind=?", args: []any{tenantID, kind}}
+		if cond2 := storeRef("v.store_id"); cond2 != "" {
+			cond = cond.with(" AND "+cond2, storeArg()...)
+		}
+		if f.ActionID != "" {
+			cond = cond.with(" AND v.service_id=?", f.ActionID)
+		}
+		if f.Environment != "" {
+			cond = cond.with(" AND v.environment=?", f.Environment)
+		}
+		return s.opsScalar("layer_service_"+kind,
+			`SELECT COUNT(*) FROM store_service_events v WHERE `+cond.clause+
+				fmt.Sprintf(inWin, "v.occurred_at", "v.occurred_at"),
+			append(append([]any{}, cond.args...), w.startTS, w.endTS))
+	}
+	if facts.LayerServiceOpens, err = svcLine("open"); err != nil {
+		return facts, dims, err
+	}
+	if facts.LayerJumpAttempts, err = svcLine("jump_attempt"); err != nil {
+		return facts, dims, err
+	}
+
+	// 发布域(1670/自报):publish_handoffs/事件流经 campaigns 挂店与活动维度。
+	phJoin := ` FROM publish_handoffs ph JOIN campaigns c ON c.id=ph.campaign_id`
+	phCond := opsCond{clause: "ph.tenant_id=?", args: []any{tenantID}}
+	if cond := storeRef("c.store_id"); cond != "" {
+		phCond = phCond.with(" AND "+cond, storeArg()...)
+	}
+	if f.CampaignID != "" {
+		phCond = phCond.with(" AND ph.campaign_id=?", f.CampaignID)
+	}
+	if f.Platform != "" {
+		phCond = phCond.with(" AND ph.platform=?", f.Platform)
+	}
+	// v2 动作交接行的原生维度(action_id/environment);v1 活动行为空串,
+	// 指定该筛选时自然不匹配——是诚实收窄,不是静默全量。
+	if f.ActionID != "" {
+		phCond = phCond.with(" AND ph.action_id=?", f.ActionID)
+	}
+	if f.Environment != "" {
+		phCond = phCond.with(" AND ph.environment=?", f.Environment)
+	}
+	phArgs := append([]any{}, phCond.args...)
+
+	// L3 requested:创建行(idempotency_key UNIQUE,重放回原行)。
+	if facts.LayerHandoffRequested, err = s.opsScalar("layer_handoff_requested",
+		`SELECT COUNT(*)`+phJoin+` WHERE `+phCond.clause+
+			fmt.Sprintf(inWin, "ph.created_at", "ph.created_at"),
+		append(append([]any{}, phArgs...), w.startTS, w.endTS)); err != nil {
+		return facts, dims, err
+	}
+	// L3 completed:状态机只前进,当前状态 ∈ 六态蕴含 handoff_ready 已达
+	// (publishhandoff.transitions 结构保证;当前态披露,可随推进变化)。
+	if facts.LayerHandoffCompleted, err = s.opsScalar("layer_handoff_completed",
+		`SELECT COUNT(*)`+phJoin+` WHERE `+phCond.clause+
+			` AND ph.status IN ('handoff_ready','editor_opened','submitting','awaiting_review','unknown','platform_confirmed')`+
+			fmt.Sprintf(inWin, "ph.created_at", "ph.created_at"),
+		append(append([]any{}, phArgs...), w.startTS, w.endTS)); err != nil {
+		return facts, dims, err
+	}
+	// L6 platform_confirmed(当前态)。
+	if facts.LayerPlatformHandoffs, err = s.opsScalar("layer_platform_handoffs",
+		`SELECT COUNT(*)`+phJoin+` WHERE `+phCond.clause+` AND ph.status='platform_confirmed'`+
+			fmt.Sprintf(inWin, "ph.created_at", "ph.created_at"),
+		append(append([]any{}, phArgs...), w.startTS, w.endTS)); err != nil {
+		return facts, dims, err
+	}
+
+	// 事件流行:distinct handoff(source+event_id/UNIQUE receipt 幂等;append-only)。
+	phEventLine := func(kind string) (int64, error) {
+		return s.opsScalar("layer_phe_"+kind,
+			`SELECT COUNT(DISTINCT e.handoff_id) FROM publish_handoff_events e
+			 JOIN publish_handoffs ph ON ph.id=e.handoff_id
+			 JOIN campaigns c ON c.id=ph.campaign_id
+			 WHERE `+phCond.clause+` AND e.kind=?`+
+				fmt.Sprintf(inWin, "e.created_at", "e.created_at"),
+			append(append(append([]any{}, phArgs...), kind), w.startTS, w.endTS))
+	}
+	if facts.LayerEditorProved, err = phEventLine("editor_open_proved"); err != nil {
+		return facts, dims, err
+	}
+	if facts.LayerStaffSaw, err = phEventLine("staff_saw_submit"); err != nil {
+		return facts, dims, err
+	}
+	if facts.LayerStaffVerified, err = phEventLine("staff_verified_work"); err != nil {
+		return facts, dims, err
+	}
+	if facts.LayerOfficialEvents, err = phEventLine("official_confirmed"); err != nil {
+		return facts, dims, err
+	}
+	// 1670 v2 六层事实 kind(click/wake 逐事件行;handoff/self-report/staff/platform
+	// 按 distinct handoff;幂等=(tenant,handoff,source,event_id) UNIQUE/ receipt UNIQUE)。
+	if facts.LayerCustomerClick, err = s.opsScalar("layer_phe_customer_click",
+		`SELECT COUNT(*) FROM publish_handoff_events e
+		 JOIN publish_handoffs ph ON ph.id=e.handoff_id
+		 JOIN campaigns c ON c.id=ph.campaign_id
+		 WHERE `+phCond.clause+` AND e.kind='customer_click'`+
+			fmt.Sprintf(inWin, "e.created_at", "e.created_at"),
+		append(append([]any{}, phArgs...), w.startTS, w.endTS)); err != nil {
+		return facts, dims, err
+	}
+	if facts.LayerWakeAttempt, err = s.opsScalar("layer_phe_wake_attempt",
+		`SELECT COUNT(*) FROM publish_handoff_events e
+		 JOIN publish_handoffs ph ON ph.id=e.handoff_id
+		 JOIN campaigns c ON c.id=ph.campaign_id
+		 WHERE `+phCond.clause+` AND e.kind='wake_attempt'`+
+			fmt.Sprintf(inWin, "e.created_at", "e.created_at"),
+		append(append([]any{}, phArgs...), w.startTS, w.endTS)); err != nil {
+		return facts, dims, err
+	}
+	if facts.LayerMediaHandoff, err = phEventLine("media_handoff"); err != nil {
+		return facts, dims, err
+	}
+	if facts.LayerSelfReportEvent, err = phEventLine("customer_self_report"); err != nil {
+		return facts, dims, err
+	}
+	if facts.LayerStaffConfirm, err = phEventLine("staff_confirm"); err != nil {
+		return facts, dims, err
+	}
+	if facts.LayerPlatformConfirm, err = phEventLine("platform_confirm"); err != nil {
+		return facts, dims, err
+	}
+
+	// L4 顾客自报(distinct attempt;自报不是发布,只进入待确认队列)。
+	urCond := opsCond{clause: "a.tenant_id=? AND a.self_reported=1", args: []any{tenantID}}
+	if cond := storeRef("c.store_id"); cond != "" {
+		urCond = urCond.with(" AND "+cond, storeArg()...)
+	}
+	if f.CampaignID != "" {
+		urCond = urCond.with(" AND a.campaign_id=?", f.CampaignID)
+	}
+	if f.Platform != "" {
+		urCond = urCond.with(" AND a.platform=?", f.Platform)
+	}
+	if facts.LayerUserReported, err = s.opsScalar("layer_user_reported",
+		`SELECT COUNT(*) FROM customer_publish_attempts a JOIN campaigns c ON c.id=a.campaign_id
+		 WHERE `+urCond.clause+fmt.Sprintf(inWin, "a.created_at", "a.created_at"),
+		append(append([]any{}, urCond.args...), w.startTS, w.endTS)); err != nil {
+		return facts, dims, err
+	}
+
+	// ---- 线索口径(4594):待同步不算已获客;纯浏览/微信点击不在任何线索桶 ----
+	leadCond := opsCond{clause: "l.tenant_id=?", args: []any{tenantID}}
+	if cond := storeRef("l.store_id"); cond != "" {
+		leadCond = leadCond.with(" AND "+cond, storeArg()...)
+	}
+	if f.CampaignID != "" {
+		leadCond = leadCond.with(" AND l.campaign_id=?", f.CampaignID)
+	}
+	leadWin := leadCond.clause + fmt.Sprintf(inWin, "l.created_at", "l.created_at")
+	leadArgs := append(append([]any{}, leadCond.args...), w.startTS, w.endTS)
+	if facts.Leads.CampaignSubmitted, err = s.opsScalar("leads_campaign",
+		`SELECT COUNT(*) FROM lead_submissions l WHERE `+leadWin+` AND l.capture_source='campaign'`, leadArgs); err != nil {
+		return facts, dims, err
+	}
+	if facts.Leads.StoreSubmitted, err = s.opsScalar("leads_store",
+		`SELECT COUNT(*) FROM lead_submissions l WHERE `+leadWin+` AND l.capture_source='store'`, leadArgs); err != nil {
+		return facts, dims, err
+	}
+	if facts.Leads.PendingSync, err = s.opsScalar("leads_pending_sync",
+		`SELECT COUNT(*) FROM lead_submissions l WHERE `+leadWin+` AND l.sync_state='pending_sync'`, leadArgs); err != nil {
+		return facts, dims, err
+	}
+	// 已获客确认:ACK 五元组落库(crm_received + receiver_state='stored');Notify
+	// 投递成功(delivered)只停 pending_sync,绝不算已获客。
+	if facts.Leads.ReceiverConfirmed, err = s.opsScalar("leads_receiver_confirmed",
+		`SELECT COUNT(*) FROM lead_submissions l WHERE `+leadWin+
+			` AND l.sync_state='crm_received' AND l.receiver_state='stored'`, leadArgs); err != nil {
+		return facts, dims, err
+	}
+	if facts.Leads.Revoked, err = s.opsScalar("leads_revoked",
+		`SELECT COUNT(*) FROM lead_submissions l WHERE `+leadWin+
+			` AND (l.sync_state='revoked' OR l.revoke_source_revision>0)`, leadArgs); err != nil {
+		return facts, dims, err
+	}
+	// 接收方申报 revoked:接收方申报事实,只记录不发明本地状态。
+	if facts.Leads.ReceiverDeclaredRevoked, err = s.opsScalar("leads_receiver_revoked",
+		`SELECT COUNT(*) FROM lead_submissions l WHERE `+leadWin+` AND l.receiver_state='revoked'`, leadArgs); err != nil {
+		return facts, dims, err
+	}
+	if facts.Leads.UniqueContacts, err = s.opsScalar("leads_unique_contacts",
+		`SELECT COUNT(DISTINCT l.phone) FROM lead_submissions l WHERE `+leadWin, leadArgs); err != nil {
+		return facts, dims, err
+	}
+
+	// ---- 费用对账(4591 投影只读):订阅/AI/硬件分明细,退款分列不冲销 ----
+	// 订阅:支付事实订单(active)金额投影;failed 单列(失败不是支出)。
+	subCond := opsCond{clause: "o.tenant_id=? AND o.kind='subscription'", args: []any{tenantID}}
+	var subAmount sql.NullInt64
+	if err = s.opsScanRow("cost_subscription",
+		`SELECT COUNT(*), SUM(o.amount_minor) FROM billing_orders o WHERE `+subCond.clause+
+			` AND o.status='active'`+fmt.Sprintf(inWin, "o.created_at", "o.created_at"),
+		append(append([]any{}, subCond.args...), w.startTS, w.endTS),
+		func(scan func(dest ...any) error) error {
+			return scan(&facts.CostRecon.SubscriptionPaidOrders, &subAmount)
+		}); err != nil {
+		return facts, dims, err
+	}
+	if subAmount.Valid {
+		v := subAmount.Int64
+		facts.CostRecon.SubscriptionPaidMinor = &v
+	}
+	if facts.CostRecon.SubscriptionFailedOrders, err = s.opsScalar("cost_subscription_failed",
+		`SELECT COUNT(*) FROM billing_orders o WHERE `+subCond.clause+` AND o.status='failed'`+
+			fmt.Sprintf(inWin, "o.created_at", "o.created_at"),
+		append(append([]any{}, subCond.args...), w.startTS, w.endTS)); err != nil {
+		return facts, dims, err
+	}
+
+	// AI 用量:按 state 分列(refunded/failed 单列,不计支出)。business_ref 的
+	// 语义由消费方(4595 handoff 引用)决定,不猜作 campaign 维度,不假装过滤。
+	aiCond := opsCond{clause: "u.tenant_id=?", args: []any{tenantID}}
+	aiRows, err := s.DB.Query(
+		`SELECT u.state, COUNT(*), COALESCE(SUM(u.amount_minor),0) FROM billing_ai_usage u
+		 WHERE `+aiCond.clause+fmt.Sprintf(inWin, "u.created_at", "u.created_at")+` GROUP BY u.state`,
+		append(append([]any{}, aiCond.args...), w.startTS, w.endTS)...)
+	if err != nil {
+		return facts, dims, fmt.Errorf("dashboard_ops[cost_ai]: %w", err)
+	}
+	for aiRows.Next() {
+		var state string
+		var cnt, amount int64
+		if err := aiRows.Scan(&state, &cnt, &amount); err != nil {
+			aiRows.Close()
+			return facts, dims, fmt.Errorf("dashboard_ops[cost_ai]: %w", err)
+		}
+		switch state {
+		case "confirmed":
+			facts.CostRecon.AIConfirmedCount, facts.CostRecon.AIConfirmedMinor = cnt, amount
+		case "consumed":
+			facts.CostRecon.AIConsumedCount, facts.CostRecon.AIConsumedMinor = cnt, amount
+		case "refunded":
+			facts.CostRecon.AIRefundedCount, facts.CostRecon.AIRefundedMinor = cnt, amount
+		case "failed":
+			facts.CostRecon.AIFailedCount, facts.CostRecon.AIFailedMinor = cnt, amount
+		}
+	}
+	if err = aiRows.Err(); err != nil {
+		aiRows.Close()
+		return facts, dims, fmt.Errorf("dashboard_ops[cost_ai]: %w", err)
+	}
+	aiRows.Close()
+
+	// 硬件:支付事实订单(active)投影;退款分列对账,不冲销。
+	hwCond := opsCond{clause: "o.tenant_id=? AND o.kind='hardware'", args: []any{tenantID}}
+	var hwAmount sql.NullInt64
+	if err = s.opsScanRow("cost_hardware",
+		`SELECT COUNT(*), SUM(o.amount_minor) FROM billing_orders o WHERE `+hwCond.clause+
+			` AND o.status='active'`+fmt.Sprintf(inWin, "o.created_at", "o.created_at"),
+		append(append([]any{}, hwCond.args...), w.startTS, w.endTS),
+		func(scan func(dest ...any) error) error {
+			return scan(&facts.CostRecon.HardwarePaidOrders, &hwAmount)
+		}); err != nil {
+		return facts, dims, err
+	}
+	if hwAmount.Valid {
+		v := hwAmount.Int64
+		facts.CostRecon.HardwarePaidMinor = &v
+	}
+	// 退款金额与单数分开查:SUM 为 0 时也要如实报 0 元/0 单。
+	if facts.CostRecon.HardwareRefundMinor, err = s.opsScalar("cost_hardware_refunds",
+		`SELECT COALESCE(SUM(r.amount_minor),0) FROM billing_refunds r WHERE r.tenant_id=?`+
+			fmt.Sprintf(inWin, "r.created_at", "r.created_at"),
+		append([]any{tenantID}, w.startTS, w.endTS)); err != nil {
+		return facts, dims, err
+	}
+	if facts.CostRecon.HardwareRefunds, err = s.opsScalar("cost_hardware_refund_count",
+		`SELECT COUNT(*) FROM billing_refunds r WHERE r.tenant_id=?`+
+			fmt.Sprintf(inWin, "r.created_at", "r.created_at"),
+		append([]any{tenantID}, w.startTS, w.endTS)); err != nil {
+		return facts, dims, err
+	}
+
 	// ---- 漏斗第 6 级:奖励发放(granted;面额/成本分列)----
 	if err = s.opsScanRow("issued_total",
 		`SELECT COUNT(*), COALESCE(SUM(rb.face_value_minor),0), COALESCE(SUM(rb.cost_minor),0)`+rbJoinP+
@@ -416,17 +773,17 @@ func (s *Store) DashboardOps(tenantID, storeScope string, start, end time.Time, 
 			fmt.Sprintf(inWin, "rb.issued_at", "rb.issued_at"), evArgs); err != nil {
 		return facts, dims, err
 	}
-	urCond := opsCond{clause: "i.tenant_id=? AND i.face_value_minor>0 AND i.cost_minor=0", args: []any{tenantID}}
+	unrecCond := opsCond{clause: "i.tenant_id=? AND i.face_value_minor>0 AND i.cost_minor=0", args: []any{tenantID}}
 	if f.CampaignID != "" {
-		urCond = urCond.with(" AND i.campaign_id=?", f.CampaignID)
+		unrecCond = unrecCond.with(" AND i.campaign_id=?", f.CampaignID)
 	}
 	if storeScope != "" {
-		urCond = urCond.with(" AND (i.store_id=? OR i.store_id='')", storeScope)
+		unrecCond = unrecCond.with(" AND (i.store_id=? OR i.store_id='')", storeScope)
 	} else if f.StoreID != "" {
-		urCond = urCond.with(" AND (i.store_id=? OR i.store_id='')", f.StoreID)
+		unrecCond = unrecCond.with(" AND (i.store_id=? OR i.store_id='')", f.StoreID)
 	}
 	if facts.Cost.CostUnrecordedBatches, err = s.opsScalar("unrecorded_batches",
-		`SELECT COUNT(*) FROM reward_inventory i WHERE `+urCond.clause, urCond.args); err != nil {
+		`SELECT COUNT(*) FROM reward_inventory i WHERE `+unrecCond.clause, unrecCond.args); err != nil {
 		return facts, dims, err
 	}
 
@@ -448,7 +805,43 @@ func (s *Store) DashboardOps(tenantID, storeScope string, start, end time.Time, 
 		storeArgs = append(storeArgs, storeScope)
 	}
 	dims.Stores, err = s.dashStoreRefs(storeCond, storeArgs)
+	if err != nil {
+		return facts, dims, err
+	}
+	// 动作引用行(4584):筛选下拉的数据源;含停用行(商家能看到筛选为何无果)。
+	actCond := "tenant_id=?"
+	actArgs := []any{tenantID}
+	if storeScope != "" {
+		actCond += " AND store_id=?"
+		actArgs = append(actArgs, storeScope)
+	} else if f.StoreID != "" {
+		actCond += " AND store_id=?"
+		actArgs = append(actArgs, f.StoreID)
+	}
+	dims.Actions, err = s.dashActionRefs(actCond, actArgs)
 	return facts, dims, err
+}
+
+// dashActionRefs reads the scope-narrowed store-action reference rows.
+func (s *Store) dashActionRefs(cond string, args []any) ([]DashboardActionRef, error) {
+	rows, err := s.DB.Query(
+		`SELECT id, label, platform, kind, enabled FROM store_actions WHERE `+cond+` ORDER BY created_at, id`,
+		args...)
+	if err != nil {
+		return nil, fmt.Errorf("dashboard_ops[action_refs]: %w", err)
+	}
+	defer rows.Close()
+	out := []DashboardActionRef{}
+	for rows.Next() {
+		var r DashboardActionRef
+		var enabled int
+		if err := rows.Scan(&r.ID, &r.Label, &r.Platform, &r.Kind, &enabled); err != nil {
+			return nil, fmt.Errorf("dashboard_ops[action_refs]: %w", err)
+		}
+		r.Enabled = enabled == 1
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // DashboardOpsSummary computes the fixed OperationsSummary fact set
@@ -528,6 +921,66 @@ func (s *Store) DashboardOpsSummary(tenantID, storeScope string, dayStart, asOf 
 		return sum, err
 	}
 	sum.Anomalies = reversals + expired + failed
+
+	// ---- 待办摘要(TOUCH-ALL-20261109-v1):当前态队列 + 准入到期;asOf 为准 ----
+	todoScope := ""
+	todoArgs := []any{tenantID}
+	if storeScope != "" {
+		todoScope = " AND store_id=?"
+		todoArgs = append(todoArgs, storeScope)
+	}
+	// 不可用动作:enabled=0 或 revoked=1(expires_at 过期另列 action_auth_expired)。
+	if sum.Todos.UnavailableActions, err = s.opsScalar("todo_unavailable",
+		`SELECT COUNT(*) FROM store_actions WHERE tenant_id=?`+todoScope+` AND (enabled=0 OR revoked=1)`,
+		todoArgs); err != nil {
+		return sum, err
+	}
+	// 授权到期:启用未撤销动作 expires_at 已过(<= asOf)。
+	if sum.Todos.ActionAuthExpired, err = s.opsScalar("todo_action_auth_expired",
+		`SELECT COUNT(*) FROM store_actions WHERE tenant_id=?`+todoScope+
+			` AND enabled=1 AND revoked=0 AND expires_at<>'' AND datetime(expires_at)<=datetime(?)`,
+		append(append([]any{}, todoArgs...), asOf.Format(time.RFC3339))); err != nil {
+		return sum, err
+	}
+	// 缺素材:启用且未撤销未过期、未绑定已采用内容(content_binding_ref='')。
+	if sum.Todos.MissingContent, err = s.opsScalar("todo_missing_content",
+		`SELECT COUNT(*) FROM store_actions WHERE tenant_id=?`+todoScope+
+			` AND enabled=1 AND revoked=0 AND content_binding_ref='' AND (expires_at='' OR datetime(expires_at)>datetime(?))`,
+		append(append([]any{}, todoArgs...), asOf.Format(time.RFC3339))); err != nil {
+		return sum, err
+	}
+	// 渠道准入到期:admitted 且 valid_until 已过;tenant_scope='*' 平台级对每租户
+	// 可见,定向行只算自己的(tenant_scope=<tenant>)。准入是租户级事实:店经理
+	// 视角无门店维度,fail-closed 答 0(口径在 dashboard 包披露)。
+	if storeScope == "" {
+		if sum.Todos.AdmissionExpired, err = s.opsScalar("todo_admission_expired",
+			`SELECT COUNT(*) FROM channel_admissions
+			 WHERE status='admitted' AND valid_until<>'' AND datetime(valid_until)<=datetime(?)
+			 AND (tenant_scope='*' OR tenant_scope=?)`,
+			[]any{asOf.Format(time.RFC3339), tenantID}); err != nil {
+			return sum, err
+		}
+	}
+	// 待核销:已发放未核销(当前态;store_scope 走权益行自身 store 列)。
+	redeemCond := " WHERE rb.tenant_id=? AND rb.status='issued'"
+	redeemArgs := []any{tenantID}
+	if storeScope != "" {
+		redeemCond += " AND rb.store_id=?"
+		redeemArgs = append(redeemArgs, storeScope)
+	}
+	if sum.Todos.PendingRedeem, err = s.opsScalar("todo_pending_redeem",
+		`SELECT COUNT(*) FROM reward_benefits rb`+redeemCond, redeemArgs); err != nil {
+		return sum, err
+	}
+	// 账务异常:failed 订单数(当前态队列;失败不是支出,是待处理)。订单是租户级
+	// 事实(无 store 列):店经理视角 fail-closed 答 0。
+	if storeScope == "" {
+		if sum.Todos.BillingFailedOrders, err = s.opsScalar("todo_billing_failed",
+			`SELECT COUNT(*) FROM billing_orders o WHERE o.tenant_id=? AND o.status='failed'`,
+			[]any{tenantID}); err != nil {
+			return sum, err
+		}
+	}
 	return sum, nil
 }
 
@@ -537,6 +990,7 @@ type SummaryOpsFacts struct {
 	RewardsIssued   int64
 	RewardsRedeemed int64
 	Anomalies       int64
+	Todos           OpsTodoFacts
 }
 
 // ---- helpers -----------------------------------------------------------------

@@ -60,6 +60,10 @@ type DashboardDimensions struct {
 	Campaigns []DashboardCampaignRef `json:"campaigns,omitempty"`
 	Stores    []DashboardStoreRef    `json:"stores,omitempty"`
 	Tags      []DashboardTagRef      `json:"tags,omitempty"`
+	// Actions (TOUCH-ALL-20261109-v1): 4584 store-action reference rows for
+	// the action_id drill-down filter (scope-narrowed, includes suspended
+	// rows so the merchant can still see why a filter matches nothing).
+	Actions []DashboardActionRef `json:"actions,omitempty"`
 }
 
 type DashboardCampaignRef struct {
@@ -71,6 +75,15 @@ type DashboardCampaignRef struct {
 type DashboardStoreRef struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+}
+
+// DashboardActionRef is one 4584 store-action instance reference.
+type DashboardActionRef struct {
+	ID       string `json:"id"`
+	Label    string `json:"label"`
+	Platform string `json:"platform,omitempty"`
+	Kind     string `json:"kind,omitempty"`
+	Enabled  bool   `json:"enabled"`
 }
 
 type DashboardTagRef struct {

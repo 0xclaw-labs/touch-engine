@@ -56,9 +56,10 @@ func (s *Server) handleDashboardOperations(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	q := r.URL.Query()
-	filters, err := dashboard.ParseFilterSet(
+	filters, err := dashboard.ParseFilterSetExt(
 		q.Get("campaign_id"), q.Get("store_id"), q.Get("content_pack_version"),
-		q.Get("touchpoint"), q.Get("platform"), q.Get("handoff_method"))
+		q.Get("touchpoint"), q.Get("platform"), q.Get("handoff_method"),
+		q.Get("action_id"), q.Get("environment"))
 	if err != nil {
 		fail(w, http.StatusBadRequest, "invalid_filter", err.Error())
 		return
@@ -80,7 +81,8 @@ func (s *Server) handleDashboardOperations(w http.ResponseWriter, r *http.Reques
 
 // GET /api/v1/dashboard/operations-summary — the fixed read-only port for the
 // home page (HUI-2628 consumes; this ticket never touches TodayDesk). Today =
-// UTC calendar day [00:00, now], disclosed in the contract.
+// UTC calendar day [00:00, now], disclosed in the contract. The five legacy
+// fields stay byte-stable; the todos digest is an additive block.
 func (s *Server) handleDashboardOperationsSummary(w http.ResponseWriter, r *http.Request) {
 	if !s.dashGate(w) {
 		return
@@ -101,6 +103,14 @@ func (s *Server) handleDashboardOperationsSummary(w http.ResponseWriter, r *http
 		RewardsIssued:   facts.RewardsIssued,
 		RewardsRedeemed: facts.RewardsRedeemed,
 		Anomalies:       facts.Anomalies,
+		Todos: dashboard.TodoFacts{
+			UnavailableActions:  facts.Todos.UnavailableActions,
+			MissingContent:      facts.Todos.MissingContent,
+			ActionAuthExpired:   facts.Todos.ActionAuthExpired,
+			AdmissionExpired:    facts.Todos.AdmissionExpired,
+			PendingRedeem:       facts.Todos.PendingRedeem,
+			BillingFailedOrders: facts.Todos.BillingFailedOrders,
+		},
 	}))
 }
 
@@ -114,6 +124,8 @@ func opsFilterFrom(f dashboard.FilterSet) store.OpsFilter {
 		Touchpoint:         f.Touchpoint,
 		Platform:           f.Platform,
 		HandoffMethod:      f.HandoffMethod,
+		ActionID:           f.ActionID,
+		Environment:        f.Environment,
 	}
 }
 
@@ -131,6 +143,24 @@ func opsFactsFrom(in store.DashboardOpsFacts) dashboard.OpsFacts {
 		IssuedCostMinor:                in.IssuedCostMinor,
 		RedeemedTotal:                  in.RedeemedTotal,
 		RedeemedCostMinor:              in.RedeemedCostMinor,
+		// 六层证据:逐字段机械映射(来源/去重口径在 dashboard 层披露)。
+		LayerActionSessions:   in.LayerActionSessions,
+		LayerServiceOpens:     in.LayerServiceOpens,
+		LayerJumpAttempts:     in.LayerJumpAttempts,
+		LayerEditorProved:     in.LayerEditorProved,
+		LayerHandoffRequested: in.LayerHandoffRequested,
+		LayerHandoffCompleted: in.LayerHandoffCompleted,
+		LayerUserReported:     in.LayerUserReported,
+		LayerSelfReportEvent:  in.LayerSelfReportEvent,
+		LayerStaffSaw:         in.LayerStaffSaw,
+		LayerStaffVerified:    in.LayerStaffVerified,
+		LayerStaffConfirm:     in.LayerStaffConfirm,
+		LayerPlatformHandoffs: in.LayerPlatformHandoffs,
+		LayerOfficialEvents:   in.LayerOfficialEvents,
+		LayerPlatformConfirm:  in.LayerPlatformConfirm,
+		LayerCustomerClick:    in.LayerCustomerClick,
+		LayerWakeAttempt:      in.LayerWakeAttempt,
+		LayerMediaHandoff:     in.LayerMediaHandoff,
 	}
 	if out.EvidenceByClass == nil {
 		out.EvidenceByClass = map[string]int64{}
@@ -158,6 +188,32 @@ func opsFactsFrom(in store.DashboardOpsFacts) dashboard.OpsFacts {
 		RewardRedeemedCostMinor:      in.Cost.RewardRedeemedCostMinor,
 		RewardFaceMinor:              in.Cost.RewardFaceMinor,
 		CostUnrecordedBatches:        in.Cost.CostUnrecordedBatches,
+	}
+	out.Leads = dashboard.LeadsFacts{
+		CampaignSubmitted:       in.Leads.CampaignSubmitted,
+		StoreSubmitted:          in.Leads.StoreSubmitted,
+		PendingSync:             in.Leads.PendingSync,
+		ReceiverConfirmed:       in.Leads.ReceiverConfirmed,
+		Revoked:                 in.Leads.Revoked,
+		ReceiverDeclaredRevoked: in.Leads.ReceiverDeclaredRevoked,
+		UniqueContacts:          in.Leads.UniqueContacts,
+	}
+	out.CostRecon = dashboard.CostReconciliationFacts{
+		SubscriptionPaidMinor:    in.CostRecon.SubscriptionPaidMinor,
+		SubscriptionPaidOrders:   in.CostRecon.SubscriptionPaidOrders,
+		SubscriptionFailedOrders: in.CostRecon.SubscriptionFailedOrders,
+		AIConfirmedMinor:         in.CostRecon.AIConfirmedMinor,
+		AIConfirmedCount:         in.CostRecon.AIConfirmedCount,
+		AIConsumedMinor:          in.CostRecon.AIConsumedMinor,
+		AIConsumedCount:          in.CostRecon.AIConsumedCount,
+		AIRefundedMinor:          in.CostRecon.AIRefundedMinor,
+		AIRefundedCount:          in.CostRecon.AIRefundedCount,
+		AIFailedMinor:            in.CostRecon.AIFailedMinor,
+		AIFailedCount:            in.CostRecon.AIFailedCount,
+		HardwarePaidMinor:        in.CostRecon.HardwarePaidMinor,
+		HardwarePaidOrders:       in.CostRecon.HardwarePaidOrders,
+		HardwareRefundMinor:      in.CostRecon.HardwareRefundMinor,
+		HardwareRefunds:          in.CostRecon.HardwareRefunds,
 	}
 	return out
 }
