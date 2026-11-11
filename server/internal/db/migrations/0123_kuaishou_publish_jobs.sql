@@ -16,6 +16,7 @@ CREATE TABLE kuaishou_publish_jobs (
         -- creating:创建作品调用 in-flight(此阶段重启=结果未知,拒重复创建);
         -- accepted:平台已接受任务(photo_id 在手,异步终态待查)。
     upload_token     TEXT NOT NULL DEFAULT '',       -- 平台上传凭据(服务器暂存)
+    media_refs_json  TEXT NOT NULL DEFAULT '{}',     -- 受控媒体引用(Start 时序持久化;Submit 消费;短TTL)
     photo_id         TEXT NOT NULL DEFAULT '',       -- 平台作品 id(provider_ref)
     submit_state     TEXT NOT NULL DEFAULT '',       -- 最近一次提交观察词(照录)
     photo_state      TEXT NOT NULL DEFAULT '',       -- 最近一次作品查询观察词(照录,不确认)

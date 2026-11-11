@@ -539,9 +539,11 @@ func TestActionHandoffV2SubmitQuerySurface(t *testing.T) {
 	if status, _, body := f.do(t, "POST", "/api/v1/public/handoffs/"+hid+"/submit", f.cookie, ""); status != http.StatusUnprocessableEntity || body["error"] != "unsupported_by_adapter" {
 		t.Fatalf("submit without adapter = %d (%v)", status, body)
 	}
-	// query 未注册:422。
-	if status, _, _ := f.do(t, "POST", "/api/v1/public/handoffs/"+hid+"/query", f.cookie, ""); status != http.StatusUnprocessableEntity {
-		t.Fatal("query without adapter must 422")
+	// query:HUI-4588 起手动家族(qq)恒注册(无凭据依赖)——无在途投稿的诚实
+	// 答案是 409 invalid_state(状态机:handoff_ready 没有可回查对象);
+	// unsupported→422 语义由下方 stub Query 断言覆盖(4588 根因修补,意图不变)。
+	if status, _, body := f.do(t, "POST", "/api/v1/public/handoffs/"+hid+"/query", f.cookie, ""); status != http.StatusConflict || body["error"] != "invalid_state" {
+		t.Fatalf("query with nothing in flight = %d (%v)", status, body)
 	}
 	// 注册可投稿 stub:submit → submitting;query(unsupported)→ 422。
 	f.s.PublishHandoff.SetAdapter(&v2CallbackStub{platform: "qq", submitOK: true})
