@@ -24,6 +24,17 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { LoadErrorState } from "@/components/work/load-error-state";
 import { failureText, useSession } from "@/components/work/merchant-session";
 import {
+  bindingStaleFace,
+  deliveryEventFace,
+  deliveryNextStep,
+  deliveryStatusFace,
+  isDeliveryStatus,
+  isReplaceReason,
+  readbackFace,
+  replaceReasonFace,
+  replaceReasonList,
+} from "@/lib/touchpoint-deliveries";
+import {
   entryFace,
   isStage,
   nextStage,
@@ -92,6 +103,48 @@ interface RebindPreview {
   binding_revision?: number;
 }
 
+// HUI-1663 交付视图(服务端 TouchpointDeliveryView 的展示子集)。
+interface DeliveryStepFact {
+  event_type?: string;
+  operator_ref?: string;
+  device_ref?: string;
+  evidence_ref?: string;
+  observed_binding_revision?: number;
+  occurred_at?: string;
+}
+
+interface DeliveryView {
+  id: string;
+  touchpoint_id: string;
+  status: string;
+  hardware_order_id?: string;
+  order_ref?: string;
+  physical_unit_ref?: string;
+  replacement_of?: string;
+  bound_binding_revision?: number;
+  verified_binding_revision?: number;
+  current_binding_revision?: number;
+  binding_stale?: boolean;
+  payment?: { state?: string; operator?: string; occurred_at?: string; device_ref?: string };
+  steps?: Record<string, DeliveryStepFact>;
+  last_readback?: DeliveryStepFact | null;
+  last_readback_matches?: boolean;
+  last_readback_reason?: string;
+}
+
+interface DeliveryEventRow {
+  id?: string;
+  event_type?: string;
+  operator_ref?: string;
+  device_ref?: string;
+  occurred_at?: string;
+}
+
+interface DeliveryDetail extends DeliveryView {
+  events?: DeliveryEventRow[];
+  replacements?: Array<{ reason_category?: string; reason_detail?: string; old_entry_revoked?: number }>;
+}
+
 function queryOf(params: Record<string, string>): string {
   const qs = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -138,6 +191,29 @@ export function TouchpointsPanel() {
   const [preview, setPreview] = useState<RebindPreview | null>(null);
   const [legacyPending, setLegacyPending] = useState<{ tag: TagItem; shared: number } | null>(null);
 
+  // HUI-1663 交付插槽:交付记录(按门店过滤,服务端收口)/事实录入/详情展开/补换。
+  const [deliveries, setDeliveries] = useState<DeliveryView[]>([]);
+  const [deliveriesNote, setDeliveriesNote] = useState("");
+  const [deliveryDetail, setDeliveryDetail] = useState<DeliveryDetail | null>(null);
+  const [deliveryDevice, setDeliveryDevice] = useState("");
+  const [deliveryReadUrl, setDeliveryReadUrl] = useState("");
+  const [deliveryEvidence, setDeliveryEvidence] = useState("");
+  const [replaceReason, setReplaceReason] = useState("");
+  const [replaceUnit, setReplaceUnit] = useState("");
+  const [replaceTouchpointId, setReplaceTouchpointId] = useState("");
+  const [replaceTarget, setReplaceTarget] = useState<DeliveryView | null>(null);
+
+  const loadDeliveries = useCallback(async () => {
+    const res = await session.api("GET", "touchpoint-deliveries" + queryOf({ store_id: storeFilter }));
+    if (!res.ok) {
+      setDeliveries([]);
+      setDeliveriesNote(failureText(res.status, res.data));
+      return;
+    }
+    setDeliveriesNote("");
+    setDeliveries(Array.isArray(res.data.items) ? (res.data.items as DeliveryView[]) : []);
+  }, [session, storeFilter]);
+
   const load = useCallback(async () => {
     const [tpRes, campRes, storeRes, tagRes] = await Promise.all([
       session.api("GET", "touchpoints" + queryOf({ store_id: storeFilter, campaign_id: campaignFilter, status: statusFilter })),
@@ -154,8 +230,9 @@ export function TouchpointsPanel() {
     if (campRes.ok && Array.isArray(campRes.data.items)) setCampaigns(campRes.data.items as CampaignItem[]);
     if (storeRes.ok && Array.isArray(storeRes.data.items)) setStores(storeRes.data.items as StoreItem[]);
     if (tagRes.ok && Array.isArray(tagRes.data.items)) setTags(tagRes.data.items as TagItem[]);
+    await loadDeliveries();
     setPhase("ready");
-  }, [session, storeFilter, campaignFilter, statusFilter]);
+  }, [session, storeFilter, campaignFilter, statusFilter, loadDeliveries]);
 
   useEffect(() => {
     let alive = true;
@@ -378,6 +455,103 @@ export function TouchpointsPanel() {
     setNotice("");
   }, []);
 
+  // ---- HUI-1663 交付插槽动作 -------------------------------------------------
+  // 事件幂等键由前端每次明确意图生成一次(crypto.randomUUID);重放由服务端
+  // (source+event_id)兜底;操作者/门店由服务端会话解析,前端不传。
+
+  const recordDeliveryEvent = useCallback((d: DeliveryView) => run(async () => {
+    const step = deliveryNextStep(d.status);
+    if (!step) {
+      setNotice("这张卡没有可推进的交付步骤了。");
+      return;
+    }
+    const body: Record<string, unknown> = {
+      event_type: step,
+      event_id: crypto.randomUUID(),
+      ...(deliveryDevice.trim() ? { device_ref: deliveryDevice.trim() } : {}),
+      ...(deliveryEvidence.trim() ? { evidence_ref: deliveryEvidence.trim() } : {}),
+    };
+    if (step === "readback") {
+      if (!deliveryReadUrl.trim()) {
+        setNotice("回读要把读到的 URL 原样填进来再核对。");
+        return;
+      }
+      body.read_url = deliveryReadUrl.trim();
+    }
+    const res = await session.api("POST", `touchpoint-deliveries/${d.id}/events`, body);
+    if (res.status === 409) {
+      const data = res.data as Record<string, unknown>;
+      setNotice(
+        data?.error === "step_skipped"
+          ? "交付状态被别人先推进了,已重查,请看最新状态。"
+          : data?.error === "IDEMPOTENCY_CONFLICT"
+            ? "这条事实的幂等键被别的负载用过,请刷新后重试。"
+            : failureText(res.status, res.data),
+      );
+      await load();
+      return;
+    }
+    if (!res.ok) {
+      const data = res.data as Record<string, unknown>;
+      if (data?.error === "payment_required") {
+        setNotice("这笔硬件订单还没有付款事实,不能录出库。");
+        return;
+      }
+      setNotice(failureText(res.status, res.data));
+      return;
+    }
+    const out = res.data as { readback_matches?: boolean; readback_reason?: string };
+    setDeliveryReadUrl("");
+    setDeliveryEvidence("");
+    if (step === "readback" && out.readback_matches === false) {
+      setNotice(readbackFace(false, out.readback_reason) + " 已记录本次回读,状态未推进。");
+    } else {
+      setNotice(`已记录:${deliveryEventFace(step)}。`);
+    }
+    await load();
+  }), [run, session, deliveryDevice, deliveryEvidence, deliveryReadUrl, load]);
+
+  const openDeliveryDetail = useCallback((d: DeliveryView) => run(async () => {
+    const res = await session.api("GET", `touchpoint-deliveries/${d.id}`);
+    if (!res.ok) {
+      setNotice(failureText(res.status, res.data));
+      return;
+    }
+    setDeliveryDetail(res.data as unknown as DeliveryDetail);
+  }), [run, session]);
+
+  const openReplace = useCallback((d: DeliveryView) => {
+    setReplaceTarget(d);
+    setReplaceReason("");
+    setReplaceUnit("");
+    setReplaceTouchpointId("");
+    setNotice("");
+  }, []);
+
+  const submitReplace = useCallback(() => run(async () => {
+    if (!replaceTarget) return;
+    if (!isReplaceReason(replaceReason)) {
+      setNotice("先选补换原因。");
+      return;
+    }
+    if (replaceReason === "lost_uncontrolled" && !replaceTouchpointId) {
+      setNotice("遗失失控必须换新入口:先选新触点。");
+      return;
+    }
+    const res = await session.api("POST", `touchpoint-deliveries/${replaceTarget.id}/replace`, {
+      reason_category: replaceReason,
+      new_touchpoint_id: replaceReason === "damaged_recoverable" ? replaceTarget.touchpoint_id : replaceTouchpointId,
+      ...(replaceUnit.trim() ? { physical_unit_ref: replaceUnit.trim() } : {}),
+    });
+    if (!res.ok) {
+      setNotice(failureText(res.status, res.data));
+      return;
+    }
+    setReplaceTarget(null);
+    setNotice(replaceReasonFace(replaceReason) + " 新卡从出库重新走全流程。");
+    await load();
+  }), [run, session, replaceTarget, replaceReason, replaceUnit, replaceTouchpointId, load]);
+
   if (phase === "loading") {
     return <p className="tk-state" data-state="loading">正在读取…</p>;
   }
@@ -393,6 +567,7 @@ export function TouchpointsPanel() {
         写卡与回读推进只经下面显式操作,下载与检查不改变状态。
       </p>
       {notice ? <p className="tk-state" data-state="notice">{notice}</p> : null}
+      {deliveriesNote ? <p className="tk-note" data-state="delivery-unavailable">交付记录:{deliveriesNote}</p> : null}
 
       <div className="tk-toolbar">
         <label className="tk-label">
@@ -509,6 +684,9 @@ export function TouchpointsPanel() {
       ) : (
         items.map((tp) => {
           const nxt = isStage(tp.deployment_stage) ? nextStage(tp.deployment_stage) : null;
+          // HUI-1663 交付插槽:该触点的活交付(封存行只在详情账本里回看)。
+          const dlv = deliveries.find((d) => d.touchpoint_id === tp.id && d.status !== "superseded") ?? null;
+          const dlvStep = dlv && isDeliveryStatus(dlv.status) ? deliveryNextStep(dlv.status) : null;
           return (
             <article key={tp.id} className="tk-card" data-touchpoint={tp.code}>
               <h2 className="tk-subtitle">{tp.label || tp.tag_label || "未命名入口"}</h2>
@@ -582,6 +760,117 @@ export function TouchpointsPanel() {
                   ) : null}
                 </div>
               ) : null}
+              {dlv ? (
+                <div className="tk-card" data-state="delivery" data-delivery={dlv.id}>
+                  <p className="tk-note" data-field="delivery-status">实体交付:{deliveryStatusFace(dlv.status)}</p>
+                  {dlv.payment?.state ? (
+                    <p className="tk-note">
+                      付款:{dlv.payment.state === "done" ? "已确认" : "未确认"}
+                      {dlv.payment.occurred_at ? ` · ${dlv.payment.occurred_at}` : ""}
+                    </p>
+                  ) : (
+                    <p className="tk-note">付款:还没有订单付款事实(不能录出库)。</p>
+                  )}
+                  <p className="tk-note" data-field="delivery-binding">
+                    {bindingStaleFace({
+                      current: dlv.current_binding_revision,
+                      bound: dlv.bound_binding_revision,
+                      verified: dlv.verified_binding_revision,
+                    })}
+                  </p>
+                  {dlv.status === "written" || dlv.status === "readback" ? (
+                    <p className="tk-note" data-field="delivery-readback">
+                      {!dlv.last_readback
+                        ? "还没有回读记录。"
+                        : readbackFace(dlv.last_readback_matches, dlv.last_readback_reason)}
+                    </p>
+                  ) : null}
+                  {dlvStep ? (
+                    <>
+                      <label className="tk-label">
+                        设备标识(可选)
+                        <input className="tk-input" data-field="delivery-device" value={deliveryDevice} onChange={(event) => setDeliveryDevice(event.target.value)} placeholder="如:写卡器编号" />
+                      </label>
+                      {dlvStep === "readback" ? (
+                        <>
+                          <label className="tk-label">
+                            回读到的 URL(原样抄录)
+                            <input className="tk-input" data-field="delivery-read-url" value={deliveryReadUrl} onChange={(event) => setDeliveryReadUrl(event.target.value)} placeholder={tp.url || "/t/…"} />
+                          </label>
+                          <p className="tk-note">域名或码不对都会如实记为不一致,不会当作已验证。</p>
+                        </>
+                      ) : null}
+                      <label className="tk-label">
+                        证据引用(可选)
+                        <input className="tk-input" data-field="delivery-evidence" value={deliveryEvidence} onChange={(event) => setDeliveryEvidence(event.target.value)} placeholder="如:回读截图编号" />
+                      </label>
+                      <button className="tk-quiet" type="button" data-action="delivery-event" onClick={() => void recordDeliveryEvent(dlv)}>
+                        记录:{deliveryEventFace(dlvStep)}
+                      </button>
+                    </>
+                  ) : null}
+                  <div className="tk-toolbar">
+                    <button className="tk-quiet" type="button" data-action="delivery-detail" onClick={() => void openDeliveryDetail(dlv)}>看写卡回读记录</button>
+                    {dlv.status !== "delivered" ? (
+                      <button className="tk-quiet" type="button" data-action="delivery-replace" onClick={() => openReplace(dlv)}>补换新卡</button>
+                    ) : null}
+                  </div>
+                  {deliveryDetail?.id === dlv.id ? (
+                    <div data-state="delivery-detail">
+                      {deliveryDetail.events?.length ? (
+                        deliveryDetail.events.map((ev) => (
+                          <p className="tk-note" key={ev.id}>
+                            {deliveryEventFace(ev.event_type)}
+                            {ev.operator_ref ? ` · ${ev.operator_ref}` : ""}
+                            {ev.device_ref ? ` · 设备 ${ev.device_ref}` : ""}
+                            {ev.occurred_at ? ` · ${ev.occurred_at}` : ""}
+                          </p>
+                        ))
+                      ) : (
+                        <p className="tk-note">还没有事实记录。</p>
+                      )}
+                      {deliveryDetail.replacements?.length ? (
+                        deliveryDetail.replacements.map((rep, index) => (
+                          <p className="tk-note" key={index}>{replaceReasonFace(rep.reason_category)}{rep.old_entry_revoked === 1 ? "(旧入口已停用)" : ""}</p>
+                        ))
+                      ) : null}
+                      <button className="tk-quiet" type="button" data-action="close-delivery-detail" onClick={() => setDeliveryDetail(null)}>收起</button>
+                    </div>
+                  ) : null}
+                  {replaceTarget?.id === dlv.id ? (
+                    <div className="tk-card" data-state="delivery-replace">
+                      <label className="tk-label">
+                        补换原因
+                        <select className="tk-select" data-field="replace-reason" value={replaceReason} onChange={(event) => setReplaceReason(event.target.value)}>
+                          <option value="">选补换原因</option>
+                          {replaceReasonList.map((reason) => (
+                            <option key={reason} value={reason}>{replaceReasonFace(reason)}</option>
+                          ))}
+                        </select>
+                      </label>
+                      {replaceReason === "lost_uncontrolled" ? (
+                        <label className="tk-label">
+                          新入口(触点)
+                          <select className="tk-select" data-field="replace-touchpoint" value={replaceTouchpointId} onChange={(event) => setReplaceTouchpointId(event.target.value)}>
+                            <option value="">选新触点(旧入口会停用)</option>
+                            {items.filter((other) => other.id !== dlv.touchpoint_id && other.status === "active").map((other) => (
+                              <option key={other.id} value={other.id}>{other.label || other.tag_label || other.code}</option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
+                      <label className="tk-label">
+                        新物理卡编号(可选)
+                        <input className="tk-input" data-field="replace-unit" value={replaceUnit} onChange={(event) => setReplaceUnit(event.target.value)} placeholder="如:unit-002" />
+                      </label>
+                      <button className="tk-quiet" type="button" data-action="confirm-replace" onClick={() => void submitReplace()}>确认补换</button>
+                      <button className="tk-quiet" type="button" data-action="cancel-replace" onClick={() => setReplaceTarget(null)}>取消</button>
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <p className="tk-note" data-state="delivery-empty">这张卡还没有实体交付记录(硬件订单→出库→绑定→写卡→回读→验收→交付)。</p>
+              )}
             </article>
           );
         })

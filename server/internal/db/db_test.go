@@ -146,6 +146,10 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"tenants",
 		// HUI-1665 增量(0040/0041)
 		"touchpoint_aliases",
+		// HUI-1663 (0129-0131) 实体交付:物理履约/事件账本/补换审计
+		"touchpoint_deliveries",
+		"touchpoint_delivery_events",
+		"touchpoint_delivery_replacements",
 		"touchpoint_events",
 		"video_template_assignments",
 		"video_template_versions",

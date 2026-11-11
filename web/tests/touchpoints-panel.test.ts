@@ -129,3 +129,48 @@ describe("停用/恢复:只动别名,绝不碰共享短码", () => {
     expect(aliasStatusCalls).toBeGreaterThan(0);
   });
 });
+
+// HUI-1663 实体交付插槽:卡片状态/写卡回读记录/补换;批量导出复用既有 CSV。
+describe("HUI-1663 交付插槽(硬件订单→出库→绑定→写卡→回读→验收→交付)", () => {
+  it("加载交付记录端点,按触点映射插槽;取不到如实显示不可用", () => {
+    expect(panel).toContain('"touchpoint-deliveries"');
+    expect(panel).toContain("delivery-unavailable");
+    expect(panel).toContain("delivery-empty");
+  });
+
+  it("录入走 events 端点,幂等键前端生成,操作者不由前端传", () => {
+    expect(panel).toContain("/events");
+    expect(panel).toContain("crypto.randomUUID");
+    const from = panel.indexOf("const body: Record<string, unknown> = {");
+    const call = panel.slice(from, panel.indexOf("await load()", from));
+    expect(call).toContain("event_type");
+    expect(call).toContain("event_id");
+    expect(call).not.toContain("operator");
+  });
+
+  it("回读必须填读到的 URL;未验证语气不冒充已验证", () => {
+    expect(panel).toContain("delivery-read-url");
+    expect(panel).toContain("read_url");
+    expect(panel).toContain("不会当作已验证");
+    expect(panel).toContain("readbackFace");
+  });
+
+  it("stale 如实展示(bindingStaleFace),绑定版本与实测版本并列", () => {
+    expect(panel).toContain("bindingStaleFace");
+    expect(panel).toContain("delivery-binding");
+  });
+
+  it("补换表单区分可回收/遗失,lost 必选新触点", () => {
+    expect(panel).toContain("replace-reason");
+    expect(panel).toContain("replace-touchpoint");
+    expect(panel).toContain("/replace");
+    expect(panel).toContain("lost_uncontrolled");
+    expect(panel).toContain("damaged_recoverable");
+  });
+
+  it("详情展示写卡回读事件账本与补换审计;批量导出仍复用既有 CSV(零改动)", () => {
+    expect(panel).toContain("delivery-detail");
+    expect(panel).toContain("replacements");
+    expect(panel).toContain("download-csv");
+  });
+});
