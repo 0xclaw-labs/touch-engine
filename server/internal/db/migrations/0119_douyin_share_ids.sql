@@ -5,13 +5,13 @@
 -- handoff id 由本表的服务器映射还原(provider_ref 纪律——供应商回调中没有的
 -- 内部标识由此可信映射,不能要求顾客补填后相信)。
 --
--- 每个交接至多一个活跃 share_id(handoff_id 唯一):重试/刷新复用同一
--- share_id,过期作废后由 adapter 重铸新行(旧行保留作审计,不复活)。
+-- 每个交接至多一个活跃 share_id(partial UNIQUE WHERE revoked_at='') :重试/
+-- 刷新复用同一 share_id;过期/换内容作废后由 adapter 重铸新行(旧行保留审计)。
 
 CREATE TABLE douyin_share_ids (
     id                TEXT PRIMARY KEY,                 -- phdsi_* (adapter 铸造)
     tenant_id         TEXT NOT NULL REFERENCES tenants(id),
-    handoff_id        TEXT NOT NULL UNIQUE,             -- publish_handoffs.id(唯一写面纪律:应用层维护引用)
+    handoff_id        TEXT NOT NULL,                    -- publish_handoffs.id(唯一写面纪律:应用层维护引用)
     share_id          TEXT NOT NULL,                    -- 抖音官方关联键(本服务器生成)
     content_version   TEXT NOT NULL DEFAULT '',         -- 交接冻结的快照指纹(换稿=旧 share_id 不认)
     action_id         TEXT NOT NULL DEFAULT '',
@@ -24,3 +24,6 @@ CREATE TABLE douyin_share_ids (
 
 CREATE INDEX idx_douyin_share_ids_tenant ON douyin_share_ids(tenant_id, created_at);
 CREATE INDEX idx_douyin_share_ids_share ON douyin_share_ids(share_id);
+-- 同一交接至多一个活跃 share_id(作废行不占唯一键;审计保留)。
+CREATE UNIQUE INDEX idx_douyin_share_ids_active
+    ON douyin_share_ids(handoff_id) WHERE revoked_at = '';
