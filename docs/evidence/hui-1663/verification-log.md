@@ -40,3 +40,19 @@
 
 - 受控链路（稳定 URL → /t/{code} → /c/{code} → 正确活动）在仓内实证**是通的**，未发现断链，无需最小修复。
 - 硬件项全部 NOT_VERIFIED（见 not-verified.md）；本票实体 NFC 交付不标 Done。
+
+## 5. 2026-11-11 交付域实施轮（TOUCH-ALL-20261109-v1；分支 `touch/hui-1663-nfc-delivery`，基线 1fb747e = wave1+wave2 全合流）
+
+- 范围：交付七步状态机（付款→出库→绑定→写卡→回读→现场验收→交付，不可跳跃）、写卡资料=NFC URL 复用、回读一致性记录、补换两分支、4591 硬件五状态投影接线、M8 交付插槽。
+- 机验载体（全 PASS，实跑）：
+  - `server/internal/delivery/delivery_test.go`：七步管线/跳步矩阵/未知步/终态拒写/4591 步映射/回读核对（错误域名、错误码、Crockford 归一、路径形状闸）。
+  - `server/internal/store/store_touchpoint_deliveries_test.go`：创建闸（跨租户掩码/订单缺失掩码/非硬件订单/付款事实缺失/活交付唯一）、全链事件+投影断言（shipment/write_card/readback/acceptance 操作者与设备一致）、幂等重放零双推、同键异负载冲突、回读不一致不推进不推投影、换绑 stale、补换两分支（recoverable 保留入口/lost 停用旧入口+解析即时停用+继承订单）、封存拒写。
+  - `server/internal/httpapi/server_touchpoint_deliveries_test.go`：HTTP 全旅程（创建→七步→交付；未付款 409；event_id 必填）、幂等重放 replayed/IDEMPOTENCY_CONFLICT/step_skipped/replaced 词表 400、权限矩阵（游客 401/staff 403/经理本店/跨租户 404 掩码含订单跨租户）、换绑后 binding_stale=true、补换 HTTP 全分支+审计随详情返回。
+  - `web/tests/touchpoint-deliveries.test.ts` + `web/tests/touchpoints-panel.test.ts`（HUI-1663 段）：状态/事件文案不冒充已验证、stale 文案、回读一致性恢复动作、补换二值、面板源契约（事件端点/幂等键前端生成/操作者不由前端传/lost 必选新触点/CSV 复用零改动）。
+- 质量门（PR 前自跑，2026-11-11）：
+  - `cd server && go test ./...`：见本轮报告（分支全量实跑输出摘录）。
+  - `cd web && npx vitest run`：**83 文件 / 1041 用例全绿**（含新增 10+6 用例）。
+  - `npx tsc --noEmit`：src 非测试文件 0 错误；残余 7 处全部在 `tests/contrast-gate.test.ts`、`tests/customer-journey-api.test.ts`（他域既有,非本票写面,未动）。
+  - `npm run build`：生产构建通过。
+  - `gofmt -l` / `go vet ./...`：干净。
+- 真机项：**全部保持 NOT_VERIFIED**（not-verified.md A 系 + §D 真机补验清单）。本环境无 NFC 卡/写卡器/真机；交付域工程面（B9–B16）不冒充实体验收；T19 实体卡部分按 §D 清单移交真实环境。
