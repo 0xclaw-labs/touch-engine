@@ -390,13 +390,15 @@ func (s *Server) handleStorefrontPreview(w http.ResponseWriter, r *http.Request)
 
 // ---- shared assembly ---------------------------------------------------------
 
-// handleStoreDealOffersList serves GET /api/v1/stores/{id}/deal-offers — the
-// M3 offers-section picker source (套餐区数据面): active deal offers reachable
+// handleStorefrontDealOffersList serves GET /api/v1/stores/{id}/storefront/deal-offers —
+// the M3 offers-section picker source (套餐区数据面): active deal offers reachable
 // from THIS store (campaigns bound to it), read-only. Whitelist projection:
 // the merchant form needs id/title/kind/issuer/face value; internal fields
 // (authorization_ref / provider_offer_id / campaign wiring / tenant) never
-// leave the server — the offer ledger itself stays HUI-1671's.
-func (s *Server) handleStoreDealOffersList(w http.ResponseWriter, r *http.Request) {
+// leave the server — the offer ledger itself stays HUI-1671's. wave2 集成改名
+// 并移径:与 4590 店级团购套餐目录 CRUD(GET/POST /stores/{id}/deal-offers)
+// 解路由冲突,本读面挂 storefront 段。
+func (s *Server) handleStorefrontDealOffersList(w http.ResponseWriter, r *http.Request) {
 	if !s.storefrontGate(w) {
 		return
 	}

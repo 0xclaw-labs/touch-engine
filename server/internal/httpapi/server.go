@@ -603,7 +603,10 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("POST /api/v1/stores/{id}/storefront/rollback", s.requireSession(s.handleStorefrontRollback))
 		mux.Handle("GET /api/v1/stores/{id}/storefront/revisions", s.requireSession(s.handleStorefrontRevisions))
 		mux.Handle("GET /api/v1/stores/{id}/storefront-preview", s.requireSession(s.handleStorefrontPreview))
-		mux.Handle("GET /api/v1/stores/{id}/deal-offers", s.requireSession(s.handleStoreDealOffersList))
+		// 套餐区数据面挂 storefront 段(wave2 集成让位:GET /stores/{id}/deal-offers
+		// 的主资源是 4590 店级团购套餐目录 CRUD,POST 创建同径;1671 活动套餐只读
+		// 投影改走 storefront 前缀,资源形状不再一文两主)。
+		mux.Handle("GET /api/v1/stores/{id}/storefront/deal-offers", s.requireSession(s.handleStorefrontDealOffersList))
 	}
 
 	mux.Handle("GET /api/v1/admin/members", s.requireSession(s.handleMemberList))

@@ -205,7 +205,7 @@ func TestStorefrontRoutes404WhenFlagOff(t *testing.T) {
 		{"POST", "/api/v1/stores/" + f.store1ID + "/storefront/rollback"},
 		{"GET", "/api/v1/stores/" + f.store1ID + "/storefront/revisions"},
 		{"GET", "/api/v1/stores/" + f.store1ID + "/storefront-preview"},
-		{"GET", "/api/v1/stores/" + f.store1ID + "/deal-offers"},
+		{"GET", "/api/v1/stores/" + f.store1ID + "/storefront/deal-offers"},
 		{"GET", "/api/v1/public/storefronts/sf_anything"},
 	} {
 		status, _ := f.do(t, tc.m, tc.p, "sess-owner-a", f.tenA, "")
@@ -569,7 +569,7 @@ func TestStoreDealOffersListForM3OffersSection(t *testing.T) {
 		t.Fatalf("offer 2: %v", err)
 	}
 
-	status, out := f.owner(t, "GET", "/api/v1/stores/"+f.store1ID+"/deal-offers", "")
+	status, out := f.owner(t, "GET", "/api/v1/stores/"+f.store1ID+"/storefront/deal-offers", "")
 	if status != 200 {
 		t.Fatalf("deal offers = %d %v, want 200", status, out)
 	}
@@ -591,12 +591,12 @@ func TestStoreDealOffersListForM3OffersSection(t *testing.T) {
 	}
 
 	// 无会话不可达(商家会话约束)。
-	status, _ = f.do(t, "GET", "/api/v1/stores/"+f.store1ID+"/deal-offers", "", "", "")
+	status, _ = f.do(t, "GET", "/api/v1/stores/"+f.store1ID+"/storefront/deal-offers", "", "", "")
 	if status != 401 {
 		t.Fatalf("no session = %d, want 401", status)
 	}
 	// 跨租户 404 掩码。
-	status, _ = f.do(t, "GET", "/api/v1/stores/"+f.store1ID+"/deal-offers", "sess-owner-b", f.tenB, "")
+	status, _ = f.do(t, "GET", "/api/v1/stores/"+f.store1ID+"/storefront/deal-offers", "sess-owner-b", f.tenB, "")
 	if status != 404 {
 		t.Fatalf("cross-tenant = %d, want 404", status)
 	}

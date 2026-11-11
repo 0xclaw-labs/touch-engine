@@ -83,7 +83,8 @@ export interface ChannelItem {
   order: number;
 }
 
-// 套餐(来自 /stores/{id}/deal-offers,1671 目录只读)。
+// 套餐(来自 /stores/{id}/storefront/deal-offers,1671 目录只读;wave2 集成移径
+// 让位于 4590 店级团购套餐目录 CRUD)。
 export interface DealOfferItem {
   id: string;
   title: string;

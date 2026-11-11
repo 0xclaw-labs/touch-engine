@@ -126,7 +126,7 @@ export default function StorefrontPageDesk() {
 
   const loadOffers = useCallback(async () => {
     setOffersState("loading");
-    const res = await session.api("GET", `stores/${storeId}/deal-offers`);
+    const res = await session.api("GET", `stores/${storeId}/storefront/deal-offers`);
     if (res.ok) {
       const items = (res.data as unknown as { items?: DealOfferItem[] }).items ?? [];
       setOffers(items);
