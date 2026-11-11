@@ -950,3 +950,39 @@ func (s *Store) GetActionCapabilityByID(id string) (channeladmission.ActionCapab
 	}
 	return r, err
 }
+
+// OpsAssignmentRow is one cross-tenant distribution row (4593 template_assignment).
+type OpsAssignmentRow struct {
+	ID            string `json:"id"`
+	TenantID      string `json:"tenant_id"`
+	StoreID       string `json:"store_id"`
+	TemplateRef   string `json:"template_ref"`
+	SourceVersion string `json:"source_version"`
+	Status        string `json:"status"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
+}
+
+// ListAssignmentsAll reads distribution rows across tenants (ops O5 read).
+func (s *Store) ListAssignmentsAll(limit int) ([]OpsAssignmentRow, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	rows, err := s.DB.Query(
+		`SELECT id,tenant_id,store_id,template_ref,source_version,status,created_at,updated_at
+		 FROM template_assignment ORDER BY updated_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []OpsAssignmentRow{}
+	for rows.Next() {
+		var r OpsAssignmentRow
+		if err := rows.Scan(&r.ID, &r.TenantID, &r.StoreID, &r.TemplateRef, &r.SourceVersion,
+			&r.Status, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

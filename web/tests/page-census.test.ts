@@ -33,7 +33,7 @@ describe("账上路由恰好一条普查", () => {
   it("和账本同一组路由，一条不多一条不少", () => {
     const ledger = pageLedger().map((page) => page.route);
     const census = pageCensus();
-    expect(ledger).toHaveLength(21); // 基线15 + HUI-4584 渠道页 + HUI-4593 设置页/代理台 + HUI-4589 服务页 + HUI-4594 线索页 + HUI-4591 账单页
+    expect(ledger).toHaveLength(27); // 基线15 + 4584 渠道页 + 4593 设置页/代理台 + 4589 服务页 + 4594 线索页 + 4591 账单页 + 4592 运营六视图
     expect(census.map((page) => page.route)).toEqual(ledger);
     expect(new Set(census.map((page) => page.route)).size).toBe(census.length);
     expect(census.some((page) => page.route === "/login" || page.route.startsWith("/api"))).toBe(false);
@@ -126,12 +126,19 @@ describe("surface 归类", () => {
       ["/agency", "work"],
       // HUI-4591:M12 订购与账单是商家工作台账单页。
       ["/work/billing", "work"],
+      // HUI-4592:平台运营控制台六视图归 admin 表面(平台管理面,非商家后台)。
+      ["/ops/tenants", "admin"],
+      ["/ops/plans", "admin"],
+      ["/ops/orders", "admin"],
+      ["/ops/channels", "admin"],
+      ["/ops/templates", "admin"],
+      ["/ops/operations", "admin"],
       ["/c/[code]", "public"],
       ["/c/[code]/contact", "public"],
       // HUI-1665:/t 稳定入口是公开消费者面。
       ["/t/[code]", "public"],
     ]);
-    expect(want.size).toBe(21); // 基线15 + HUI-4584 渠道页 + HUI-4593 设置页/代理台 + HUI-4589 服务页 + HUI-4594 线索页 + HUI-4591 账单页
+    expect(want.size).toBe(27); // 基线15 + 4584 渠道页 + 4593 设置页/代理台 + 4589 服务页 + 4594 线索页 + 4591 账单页 + 4592 运营六视图
     for (const page of pageCensus()) {
       expect(page.surface).toBe(classifySurface(page.route, page.id));
       expect(page.surface).toBe(want.get(page.route));
@@ -261,9 +268,16 @@ describe("半成品标记", () => {
       ["/agency", []],
       // HUI-4591:M12 订购与账单页面是薄壳,交互全部在组件里,页面源零标记。
       ["/work/billing", []],
+      // HUI-4592:运营六页全部是薄壳,交互在 components/ops/*,页面源零标记。
+      ["/ops/tenants", []],
+      ["/ops/plans", []],
+      ["/ops/orders", []],
+      ["/ops/channels", []],
+      ["/ops/templates", []],
+      ["/ops/operations", []],
     ]);
     const census = pageCensus();
-    expect(want.size).toBe(21); // 基线15 + HUI-4584 渠道页 + HUI-4593 设置页/代理台 + HUI-4589 服务页 + HUI-4594 线索页 + HUI-4591 账单页
+    expect(want.size).toBe(27); // 基线15 + 4584 渠道页 + 4593 设置页/代理台 + 4589 服务页 + 4594 线索页 + 4591 账单页 + 4592 运营六视图
     expect(census).toHaveLength(want.size);
     for (const page of census) {
       const source = readPage(page.file);

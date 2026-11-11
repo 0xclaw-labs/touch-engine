@@ -49,6 +49,9 @@ export interface PageCensus {
 // 路径里出现 /admin 优先。其后才看模式编号。比较精确。
 export function classifySurface(route: string, patternId: string): Surface {
   if (route.includes("/admin")) return "admin";
+  // HUI-4592: /ops 是平台运营控制台(真正意义上的管理面),归 admin 表面;
+  // /admin 仍按既有口径记账(旧商家后台,不改历史语义)。
+  if (route.startsWith("/ops/")) return "admin";
   if (patternId === "public_consumer") return "public";
   if (patternId === "editor_shell") return "editor";
   if (patternId === "portal" || patternId === "login") return "portal";
@@ -120,6 +123,13 @@ const markerBook: readonly { route: string; markers: readonly Marker[] }[] = [
   { route: "/agency", markers: [] },
   // HUI-4591:M12 订购与账单页面是薄壳,交互全部在组件里,页面源零标记。
   { route: "/work/billing", markers: [] },
+  // HUI-4592:平台运营控制台六页全部是薄壳,交互在 components/ops/*,零标记。
+  { route: "/ops/tenants", markers: [] },
+  { route: "/ops/plans", markers: [] },
+  { route: "/ops/orders", markers: [] },
+  { route: "/ops/channels", markers: [] },
+  { route: "/ops/templates", markers: [] },
+  { route: "/ops/operations", markers: [] },
 ];
 
 function sameMarkers(recorded: readonly Marker[], scanned: readonly Marker[]): boolean {

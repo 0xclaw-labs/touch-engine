@@ -89,6 +89,14 @@ const recorded: readonly { route: string; id: PatternId; regions: readonly strin
   { route: "/work/leads", id: "list", regions: ["primary_action", "status", "empty"] },
   // HUI-4593 A1 代理工作台(授权商户/受控进入/配置入口/续费协助;硬件与结算诚实空态)。
   { route: "/agency", id: "list", regions: ["primary_action", "status", "empty"] },
+  // HUI-4592 平台运营控制台六视图(共享壳 /ops layout;每视图真实读面+操作)。
+  { route: "/ops/tenants", id: "list", regions: ["primary_action", "status", "empty"] },
+  { route: "/ops/plans", id: "list", regions: ["primary_action", "status", "empty"] },
+  { route: "/ops/orders", id: "list", regions: ["primary_action", "status", "empty"] },
+  { route: "/ops/channels", id: "list", regions: ["primary_action", "status", "empty"] },
+  { route: "/ops/templates", id: "list", regions: ["primary_action", "status", "empty"] },
+  // O6 运行与交付台是聚合工作视图(探针/工单/演练/操作追踪),记 workspace。
+  { route: "/ops/operations", id: "workspace", regions: ["primary_action", "status", "empty"] },
 ];
 
 export function patternIds(): string[] {

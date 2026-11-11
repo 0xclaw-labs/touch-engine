@@ -412,8 +412,13 @@ func (s *Server) handleOpsTemplatesList(w http.ResponseWriter, r *http.Request) 
 		fail(w, http.StatusInternalServerError, "internal", "content version listing failed")
 		return
 	}
+	assignments, err := s.St.ListAssignmentsAll(100)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "assignment listing failed")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"templates": templates, "content_versions": versions,
+		"templates": templates, "content_versions": versions, "assignments": assignments,
 		"note": "this view manages directory references, distribution and retraction commands; assets stay in their owning domains",
 	})
 }
