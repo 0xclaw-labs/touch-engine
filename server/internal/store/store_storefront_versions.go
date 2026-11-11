@@ -694,10 +694,15 @@ func (s *Store) actionContentState(tenantID, actionID string, at time.Time) stri
 	return storefrontversion.ContentOK
 }
 
-// ListStoreDealOffers lists the deal offers (1671 目录,只读) reachable from
-// this store: offers of campaigns bound to the store. Read-only SELECT join;
-// the offer ledger stays 1671's.
-func (s *Store) ListStoreDealOffers(tenantID, storeID string) ([]DealOffer, error) {
+// ListStoreCampaignDealOffers lists the deal offers (1671 目录,只读) reachable
+// from this store: offers of campaigns bound to the store. Read-only SELECT
+// join; the offer ledger stays 1671's.
+//
+// wave2 集成改名:1676 分支带来的本方法与 4590 store_deal_offers 清单
+// (ListStoreDealOffers)同名不同型,合流未捕获致 main 编译破裂;本方法读的
+// 是 1671 campaign deal_offers,按域改名为 ListStoreCampaignDealOffers
+// (4590 的店级套餐目录方法名保持不动,其调用面 handlers_deals 零改动)。
+func (s *Store) ListStoreCampaignDealOffers(tenantID, storeID string) ([]DealOffer, error) {
 	rs, err := s.DB.Query(`SELECT d.id,d.tenant_id,d.campaign_id,d.kind,d.issuer,d.provider,
 		d.provider_offer_id,d.authorization_ref,d.title,d.face_value_minor,d.currency,
 		d.valid_from,d.valid_until,d.status,d.note,d.created_by,d.created_at

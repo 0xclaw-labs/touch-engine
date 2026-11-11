@@ -408,7 +408,7 @@ func (s *Server) handleStoreDealOffersList(w http.ResponseWriter, r *http.Reques
 	if !s.requireScopedAction(c, authz.ActionReadRecord, authz.RecordScope{TenantID: c.Member.TenantID, StoreID: rec.ID}, true, w) {
 		return
 	}
-	offers, err := s.St.ListStoreDealOffers(c.Member.TenantID, rec.ID)
+	offers, err := s.St.ListStoreCampaignDealOffers(c.Member.TenantID, rec.ID)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "internal", "deal offers lookup failed")
 		return

@@ -445,7 +445,7 @@ func TestGetStorefrontPublishedByCodeWithoutPublication(t *testing.T) {
 	}
 }
 
-func TestListStoreDealOffersByStore(t *testing.T) {
+func TestListStoreCampaignDealOffersByStore(t *testing.T) {
 	st, ten, store, _ := newStorefrontFixture(t)
 	cp, err := st.CreateCampaign(NewCampaign{TenantID: ten, StoreID: store, Title: "套餐活动", PublicContent: "c", CreatedBy: "seed"})
 	if err != nil {
@@ -470,7 +470,7 @@ func TestListStoreDealOffersByStore(t *testing.T) {
 		Issuer: "merchant", Title: "别家券", FaceValueMinor: 100, CreatedBy: "seed"}); err != nil {
 		t.Fatalf("offer 2: %v", err)
 	}
-	got, err := st.ListStoreDealOffers(ten, store)
+	got, err := st.ListStoreCampaignDealOffers(ten, store)
 	if err != nil || len(got) != 1 || got[0].ID != off.ID {
 		t.Fatalf("offers = %+v err %v", got, err)
 	}
