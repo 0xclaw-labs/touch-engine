@@ -53,6 +53,26 @@ interface BenefitItem extends RedemptionBenefit {
 type BarcodeDetectorLike = { detect: (video: HTMLVideoElement) => Promise<Array<{ rawValue: string }>> };
 type BarcodeDetectorCtor = new (options: { formats?: string[] }) => BarcodeDetectorLike;
 
+interface ServiceHistoryRow {
+  id: string;
+  op: string;
+  benefit_id: string;
+  actor: string;
+  reason: string;
+  created_at: string;
+}
+
+function opText(op: string): string {
+  switch (op) {
+    case "reserve": return "预留";
+    case "issue": return "发放";
+    case "redeem": return "核销";
+    case "reverse": return "更正撤销";
+    case "expire": return "到期";
+    default: return op;
+  }
+}
+
 function barcodeDetectorCtor(): BarcodeDetectorCtor | null {
   if (typeof window === "undefined") return null;
   return (window as unknown as { BarcodeDetector?: BarcodeDetectorCtor }).BarcodeDetector ?? null;
@@ -79,6 +99,9 @@ export function ServiceDesk() {
   const [scanText, setScanText] = useState("");
   const [couponText, setCouponText] = useState("");
   const [scanNote, setScanNote] = useState("");
+  // HUI-3562 S2:本店处理历史(台账投影,只读;交班统计=当日按操作者聚合)。
+  const [history, setHistory] = useState<ServiceHistoryRow[]>([]);
+  const [historyLoadedAt, setHistoryLoadedAt] = useState("");
   const [actionNote, setActionNote] = useState("");
   const [cameraMode, setCameraMode] = useState<"idle" | "camera" | "manual">("idle");
 
@@ -159,6 +182,19 @@ export function ServiceDesk() {
       alive = false;
     };
   }, [campaignId, loadRecords]);
+
+  const loadHistory = useCallback(async () => {
+    if (!storeScope) return;
+    const res = await session.api("GET", `stores/${storeScope}/service-history?limit=200`).catch(() => null);
+    if (res && res.ok && Array.isArray(res.data.items)) {
+      setHistory(res.data.items as ServiceHistoryRow[]);
+      setHistoryLoadedAt(new Date().toLocaleTimeString("zh-CN", { hour12: false }));
+    }
+  }, [session, storeScope]);
+
+  useEffect(() => {
+    void loadHistory().catch(() => {});
+  }, [loadHistory]);
 
   const reloadCardContext = useCallback(
     async (cid: string) => {
@@ -561,6 +597,46 @@ export function ServiceDesk() {
             {reverseAllowed ? (
               <p className="tk-note" data-field="reverse-note">更正撤销在核销卡里，仅总部角色可用，且必须注明原因。</p>
             ) : null}
+          </section>
+
+          <section className="tk-section" data-field="service-history" aria-label="处理历史">
+            <h2 className="tk-subtitle">处理历史(本店台账,只读)</h2>
+            <p className="tk-note">
+              交班参考:以下为本店最近处理记录与当日按操作者聚合(仅本地事实,不含平台证实)。
+              {historyLoadedAt ? ` 拉取于 ${historyLoadedAt}。` : ""}
+            </p>
+            <button className="tk-quiet" type="button" data-action="refresh-history" onClick={() => void loadHistory()}>
+              重查处理历史
+            </button>
+            {(() => {
+              const today = new Date().toISOString().slice(0, 10);
+              const perActor = new Map<string, number>();
+              for (const row of history) {
+                if (row.created_at.slice(0, 10) === today) {
+                  perActor.set(row.actor, (perActor.get(row.actor) ?? 0) + 1);
+                }
+              }
+              if (perActor.size === 0) return <p className="tk-note" data-field="shift-empty">今日本店暂无处理记录。</p>;
+              return (
+                <ul className="tk-list" data-field="shift-stats">
+                  {[...perActor.entries()].map(([actor, n]) => (
+                    <li key={actor}>今日 {actor || "(未记操作者)"}: {n} 笔</li>
+                  ))}
+                </ul>
+              );
+            })()}
+            {history.length === 0 ? (
+              <p className="tk-note" data-field="history-empty">还没有处理记录。</p>
+            ) : (
+              <ul className="tk-list" data-field="history-list">
+                {history.slice(0, 50).map((row) => (
+                  <li key={row.id} data-op={row.op}>
+                    {row.created_at.slice(0, 19).replace("T", " ")} · {opText(row.op)} · 操作者 {row.actor || "(未记)"}
+                    {row.reason ? ` · ${row.reason}` : ""}
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
 
           {actionNote ? (

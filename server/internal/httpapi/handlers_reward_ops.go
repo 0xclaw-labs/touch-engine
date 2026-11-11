@@ -17,6 +17,7 @@
 package httpapi
 
 import (
+	"strconv"
 	"encoding/json"
 	"errors"
 	"io"
@@ -55,6 +56,8 @@ func (s *Server) registerRewardOpsRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/v1/campaigns/{id}/reward-benefits/{benefitId}/redeem", s.requireSession(s.handleRewardRedeem))
 	mux.Handle("POST /api/v1/campaigns/{id}/reward-benefits/{benefitId}/reverse", s.requireSession(s.handleRewardReverse))
 	mux.Handle("GET /api/v1/campaigns/{id}/reward-summary", s.requireSession(s.handleRewardSummary))
+	// HUI-3562 S2 处理历史(本店台账投影;纯只读,重查用)。
+	mux.Handle("GET /api/v1/stores/{id}/service-history", s.requireSession(s.handleStoreServiceHistory))
 
 	// Trusted service call (internal token; G2 participation service).
 	mux.Handle("POST /internal/v1/reward-reservations", s.requireInternal(s.handleRewardReserve))
@@ -606,4 +609,30 @@ func (s *Server) handleRewardExternalIssuances(w http.ResponseWriter, r *http.Re
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// GET /api/v1/stores/{id}/service-history —— S2 处理历史（HUI-3562）：
+// 本店 reward_operations 台账投影（reserve/issue/redeem/reverse/expire 五态），
+// 纯只读；staff/经理/负责人均可读本店（各自 scope 检查照旧）；无第二套账。
+func (s *Server) handleStoreServiceHistory(w http.ResponseWriter, r *http.Request) {
+	c := callerFrom(r)
+	rec, ok := s.storeForActions(w, r, c)
+	if !ok {
+		return
+	}
+	if !s.requireScopedAction(c, authz.ActionReadRecord, authz.RecordScope{TenantID: c.Member.TenantID, StoreID: rec.ID}, true, w) {
+		return
+	}
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+	items, err := s.St.ListStoreServiceHistory(c.Member.TenantID, rec.ID, limit)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "service history lookup failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "count": len(items)})
 }

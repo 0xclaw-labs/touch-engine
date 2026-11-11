@@ -468,3 +468,39 @@ func (s *Store) latestExternalIssuanceForBenefit(tenantID, benefitID string) (Ex
 	}
 	return e, err
 }
+
+// ServiceHistoryRow is one staff-facing processing record (S2, HUI-3562):
+// a reward_operations ledger line projected for the store counter.
+type ServiceHistoryRow struct {
+	ID        string `json:"id"`
+	Op        string `json:"op"`
+	BenefitID string `json:"benefit_id"`
+	Actor     string `json:"actor"`
+	Reason    string `json:"reason"`
+	CreatedAt string `json:"created_at"`
+}
+
+// ListStoreServiceHistory returns the store's recent reward ledger lines,
+// newest first (S2 处理历史/重查;纯只读,无第二套账)。limit>200 钳到 200。
+func (s *Store) ListStoreServiceHistory(tenantID, storeID string, limit int) ([]ServiceHistoryRow, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 200
+	}
+	rows, err := s.DB.Query(
+		`SELECT id,op,benefit_id,actor,reason,created_at FROM reward_operations
+		 WHERE tenant_id=? AND store_id=? ORDER BY created_at DESC, id DESC LIMIT ?`,
+		tenantID, storeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ServiceHistoryRow{}
+	for rows.Next() {
+		var r ServiceHistoryRow
+		if err := rows.Scan(&r.ID, &r.Op, &r.BenefitID, &r.Actor, &r.Reason, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
