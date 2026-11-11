@@ -555,6 +555,14 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/touchpoints/{id}/stage", s.requireSession(s.handleTouchpointStage))
 	mux.Handle("GET /api/v1/touchpoints/{id}/qrcode", s.requireSession(s.handleTouchpointQRCode))
 
+	// HUI-1663 实体交付:出库/绑定/写卡/回读/验收/交付与补换(七步事实账本;
+	// 付款事实归 4591 订单投影只读前置,出库→验收同事务推其五状态投影)。
+	mux.Handle("GET /api/v1/touchpoint-deliveries", s.requireSession(s.handleTouchpointDeliveryList))
+	mux.Handle("POST /api/v1/touchpoint-deliveries", s.requireSession(s.handleTouchpointDeliveryCreate))
+	mux.Handle("GET /api/v1/touchpoint-deliveries/{id}", s.requireSession(s.handleTouchpointDeliveryGet))
+	mux.Handle("POST /api/v1/touchpoint-deliveries/{id}/events", s.requireSession(s.handleTouchpointDeliveryEvent))
+	mux.Handle("POST /api/v1/touchpoint-deliveries/{id}/replace", s.requireSession(s.handleTouchpointDeliveryReplace))
+
 	// 公共稳定入口解析(FEATURE_TOUCHPOINT_ENTRY 默认 off;off = 路由不注册且
 	// handler gate 再答统一 404 —— 双保险,同 FEATURE_DASHBOARD 写法)。GET-only,
 	// 白名单 {state}/{state,code};available 交既有 /c/{code} 呈现(1896 零重复),
