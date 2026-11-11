@@ -57,9 +57,12 @@ export function probeShareSupport(nav?: {
 }): ShareSupport {
   const n = nav ?? (typeof navigator !== "undefined" ? navigator : undefined);
   if (!n || typeof n.share !== "function") return "unavailable";
+  // canShare 缺席/拒绝=无法证实文件分享能力 → 降级 share_url_only(不伪证)。
   let filesOk = false;
   try {
-    filesOk = typeof n.canShare === "function" ? n.canShare({ files: [new File([""], "probe", { type: "image/jpeg" })] }) : true;
+    filesOk = typeof n.canShare === "function"
+      ? n.canShare({ files: [new File([""], "probe", { type: "image/jpeg" })] })
+      : false;
   } catch {
     filesOk = false;
   }

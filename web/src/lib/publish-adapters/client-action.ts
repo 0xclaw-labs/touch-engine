@@ -100,19 +100,21 @@ export interface DetectedEnvironment {
 }
 
 // detectEnvironment classifies the runtime from UA facts (六环境检测的诚实
-// 边界:target_app 由宿主声明,网页侧检不出 → null).
+// 边界:target_app 由宿主声明,网页侧检不出 → null;无任何平台标记的可识别性
+// 不足 → null,由调用面按保守步骤处理).
 export function detectEnvironment(ua: string, opts?: { wechatOverride?: boolean }): DetectedEnvironment {
   const text = (ua ?? "").toLowerCase();
   const wechat = opts?.wechatOverride ?? text.includes("micromessenger");
-  const mobile = /iphone|ipad|ipod|android/.test(text);
   const ios = /iphone|ipad|ipod/.test(text);
   const android = text.includes("android");
+  const desktop = /macintosh|windows|cros|x11/.test(text);
+  const mobile = ios || android;
   let environment: HandoffEnvironment | null = null;
   if (wechat && ios) environment = "ios_wechat";
   else if (wechat && android) environment = "android_wechat";
   else if (ios) environment = "ios_safari";
   else if (android) environment = "android_browser";
-  else if (!mobile) environment = "desktop_browser";
+  else if (desktop) environment = "desktop_browser";
   return { environment, wechat, mobile };
 }
 

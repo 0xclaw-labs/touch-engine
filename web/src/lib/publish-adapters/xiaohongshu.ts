@@ -36,9 +36,9 @@ export type XhsModel = XhsHandoffModel | XhsUnavailable;
 
 const BANNED_TEXT_KEYS = ["title", "content", "topics", "desc", "text"] as const;
 
-// XhsJsSdkLoader: 部署方接入官方 JS SDK 时注册的装载器缝。默认无注册 =
-// invoke 诚实不可用(本模块绝不内嵌/伪装平台脚本)。
-export type XhsJsSdkLoader = () => Promise<unknown>;
+// XhsJsSdkLoader: 部署方接入官方 JS SDK 时注册的装载器缝(接收已校验的媒体
+// 载荷)。默认无注册 = invoke 诚实不可用(本模块绝不内嵌/伪装平台脚本)。
+export type XhsJsSdkLoader = (payload: XhsMediaPayload) => Promise<unknown>;
 
 let xhsSdkLoader: XhsJsSdkLoader | null = null;
 
@@ -56,7 +56,7 @@ export async function invokeXhsJs(payload: XhsMediaPayload): Promise<unknown> {
   if (!xhsSdkLoader) {
     throw new Error("xiaohongshu official JS SDK is not wired in this deployment; the handoff stays manual");
   }
-  return xhsSdkLoader()(payload);
+  return xhsSdkLoader(payload);
 }
 
 // parseXhsPayload validates the server-issued media payload. 红线自检:载荷
