@@ -780,3 +780,55 @@ func (s *Server) auditResultReturn(serviceID, handoffID, sourceApp, eventID, res
 	}
 	s.Log.Print(line)
 }
+
+// POST /api/v1/stores/{id}/content-production-handoffs/{handoffId}/retry ——
+// Walk E 走查收口：registered(未提交)行的重试提交面。纪律：仅 recorded 行可重试
+// （submitted/produced/终态一律 409）；不新建行、不重新核价、不重复消费
+// （幂等键原样复用，外部任务权威按同键去重）；任务权威未接通=503 如实。
+func (s *Server) handleProductionHandoffRetry(w http.ResponseWriter, r *http.Request) {
+	c := callerFrom(r)
+	if !s.packTenantAction(c, authz.ActionManageContentPacks, w) {
+		return
+	}
+	tenantID := c.Member.TenantID
+	storeID := r.PathValue("id")
+	if _, err := s.St.GetStore(storeID, tenantID); err != nil {
+		packStoreFail(w, err)
+		return
+	}
+	h, err := s.St.GetProductionHandoff(tenantID, r.PathValue("handoffId"))
+	if err != nil {
+		packStoreFail(w, err)
+		return
+	}
+	if h.Status != "recorded" {
+		fail(w, http.StatusConflict, "not_retryable", "只有已登记(未提交)的发起可以重试提交;其它状态以列表事实为准")
+		return
+	}
+	if !(s.Cfg.FeatureTask && s.ProductionTasks.Ready()) {
+		fail(w, http.StatusServiceUnavailable, "task_authority_unavailable",
+			"公共任务权威仍未接通:这次重试没有送出;稍后再试同一凭据(不重复建工程、不重复计费)")
+		return
+	}
+	params, _ := json.Marshal(map[string]string{
+		"handoff_id": h.ID, "store_id": h.StoreID, "pack_id": h.PackID, "quote_ref": h.QuoteRef,
+	})
+	taskRef, terr := s.ProductionTasks.Submit(r.Context(), production.TaskSubmission{
+		IdempotencyKey: h.IdempotencyKey, AccountID: c.Member.PrincipalRef,
+		Kind: "touch_content_production", ParamsJSON: string(params),
+	})
+	if terr != nil {
+		fail(w, http.StatusServiceUnavailable, "task_submit_failed",
+			"公共任务权威仍未受理:这次重试没有送出;稍后再试同一凭据(不重复建工程、不重复计费)")
+		return
+	}
+	marked, merr := s.St.MarkProductionHandoffSubmitted(tenantID, h.ID, taskRef)
+	if merr != nil {
+		fail(w, http.StatusInternalServerError, "internal", "任务已受理但引用落库失败;请刷新查看(不重复提交)")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"handoff": productionHandoffView(marked),
+		"notes":   []string{"重试提交成功(同一凭据,未建新工程):任务 " + taskRef + ",处理中。"},
+	})
+}

@@ -504,6 +504,7 @@ func (s *Server) Handler() http.Handler {
 	// /api/v1/internal/* 不在公共 BFF 透传范围,web BFF 拒绝 internal 段)。
 	mux.Handle("POST /api/v1/stores/{id}/content-production-handoffs", s.requireSession(s.handleStoreContentProductionHandoffCreate))
 	mux.Handle("GET /api/v1/stores/{id}/content-production-handoffs", s.requireSession(s.handleStoreContentProductionHandoffList))
+	mux.Handle("POST /api/v1/stores/{id}/content-production-handoffs/{handoffId}/retry", s.requireSession(s.handleProductionHandoffRetry))
 	mux.Handle("GET /api/v1/stores/{id}/content-production-handoffs/capabilities", s.requireSession(s.handleStoreContentProductionCapabilities))
 	mux.Handle("POST /api/v1/internal/content-production-handoffs/{handoffId}/results", s.requireContentReturnProducer(s.handleContentProductionResultReturn))
 

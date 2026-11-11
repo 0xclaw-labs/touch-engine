@@ -196,6 +196,28 @@ export function StoreProductionPanel({ storeId }: { storeId: string }) {
     }
   }
 
+  const retryHandoff = useCallback(async (handoffId: string) => {
+    setBusy(true);
+    setError("");
+    setNote("");
+    try {
+      const res = await session.api("POST", `stores/${storeId}/content-production-handoffs/${handoffId}/retry`, {});
+      const data = (res.data ?? {}) as { handoff?: ProductionHandoffRow; notes?: string[]; message?: string };
+      if (res.ok) {
+        setNoteKind("ok");
+        setNote((data.notes && data.notes.join(" ")) || "重试提交成功,处理中。");
+      } else {
+        setNoteKind("unknown");
+        setNote(data.message || failureText(res.status, data));
+      }
+    } catch {
+      setError("重试没有完成(没有连上服务)。原发起保持已登记状态。");
+    } finally {
+      setBusy(false);
+      await load().catch(() => {});
+    }
+  }, [session, storeId, load]);
+
   return (
     <section className="tk-section" data-testid="store-production-panel" data-store-id={storeId}>
       <h3 className="tk-label">发起真实制作(不需要先有活动或已采用内容)</h3>
@@ -279,6 +301,19 @@ export function StoreProductionPanel({ storeId }: { storeId: string }) {
                   {h.task_ref ? ` · 平台任务 ${h.task_ref}` : " · 尚无平台任务(未接通不伪造)"}
                   {h.last_charge_ref ? ` · 费用引用 ${h.last_charge_ref}` : ""}
                 </p>
+                {/* Walk E 走查收口：登记(未提交)行的重试面——同一凭据重试提交，
+                    不新建工程、不重新核价。 */}
+                {h.status === "recorded" ? (
+                  <button
+                    className="tk-quiet"
+                    type="button"
+                    data-action="retry-handoff"
+                    disabled={busy}
+                    onClick={() => void retryHandoff(h.id)}
+                  >
+                    重试提交(同一凭据,不新建工程)
+                  </button>
+                ) : null}
                 {(h.results ?? []).length > 0 ? (
                   <ul className="tk-list">
                     {(h.results ?? []).map((r) => (
