@@ -58,11 +58,18 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"customer_publish_attempts",
 		// HUI-1671 增量(0068-0072)
 		"deal_offers",
+		// HUI-4585 平台适配器表(0119-0120)
+		"douyin_provider_refs",
+		"douyin_share_ids",
 		// HUI-4590 (0087) 外部券核销尝试
 		"external_voucher_attempts",
 		"extra_jump_actions",
 		"extra_jump_clicks",
 		"handoff_credentials",
+		// HUI-4587 快手 OAuth state/token 与投稿任务(0122-0123)
+		"kuaishou_oauth_states",
+		"kuaishou_oauth_tokens",
+		"kuaishou_publish_jobs",
 		"lead_audit",
 		"lead_forms",
 		"lead_receipts",
@@ -142,6 +149,8 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"video_templates",
 		// HUI-4589 (0081) 企微回调日志（digest-only）
 		"wecom_callback_log",
+		// HUI-4586 小红书 JS 交接载荷签发(0121)
+		"xiaohongshu_handoff_refs",
 	}
 	got, err := TableNames(d)
 	if err != nil {
