@@ -326,10 +326,21 @@ func TestStoreActionsMerchantSurface(t *testing.T) {
 		}
 	}
 
-	// 鉴权矩阵：staff 可写；本店经理可写；他店经理 403；跨租户 404。
+	// 鉴权矩阵（HUI-3531 Walk D 裁定修订）：staff 无显式授权不得写新配置面
+	// （403；member_permission_grant 显式授权是唯一通路，本夹具未授予）；本店
+	// 经理可写；他店经理 403；跨租户 404。
 	// （上面幽灵包那轮 Replace 先落一次修订后绑定失败,行值已还原但修订照实
 	// 占位留痕——当前修订=4,这里从 4 起步。）
-	status, _, staffPut := f.do(t, "PUT", "/api/v1/stores/"+af.stoA+"/actions", af.sessStaff, af.tenA, `{"expected_revision":4,"items":[
+	staffBody := `{"expected_revision":4,"items":[
+		{"action_id":"`+ids[0]+`","catalog_code":"A08","label":"大众点评","target_ref":"https://www.dianping.com/shop/changed","order":5,"enabled":true},
+		{"action_id":"`+ids[1]+`","catalog_code":"A17","label":"门店 Wi-Fi","target_ref":"https://shop.example.com/wifi","order":2,"enabled":true},
+		{"catalog_code":"A13","label":"抖音关注","target_ref":"https://www.douyin.com/user/7","order":3,"enabled":true}
+	]}`
+	status, _, _ = f.do(t, "PUT", "/api/v1/stores/"+af.stoA+"/actions", af.sessStaff, af.tenA, staffBody)
+	if status != http.StatusForbidden {
+		t.Fatalf("staff put without explicit grant = %d, want 403", status)
+	}
+	status, _, staffPut := f.do(t, "PUT", "/api/v1/stores/"+af.stoA+"/actions", af.sessMgrA, af.tenA, `{"expected_revision":4,"items":[
 		{"action_id":"`+ids[0]+`","catalog_code":"A08","label":"大众点评","target_ref":"https://www.dianping.com/shop/changed","order":5,"enabled":true},
 		{"action_id":"`+ids[1]+`","catalog_code":"A17","label":"门店 Wi-Fi","target_ref":"https://shop.example.com/wifi","order":2,"enabled":true},
 		{"catalog_code":"A13","label":"抖音关注","target_ref":"https://www.douyin.com/user/7","order":3,"enabled":true}

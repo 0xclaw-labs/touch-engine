@@ -78,13 +78,28 @@ func dealsError(w http.ResponseWriter, err error) {
 // storeDealScope resolves the store within the caller's tenant and authorizes
 // action on it. mask404 matches store-actions discipline (out-of-scope reads
 // of existing stores answer 404, target-parameter writes answer 403).
-func (s *Server) storeDealScope(w http.ResponseWriter, r *http.Request, action authz.Action, mask404 bool) (*caller, store.StoreRecord, bool) {
+// storeDealReadScope keeps the legacy read semantics (ActionReadRecord) for
+// read faces; config writes go through storeDealScope's permission floor.
+func (s *Server) storeDealReadScope(w http.ResponseWriter, r *http.Request, mask404 bool) (*caller, store.StoreRecord, bool) {
 	c := callerFrom(r)
 	rec, ok := s.storeForActions(w, r, c)
 	if !ok {
 		return nil, store.StoreRecord{}, false
 	}
-	if !s.requireScopedAction(c, action, authz.RecordScope{TenantID: c.Member.TenantID, StoreID: rec.ID}, mask404, w) {
+	if !s.requireScopedAction(c, authz.ActionReadRecord, authz.RecordScope{TenantID: c.Member.TenantID, StoreID: rec.ID}, mask404, w) {
+		return nil, store.StoreRecord{}, false
+	}
+	return c, rec, true
+}
+
+func (s *Server) storeDealScope(w http.ResponseWriter, r *http.Request, perm authz.Permission, mask404 bool) (*caller, store.StoreRecord, bool) {
+	c := callerFrom(r)
+	rec, ok := s.storeForActions(w, r, c)
+	if !ok {
+		return nil, store.StoreRecord{}, false
+	}
+	// Walk D 收口:deal 配置写面走 B11 权限地板(见 requireStoreConfig)。
+	if !s.requireStoreConfig(c, perm, authz.RecordScope{TenantID: c.Member.TenantID, StoreID: rec.ID}, mask404, w) {
 		return nil, store.StoreRecord{}, false
 	}
 	return c, rec, true
@@ -135,7 +150,7 @@ func decodeDealBody(w http.ResponseWriter, r *http.Request) (dealOfferBody, bool
 }
 
 func (s *Server) handleStoreDealOfferCreate(w http.ResponseWriter, r *http.Request) {
-	c, rec, ok := s.storeDealScope(w, r, authz.ActionUpdate, false)
+	c, rec, ok := s.storeDealScope(w, r, authz.PermActionManageDeal, false)
 	if !ok {
 		return
 	}
@@ -174,7 +189,7 @@ func (s *Server) handleStoreDealOfferCreate(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handleStoreDealOffersGet(w http.ResponseWriter, r *http.Request) {
-	c, rec, ok := s.storeDealScope(w, r, authz.ActionReadRecord, true)
+	c, rec, ok := s.storeDealReadScope(w, r, true)
 	if !ok {
 		return
 	}
@@ -233,7 +248,7 @@ func dealItemDocument(o store.StoreDealOffer, now time.Time) map[string]any {
 }
 
 func (s *Server) handleStoreDealOfferUpdate(w http.ResponseWriter, r *http.Request) {
-	c, rec, ok := s.storeDealScope(w, r, authz.ActionUpdate, true)
+	c, rec, ok := s.storeDealScope(w, r, authz.PermActionManageDeal, true)
 	if !ok {
 		return
 	}
@@ -295,7 +310,7 @@ func optionalStr(v string) *string {
 }
 
 func (s *Server) handleStoreDealOfferStatus(w http.ResponseWriter, r *http.Request) {
-	c, rec, ok := s.storeDealScope(w, r, authz.ActionUpdate, true)
+	c, rec, ok := s.storeDealScope(w, r, authz.PermActionManageDeal, true)
 	if !ok {
 		return
 	}
@@ -349,7 +364,7 @@ func decodeDealCouponBody(w http.ResponseWriter, r *http.Request) (dealCouponBod
 }
 
 func (s *Server) handleExternalVoucherInspect(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.storeDealScope(w, r, authz.ActionReadRecord, true)
+	c, _, ok := s.storeDealReadScope(w, r, true)
 	if !ok {
 		return
 	}
@@ -378,7 +393,7 @@ func (s *Server) handleExternalVoucherInspect(w http.ResponseWriter, r *http.Req
 }
 
 func (s *Server) handleExternalVoucherRedeem(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.storeDealScope(w, r, authz.ActionUpdate, true)
+	c, _, ok := s.storeDealScope(w, r, authz.PermActionManageDeal, true)
 	if !ok {
 		return
 	}
@@ -419,7 +434,7 @@ func (s *Server) handleExternalVoucherRedeem(w http.ResponseWriter, r *http.Requ
 // unknown 行在适配器在位时自动 Lookup 回查一次——晚到的平台答案确认后升级，
 // 仍未知保持待确认（不是已核销）。
 func (s *Server) handleExternalVoucherGet(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.storeDealScope(w, r, authz.ActionReadRecord, true)
+	c, _, ok := s.storeDealReadScope(w, r, true)
 	if !ok {
 		return
 	}
@@ -444,7 +459,7 @@ func (s *Server) handleExternalVoucherGet(w http.ResponseWriter, r *http.Request
 // 未接适配器=503 not_connected、缺授权=422 authorization_required（明确能力
 // 状态）；适配器故障=503 result_unknown 且零改动；成功=官方价+校验时间落库。
 func (s *Server) handleStoreDealOfferRefresh(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.storeDealScope(w, r, authz.ActionUpdate, true)
+	c, _, ok := s.storeDealScope(w, r, authz.PermActionManageDeal, true)
 	if !ok {
 		return
 	}
@@ -564,12 +579,12 @@ func (s *Server) handlePublicOfferClick(w http.ResponseWriter, r *http.Request) 
 		fail(w, http.StatusBadRequest, "bad_request", "invalid or disallowed field in body")
 		return
 	}
-	applicable, err := s.St.IsStoreOfferApplicable(pub.TenantID, pub.StoreID, r.PathValue("offerId"))
+	clickable, err := s.St.IsStoreOfferClickable(pub.TenantID, pub.StoreID, r.PathValue("offerId"))
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "internal", "storefront lookup failed")
 		return
 	}
-	if !applicable {
+	if !clickable {
 		fail(w, http.StatusNotFound, "not_found", "offer is not available")
 		return
 	}

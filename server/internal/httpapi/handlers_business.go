@@ -69,6 +69,26 @@ func (s *Server) requireScopedAction(c *caller, action authz.Action, rec authz.R
 	return false
 }
 
+// requireStoreConfig (HUI-3531 Walk D 对抗门收口) gates the WAVE-new store
+// configuration write surfaces (services / deals / actions / storefront
+// versions) on the B11 permission layer IN ADDITION to the legacy scoped
+// action. The legacy ActionUpdate matrix deliberately keeps tenant-wide
+// semantics for存量空-scope staff rows (T0 逐字节不变条款) — but those Wave-new
+// surfaces never existed in T0, so preserving that clause must not open them:
+// org_owner / store_manager hold the config permissions implicitly; staff only
+// via explicit member_permission_grant (ResolveAccess fail-closed default).
+func (s *Server) requireStoreConfig(c *caller, perm authz.Permission, rec authz.RecordScope, mask404 bool, w http.ResponseWriter) bool {
+	if !s.requireScopedAction(c, authz.ActionUpdate, rec, mask404, w) {
+		return false
+	}
+	a := s.resolveAccess(c)
+	if d := authz.Can(a, string(perm), rec.StoreID); !d.Allowed {
+		fail(w, http.StatusForbidden, d.Reason, "store configuration requires an explicit config permission")
+		return false
+	}
+	return true
+}
+
 // campaignScoped fetches the campaign within the caller's tenant and enforces
 // the member's store scope on it. Missing and out-of-scope are both 404.
 func (s *Server) campaignScoped(c *caller, id string, action authz.Action, w http.ResponseWriter) (store.Campaign, bool) {

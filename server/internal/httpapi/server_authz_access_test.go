@@ -236,9 +236,17 @@ func TestAccessEffectiveManagerAndStaff(t *testing.T) {
 		t.Fatalf("manager allowed_store_ids = %v, want [%s]", ids, f.st1)
 	}
 	perms := stringList(out["permissions"])
-	for _, banned := range []string{"billing:view", "billing:manage_payer", "action:manage_deal"} {
+	// HUI-3531 Walk D 裁定修订：M9 优惠/团购与本地券管理是门店经理面（4590 后到，
+	// 初版禁列已过时）——manager 必须持有 action:manage_deal/manage_voucher；
+	// billing 资金维度仍禁（付款裁决归公共权威）。
+	for _, banned := range []string{"billing:view", "billing:manage_payer"} {
 		if contains(perms, banned) {
 			t.Fatalf("manager must not hold %s", banned)
+		}
+	}
+	for _, required := range []string{"action:manage_deal", "action:manage_voucher"} {
+		if !contains(perms, required) {
+			t.Fatalf("manager must hold %s", required)
 		}
 	}
 

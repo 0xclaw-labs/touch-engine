@@ -500,13 +500,30 @@ func (s *Store) ListPublicStoreOffers(storeID string, now time.Time) ([]PublicSt
 	return out, rs.Err()
 }
 
-// IsStoreOfferApplicable reports whether the offer applies to the store
-// (click beacon validity: unknown offers answer 404, nothing counts).
+// IsStoreOfferApplicable reports whether the offer applies to the store.
+// 语义=核销/授权面（1671 F18）：paused 套餐已发券必须继续可查验与兑现，
+// 外部有效性归平台适配器裁决——这里只判映射，不判本地展示状态。
 func (s *Store) IsStoreOfferApplicable(tenantID, storeID, offerID string) (bool, error) {
 	var n int
 	err := s.DB.QueryRow(
 		`SELECT COUNT(*) FROM store_deal_offer_stores WHERE offer_id=? AND store_id=? AND tenant_id=?`,
 		offerID, storeID, tenantID).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// IsStoreOfferClickable (HUI-3531 Walk D adv06/adv07) is the CLICK beacon
+// validity: 仅在售（active）计数——下架/暂停/隐藏的旧地址重放一律 404 不计数。
+// 与核销面（IsStoreOfferApplicable）语义刻意分离。
+func (s *Store) IsStoreOfferClickable(tenantID, storeID, offerID string) (bool, error) {
+	var n int
+	err := s.DB.QueryRow(
+		`SELECT COUNT(*) FROM store_deal_offer_stores m
+		 JOIN store_deal_offers o ON o.id=m.offer_id AND o.tenant_id=m.tenant_id
+		 WHERE m.offer_id=? AND m.store_id=? AND m.tenant_id=? AND o.status=?`,
+		offerID, storeID, tenantID, deals.StatusActive).Scan(&n)
 	if err != nil {
 		return false, err
 	}

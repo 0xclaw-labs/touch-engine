@@ -788,13 +788,19 @@ function ExternalGroupBuyTab(props: {
         onNote("平台、标题和商品链接都要填。没有事实不写成功。");
         return;
       }
+      const priceMinor = Number(form.price);
+      // Walk D 对抗门 adv01：负数/非法价格前端先拦并给可见反馈，不再静默复位。
+      if (!Number.isFinite(priceMinor) || priceMinor <= 0) {
+        onNote("价格（分）必须是大于 0 的整数。没有事实不写成功。");
+        return;
+      }
       const res = await session.api("POST", `stores/${storeId}/deal-offers`, {
         platform: form.platform,
         provider_offer_id: form.provider_offer_id.trim(),
         product_url: form.product_url.trim(),
         title: form.title.trim(),
         image_ref: form.image_ref.trim(),
-        price_minor: Number(form.price) || 0,
+        price_minor: priceMinor,
         currency: form.currency.trim(),
         price_source: form.price_source,
         valid_until: form.valid_until.trim(),

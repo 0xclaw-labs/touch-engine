@@ -605,10 +605,6 @@ export function TouchpointsPanel() {
         <h2 className="tk-subtitle">给卡开稳定入口</h2>
         {stores.length === 0 ? (
           <p className="tk-note">先建门店,再给门店的卡开稳定入口。</p>
-        ) : unprovisionedTags.length === 0 && !createStoreId ? (
-          <p className="tk-note">先选门店,下面会列出这家店还没有稳定入口的卡。</p>
-        ) : unprovisionedTags.length === 0 ? (
-          <p className="tk-note">这家店没有待开的卡了;每张卡最多一个稳定入口。</p>
         ) : (
           <>
             <label className="tk-label">
@@ -620,6 +616,15 @@ export function TouchpointsPanel() {
                 ))}
               </select>
             </label>
+            {/* Walk F 对抗门收口：零卡租户也必须能选门店（此前「先选门店」分支
+                吞掉选择器造成死锁——选择器是列出待开卡的前置，不能再被待开卡
+                数量门控）。选店后才判「没有待开的卡」。 */}
+            {!createStoreId ? (
+              <p className="tk-note">先选门店,下面会列出这家店还没有稳定入口的卡。</p>
+            ) : unprovisionedTags.length === 0 ? (
+              <p className="tk-note">这家店没有待开的卡了;每张卡最多一个稳定入口。先在「出库与写卡」里登记卡,再回到这里开入口。</p>
+            ) : (
+              <>
             <label className="tk-label">
               活动(可选,过滤用)
               <select className="tk-select" data-field="create-campaign" value={createCampaignId} onChange={(event) => { setCreateCampaignId(event.target.value); setCreateTagId(""); }}>
@@ -675,6 +680,8 @@ export function TouchpointsPanel() {
                 <button className="tk-quiet" type="button" data-action="cancel-legacy-stop" onClick={() => setLegacyPending(null)}>取消</button>
               </div>
             ) : null}
+              </>
+            )}
           </>
         )}
       </div>

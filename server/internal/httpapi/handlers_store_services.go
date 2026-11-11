@@ -71,7 +71,7 @@ func (s *Server) handleStoreServicesPut(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if !s.requireScopedAction(c, authz.ActionUpdate, authz.RecordScope{TenantID: c.Member.TenantID, StoreID: rec.ID}, false, w) {
+	if !s.requireStoreConfig(c, authz.PermActionChannelTarget, authz.RecordScope{TenantID: c.Member.TenantID, StoreID: rec.ID}, false, w) {
 		return
 	}
 	var body struct {

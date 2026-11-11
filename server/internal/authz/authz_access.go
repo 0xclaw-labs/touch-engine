@@ -140,8 +140,11 @@ func ResolveAccess(m *Member, g *AgencyGrant, ops []OpsGrantView, granted []stri
 			string(PermBillingView), string(PermBillingManagePayer))
 	case RoleStoreManager:
 		a.AllowedStoreIDs = []string{m.StoreScope}
+		// HUI-4531 Walk D 收口补齐：M9 优惠/团购与本地券管理是门店经理面
+		//（4590 后到，初版权限集漏列）；门店范围仍由 AllowedStoreIDs 裁决。
 		a.Permissions = append(a.Permissions,
-			string(PermStorefrontConfigure), string(PermActionConfigure), string(PermActionChannelTarget))
+			string(PermStorefrontConfigure), string(PermActionConfigure), string(PermActionChannelTarget),
+			string(PermActionManageDeal), string(PermActionManageVoucher))
 	case RoleAgent:
 		// agent 维度只来自显式 grant;无 grant(旧关系)= 零新增维度(fail-closed)。
 		if g != nil && grantLive(g.ExpiresAt, now) {
