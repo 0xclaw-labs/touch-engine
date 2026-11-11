@@ -78,8 +78,14 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"members",
 		"nfc_tag_groups",
 		"nfc_tags",
+		// HUI-4592 (0124-0128) 平台运营控制台:审计/演练/操作信封/支持访问/工单
+		"ops_audit_log",
+		"ops_drills",
 		// HUI-4593 (0067) 受信服务端 ops grant
 		"ops_grants",
+		"ops_operations",
+		"ops_support_access",
+		"ops_tickets",
 		"participation_attempts",
 		"participations",
 		"private_domain_clicks",

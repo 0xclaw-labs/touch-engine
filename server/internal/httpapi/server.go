@@ -770,6 +770,10 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("POST /api/v1/ops-grants", s.requireOpsGrantProducer(s.handleOpsGrantCreate))
 		mux.Handle("GET /api/v1/ops-grants", s.requireOpsGrantProducer(s.handleOpsGrantList))
 		mux.Handle("DELETE /api/v1/ops-grants/{id}", s.requireOpsGrantProducer(s.handleOpsGrantRevoke))
+		// HUI-4592 平台运营控制台(六视图 O1-O6 + 统一操作信封):权限只来自
+		// 受信 ops_grants(上一行缝签发);注册在本段内=FEATURE_AUTHZ off 时
+		// 路由不存在(gate 内再答统一 404,双保险同款)。
+		s.registerOpsConsoleRoutes(mux)
 	}
 
 	// HUI-2053 brand shell + tenant lifecycle/export. Off = routes absent.
