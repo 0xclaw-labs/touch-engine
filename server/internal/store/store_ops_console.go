@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/bianjiefilm/touch-engine/server/internal/billing"
+	"github.com/bianjiefilm/touch-engine/server/internal/channeladmission"
 	"github.com/bianjiefilm/touch-engine/server/internal/ops"
 )
 
@@ -201,7 +202,7 @@ func (s *Store) ListTenantsOps(query, lifecycle string) ([]TenantOpsRow, error) 
 		(SELECT COUNT(*) FROM stores st WHERE st.tenant_id=t.id),
 		(SELECT COUNT(*) FROM members m WHERE m.tenant_id=t.id AND m.enabled=1),
 		(SELECT COUNT(*) FROM agency_relations ar WHERE ar.tenant_id=t.id),
-		COALESCE(bs.status,''), COALESCE(bs.paid_until,''), COALESCE(bs.retain_until,'')
+		COALESCE(bs.status,''), COALESCE(bs.paid_until,''), COALESCE(bs.grace_days,0)
 		FROM tenants t
 		LEFT JOIN billing_subscriptions bs ON bs.tenant_id=t.id
 		WHERE 1=1`
@@ -225,11 +226,20 @@ func (s *Store) ListTenantsOps(query, lifecycle string) ([]TenantOpsRow, error) 
 	for rows.Next() {
 		var r TenantOpsRow
 		var hold int
+		var graceDays int
 		if err := rows.Scan(&r.ID, &r.Name, &r.CreatedAt, &r.BrandID, &r.Lifecycle, &hold, &r.OpsRevision,
-			&r.StoreCount, &r.MemberCount, &r.AgencyCount, &r.SubStatus, &r.PaidUntil, &r.RetainUntil); err != nil {
+			&r.StoreCount, &r.MemberCount, &r.AgencyCount, &r.SubStatus, &r.PaidUntil, &graceDays); err != nil {
 			return nil, err
 		}
 		r.ChargeHold = hold == 1
+		// retain_until = paid_until + grace(4591 语义);无投影行留空 = unknown,
+		// 与真实零记录区分。
+		if r.PaidUntil != "" {
+			fact := billing.SubscriptionFact{PaidUntil: r.PaidUntil, GraceDays: graceDays}
+			if retain, err := fact.RetainUntil(); err == nil {
+				r.RetainUntil = retain
+			}
+		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -364,18 +374,19 @@ type OpsOperation struct {
 	AuthoritySource  string `json:"authority_source"`
 	State            string `json:"state"`
 	ErrorCode        string `json:"error_code"`
+	RequestJSON      string `json:"request_json"`
 	ResultJSON       string `json:"result_json"`
 	CreatedAt        string `json:"created_at"`
 	FinishedAt       string `json:"finished_at"`
 }
 
-const opsOperationCols = `id,idempotency_key,action,resource_ref,tenant_id,expected_revision,reason,actor_ref,actor_role,authority_source,state,error_code,result_json,created_at,finished_at`
+const opsOperationCols = `id,idempotency_key,action,resource_ref,tenant_id,expected_revision,reason,actor_ref,actor_role,authority_source,state,error_code,request_json,result_json,created_at,finished_at`
 
 func scanOpsOperation(sc interface{ Scan(...any) error }) (OpsOperation, error) {
 	var o OpsOperation
 	err := sc.Scan(&o.ID, &o.IdempotencyKey, &o.Action, &o.ResourceRef, &o.TenantID, &o.ExpectedRevision,
 		&o.Reason, &o.ActorRef, &o.ActorRole, &o.AuthoritySource, &o.State, &o.ErrorCode,
-		&o.ResultJSON, &o.CreatedAt, &o.FinishedAt)
+		&o.RequestJSON, &o.ResultJSON, &o.CreatedAt, &o.FinishedAt)
 	return o, err
 }
 
@@ -390,10 +401,10 @@ func (s *Store) RecordOpsOperation(o OpsOperation) (OpsOperation, error) {
 	o.CreatedAt = now()
 	_, err := s.DB.Exec(
 		`INSERT INTO ops_operations(id,idempotency_key,action,resource_ref,tenant_id,expected_revision,
-		 reason,actor_ref,actor_role,authority_source,state,error_code,result_json,created_at,finished_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,'','',?,'')`,
+		 reason,actor_ref,actor_role,authority_source,state,error_code,request_json,result_json,created_at,finished_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,'','',?,'null',?,'')`,
 		o.ID, o.IdempotencyKey, o.Action, o.ResourceRef, o.TenantID, o.ExpectedRevision,
-		o.Reason, o.ActorRef, o.ActorRole, o.AuthoritySource, o.ResultJSON, o.CreatedAt)
+		o.Reason, o.ActorRef, o.ActorRole, o.AuthoritySource, o.RequestJSON, o.CreatedAt)
 	if err != nil {
 		return OpsOperation{}, err
 	}
@@ -926,4 +937,16 @@ func (s *Store) ListContentVersionsAll(limit int) ([]OpsContentVersionRow, error
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// GetActionCapabilityByID reads one 3535 capability row by primary key
+// (read-only; the emergency write path lives in SetActionCapabilityEmergency).
+func (s *Store) GetActionCapabilityByID(id string) (channeladmission.ActionCapability, error) {
+	row := s.DB.QueryRow(
+		`SELECT `+actionCapCols+` FROM channel_action_capabilities WHERE id=?`, id)
+	r, err := scanActionCapability(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return channeladmission.ActionCapability{}, ErrNotFound
+	}
+	return r, err
 }

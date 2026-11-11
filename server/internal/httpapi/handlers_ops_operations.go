@@ -73,7 +73,7 @@ func (in opsOperationRequest) runningRow(actorRef, actorRole, authority string) 
 		IdempotencyKey: in.IdempotencyKey, Action: in.Action, ResourceRef: in.ResourceRef,
 		TenantID: in.TenantID, ExpectedRevision: in.ExpectedRevision, Reason: in.Reason,
 		ActorRef: actorRef, ActorRole: actorRole, AuthoritySource: authority,
-		ResultJSON: in.canonicalRequest(),
+		RequestJSON: in.canonicalRequest(),
 	}
 }
 
@@ -111,7 +111,7 @@ func (s *Server) handleOpsOperationCreate(w http.ResponseWriter, r *http.Request
 
 	// 幂等:同键存在 → 同负载读回(不重执行);异负载拒绝。
 	if prev, err := s.St.GetOpsOperationByIdempotencyKey(in.IdempotencyKey); err == nil {
-		if prev.ResultJSON == in.canonicalRequest() && prev.Action == in.Action {
+		if prev.RequestJSON == in.canonicalRequest() && prev.Action == in.Action {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"operation": prev, "replayed": true,
 				"note": "retry returns the recorded operation; it is not executed again",
@@ -132,7 +132,13 @@ func (s *Server) handleOpsOperationCreate(w http.ResponseWriter, r *http.Request
 		fail(w, http.StatusInternalServerError, "internal", "operation record failed")
 		return
 	}
-	result, dispatchErr := s.dispatchOpsOperation(c, in, authority)
+	// 分派前语义预检(客户端错误在落操作记录前拒绝;执行失败才落 failed 记录)。
+	if err := validateDispatchTarget(in); err != nil {
+		_, _ = s.St.FinishOpsOperation(recorded.ID, "rejected", "invalid_target", jsonSnap(map[string]any{"error": err.Error()}))
+		opsFail(w, err)
+		return
+	}
+	result, dispatchErr := s.dispatchOpsOperation(c, in, authority, recorded.ID)
 	op := s.finishOperation(recorded.ID, dispatchErr, result)
 	writeJSON(w, http.StatusOK, map[string]any{"operation": op})
 }
@@ -157,38 +163,38 @@ func (s *Server) finishOperation(id string, dispatchErr error, result any) store
 // dispatchOpsOperation routes one validated envelope to the owning domain
 // write face. 返回 (result, err):err 非 nil 时操作记录为 failed(可重试,
 // 幂等键不换)。
-func (s *Server) dispatchOpsOperation(c *caller, in opsOperationRequest, authority string) (any, error) {
+func (s *Server) dispatchOpsOperation(c *caller, in opsOperationRequest, authority, operationID string) (any, error) {
 	switch in.Action {
 	case ops.ActionTenantSuspend, ops.ActionTenantResume:
 		lifecycle := "suspended"
 		if in.Action == ops.ActionTenantResume {
 			lifecycle = "active"
 		}
-		return s.opsTenantLifecycle(c, in, authority, lifecycle)
+		return s.opsTenantLifecycle(c, in, authority, lifecycle, operationID)
 	case ops.ActionChargeHoldSet, ops.ActionChargeHoldClear:
-		return s.opsChargeHold(c, in, authority, in.Action == ops.ActionChargeHoldSet)
+		return s.opsChargeHold(c, in, authority, in.Action == ops.ActionChargeHoldSet, operationID)
 	case ops.ActionPlanPublish, ops.ActionPlanRetire:
-		return s.opsPlanWindow(in)
+		return s.opsPlanWindow(c, in, authority, operationID)
 	case ops.ActionOrderRecheck:
-		return s.opsOrderRecheck(in)
+		return s.opsOrderRecheck(c, in, authority, operationID)
 	case ops.ActionChannelDisable, ops.ActionChannelRestore:
-		return s.opsChannelEmergency(in, authority)
+		return s.opsChannelEmergency(c, in, authority, operationID)
 	case ops.ActionContentRetract:
-		return s.opsContentRetract(in, authority)
+		return s.opsContentRetract(c, in, authority, operationID)
 	case ops.ActionAssignmentCancel:
-		return s.opsAssignmentCancel(in, authority)
+		return s.opsAssignmentCancel(c, in, authority, operationID)
 	case ops.ActionTicketOpen:
-		return s.opsTicketOpen(in, c, authority)
+		return s.opsTicketOpen(c, in, authority, operationID)
 	case ops.ActionTicketConfirm, ops.ActionTicketResolve, ops.ActionTicketClose:
-		return s.opsTicketTransition(in, c, authority)
+		return s.opsTicketTransition(c, in, authority, operationID)
 	case ops.ActionDrillRecord:
-		return s.opsDrillRecord(in, c, authority)
+		return s.opsDrillRecord(c, in, authority, operationID)
 	}
 	return nil, ops.ErrActionUnknown
 }
 
 // opsTenantLifecycle: 2053 lifecycle 语义 + 单语句 revision 守卫。
-func (s *Server) opsTenantLifecycle(c *caller, in opsOperationRequest, authority, lifecycle string) (any, error) {
+func (s *Server) opsTenantLifecycle(c *caller, in opsOperationRequest, authority, lifecycle, operationID string) (any, error) {
 	before, err := s.St.GetTenant(in.ResourceRef)
 	if err != nil {
 		return nil, store.ErrNotFound
@@ -208,13 +214,13 @@ func (s *Server) opsTenantLifecycle(c *caller, in opsOperationRequest, authority
 		TargetID: in.ResourceRef, TenantID: in.ResourceRef,
 		BeforeJSON: jsonSnap(map[string]any{"lifecycle": before.Lifecycle}),
 		AfterJSON:  jsonSnap(map[string]any{"lifecycle": after.Lifecycle, "ops_revision": newRev}),
-		Reason:     in.Reason,
+		Reason:     in.Reason, OperationID: operationID,
 	})
 	return map[string]any{"tenant_id": in.ResourceRef, "lifecycle": after.Lifecycle, "ops_revision": newRev}, nil
 }
 
 // opsChargeHold: 2053 charge-hold 语义(收费保持不是商家开关)。
-func (s *Server) opsChargeHold(c *caller, in opsOperationRequest, authority string, hold bool) (any, error) {
+func (s *Server) opsChargeHold(c *caller, in opsOperationRequest, authority string, hold bool, operationID string) (any, error) {
 	before, err := s.St.GetTenant(in.ResourceRef)
 	if err != nil {
 		return nil, store.ErrNotFound
@@ -233,14 +239,14 @@ func (s *Server) opsChargeHold(c *caller, in opsOperationRequest, authority stri
 		TargetID: in.ResourceRef, TenantID: in.ResourceRef,
 		BeforeJSON: jsonSnap(map[string]any{"charge_hold": before.ChargeHold}),
 		AfterJSON:  jsonSnap(map[string]any{"charge_hold": hold, "ops_revision": newRev}),
-		Reason:     in.Reason,
+		Reason:     in.Reason, OperationID: operationID,
 	})
 	return map[string]any{"tenant_id": in.ResourceRef, "charge_hold": hold, "ops_revision": newRev}, nil
 }
 
 // opsPlanWindow: 只调 4591 目录唯一写入函数(UpsertBillingCatalogEntry),
 // 只改生效窗口——金额/条款不动,零价格常量;历史订单钉自己的快照。
-func (s *Server) opsPlanWindow(in opsOperationRequest) (any, error) {
+func (s *Server) opsPlanWindow(c *caller, in opsOperationRequest, authority, operationID string) (any, error) {
 	entry, err := s.St.GetCatalogEntryByID(in.ResourceRef)
 	if err != nil {
 		return nil, store.ErrNotFound
@@ -258,19 +264,19 @@ func (s *Server) opsPlanWindow(in opsOperationRequest) (any, error) {
 		return nil, err
 	}
 	_, _ = s.St.AppendOpsAudit(store.OpsAuditEntry{
-		ActorRef: "ops-console", AuthoritySource: "operation:" + in.IdempotencyKey,
+		ActorRef: c.Member.PrincipalRef, ActorRole: c.Member.Role, AuthoritySource: authority,
 		Command: ops.CmdPlansManage, Action: in.Action, TargetType: "catalog_entry",
 		TargetID: in.ResourceRef, TenantID: entry.ScopeTenant,
 		BeforeJSON: jsonSnap(before),
 		AfterJSON:  jsonSnap(map[string]any{"effective_from": saved.EffectiveFrom, "effective_to": saved.EffectiveTo}),
-		Reason:     in.Reason,
+		Reason:     in.Reason, OperationID: operationID,
 	})
 	return map[string]any{"entry": saved, "order_price_snapshot_immutable": true}, nil
 }
 
 // opsOrderRecheck: 只读重查(订单+退款+硬件履约投影),快照落结果——
 // 不直接修改账单金额/权益投影,付款不等于硬件交付。
-func (s *Server) opsOrderRecheck(in opsOperationRequest) (any, error) {
+func (s *Server) opsOrderRecheck(c *caller, in opsOperationRequest, authority, operationID string) (any, error) {
 	if strings.TrimSpace(in.TenantID) == "" {
 		return nil, errTenantRequired
 	}
@@ -296,12 +302,12 @@ func (s *Server) opsOrderRecheck(in opsOperationRequest) (any, error) {
 		}
 	}
 	_, _ = s.St.AppendOpsAudit(store.OpsAuditEntry{
-		ActorRef: "ops-console", AuthoritySource: "operation:" + in.IdempotencyKey,
+		ActorRef: c.Member.PrincipalRef, ActorRole: c.Member.Role, AuthoritySource: authority,
 		Command: ops.CmdOrdersManage, Action: in.Action, TargetType: "billing_order",
 		TargetID: order.ID, TenantID: in.TenantID,
 		BeforeJSON: "null",
 		AfterJSON:  jsonSnap(map[string]any{"status": order.Status, "refund_count": len(mine)}),
-		Reason:     in.Reason,
+		Reason:     in.Reason, OperationID: operationID,
 	})
 	return snapshot, nil
 }
@@ -309,7 +315,7 @@ func (s *Server) opsOrderRecheck(in opsOperationRequest) (any, error) {
 // opsChannelEmergency: 3535 唯一写面(SetActionCapabilityEmergency),
 // 只停对应方法行;actor 以 ops-console 标识平台运营(3535 审计行照落);
 // FEATURE_CHANNEL_ADMISSION off = 写面不存在,诚实拒绝。
-func (s *Server) opsChannelEmergency(in opsOperationRequest, authority string) (any, error) {
+func (s *Server) opsChannelEmergency(c *caller, in opsOperationRequest, authority, operationID string) (any, error) {
 	if !s.Cfg.FeatureChannelAdmission {
 		return nil, errChannelAdmissionOff
 	}
@@ -324,12 +330,12 @@ func (s *Server) opsChannelEmergency(in opsOperationRequest, authority string) (
 		return nil, err
 	}
 	_, _ = s.St.AppendOpsAudit(store.OpsAuditEntry{
-		ActorRef: "ops-console", AuthoritySource: authority,
+		ActorRef: c.Member.PrincipalRef, ActorRole: c.Member.Role, AuthoritySource: authority,
 		Command: ops.CmdChannelsManage, Action: in.Action, TargetType: "action_capability",
 		TargetID: in.ResourceRef, TenantID: in.TenantID,
 		BeforeJSON: jsonSnap(map[string]any{"emergency_disabled": !disable}),
 		AfterJSON:  jsonSnap(map[string]any{"emergency_disabled": disable}),
-		Reason:     in.Reason,
+		Reason:     in.Reason, OperationID: operationID,
 	})
 	return map[string]any{"capability_id": in.ResourceRef, "emergency_disabled": disable, "changed": changed}, nil
 }
@@ -343,7 +349,7 @@ func emergencyAuditAction(disable bool) string {
 
 // opsContentRetract: 3553 风险下架唯一写面(BlockStoreContentPackVersion),
 // blocked_reason = 运营原因;撤回不覆盖历史证据(版本行仍在,状态可回查)。
-func (s *Server) opsContentRetract(in opsOperationRequest, authority string) (any, error) {
+func (s *Server) opsContentRetract(c *caller, in opsOperationRequest, authority, operationID string) (any, error) {
 	if strings.TrimSpace(in.TenantID) == "" || strings.TrimSpace(in.PackID) == "" {
 		return nil, errTenantRequired
 	}
@@ -353,19 +359,19 @@ func (s *Server) opsContentRetract(in opsOperationRequest, authority string) (an
 		return nil, err
 	}
 	_, _ = s.St.AppendOpsAudit(store.OpsAuditEntry{
-		ActorRef: "ops-console", AuthoritySource: authority,
+		ActorRef: c.Member.PrincipalRef, ActorRole: c.Member.Role, AuthoritySource: authority,
 		Command: ops.CmdTemplatesManage, Action: in.Action, TargetType: "content_version",
 		TargetID: v.ID, TenantID: in.TenantID,
 		BeforeJSON: "null",
 		AfterJSON:  jsonSnap(map[string]any{"status": v.Status, "blocked_reason": in.Reason}),
-		Reason:     in.Reason,
+		Reason:     in.Reason, OperationID: operationID,
 	})
 	return map[string]any{"version": v}, nil
 }
 
 // opsAssignmentCancel: 4593 分发撤回唯一写面(UpdateTemplateAssignmentStatus
 // → cancelled,总部撤回语义;终态不可再改)。
-func (s *Server) opsAssignmentCancel(in opsOperationRequest, authority string) (any, error) {
+func (s *Server) opsAssignmentCancel(c *caller, in opsOperationRequest, authority, operationID string) (any, error) {
 	if strings.TrimSpace(in.TenantID) == "" {
 		return nil, errTenantRequired
 	}
@@ -374,17 +380,17 @@ func (s *Server) opsAssignmentCancel(in opsOperationRequest, authority string) (
 		return nil, err
 	}
 	_, _ = s.St.AppendOpsAudit(store.OpsAuditEntry{
-		ActorRef: "ops-console", AuthoritySource: authority,
+		ActorRef: c.Member.PrincipalRef, ActorRole: c.Member.Role, AuthoritySource: authority,
 		Command: ops.CmdTemplatesManage, Action: in.Action, TargetType: "template_assignment",
 		TargetID: t.ID, TenantID: in.TenantID,
 		BeforeJSON: jsonSnap(map[string]any{"status": "distributed"}),
 		AfterJSON:  jsonSnap(map[string]any{"status": t.Status}),
-		Reason:     in.Reason,
+		Reason:     in.Reason, OperationID: operationID,
 	})
 	return map[string]any{"assignment": t}, nil
 }
 
-func (s *Server) opsTicketOpen(in opsOperationRequest, c *caller, authority string) (any, error) {
+func (s *Server) opsTicketOpen(c *caller, in opsOperationRequest, authority, operationID string) (any, error) {
 	if strings.TrimSpace(in.Title) == "" {
 		return nil, errTitleRequired
 	}
@@ -398,12 +404,12 @@ func (s *Server) opsTicketOpen(in opsOperationRequest, c *caller, authority stri
 		Command: ops.CmdOpsManage, Action: in.Action, TargetType: "ops_ticket",
 		TargetID: t.ID, TenantID: t.TenantID, BeforeJSON: "null",
 		AfterJSON: jsonSnap(map[string]any{"status": t.Status, "title": t.Title}),
-		Reason:    in.Reason,
+		Reason:    in.Reason, OperationID: operationID,
 	})
 	return map[string]any{"ticket": t}, nil
 }
 
-func (s *Server) opsTicketTransition(in opsOperationRequest, c *caller, authority string) (any, error) {
+func (s *Server) opsTicketTransition(c *caller, in opsOperationRequest, authority, operationID string) (any, error) {
 	to := ""
 	switch in.Action {
 	case ops.ActionTicketConfirm:
@@ -429,12 +435,12 @@ func (s *Server) opsTicketTransition(in opsOperationRequest, c *caller, authorit
 		BeforeJSON: jsonSnap(map[string]any{"status": before.Status}),
 		AfterJSON: jsonSnap(map[string]any{"status": t.Status, "resolution": t.Resolution,
 			"closed_reason": t.ClosedReason}),
-		Reason: in.Reason,
+		Reason: in.Reason, OperationID: operationID,
 	})
 	return map[string]any{"ticket": t}, nil
 }
 
-func (s *Server) opsDrillRecord(in opsOperationRequest, c *caller, authority string) (any, error) {
+func (s *Server) opsDrillRecord(c *caller, in opsOperationRequest, authority, operationID string) (any, error) {
 	d, err := s.St.CreateOpsDrill(in.DrillKind, in.DrillTarget, in.DrillResult,
 		in.VerificationReport, c.Member.PrincipalRef, in.Notes, time.Now())
 	if err != nil {
@@ -446,7 +452,7 @@ func (s *Server) opsDrillRecord(in opsOperationRequest, c *caller, authority str
 		TargetID: d.ID, TenantID: "", BeforeJSON: "null",
 		AfterJSON: jsonSnap(map[string]any{"kind": d.Kind, "result": d.Result,
 			"has_verification_report": d.VerificationReport != ""}),
-		Reason: in.Reason,
+		Reason: in.Reason, OperationID: operationID,
 	})
 	return map[string]any{"drill": d}, nil
 }
@@ -466,6 +472,27 @@ func (s *Server) handleOpsOperationGet(w http.ResponseWriter, r *http.Request) {
 	}
 	audit, _ := s.St.ListOpsAudit(store.OpsAuditFilter{Operation: op.ID, Limit: 20})
 	writeJSON(w, http.StatusOK, map[string]any{"operation": op, "audit": audit})
+}
+
+// validateDispatchTarget pre-checks per-action target requirements BEFORE the
+// operation row is recorded (client errors answer 400; execution failures stay
+// as recorded failed operations for retry).
+func validateDispatchTarget(in opsOperationRequest) error {
+	switch in.Action {
+	case ops.ActionOrderRecheck, ops.ActionContentRetract, ops.ActionAssignmentCancel:
+		if strings.TrimSpace(in.TenantID) == "" {
+			return errTenantRequired
+		}
+	case ops.ActionTicketOpen:
+		if strings.TrimSpace(in.Title) == "" {
+			return errTitleRequired
+		}
+	case ops.ActionDrillRecord:
+		if err := ops.ValidateDrill(in.DrillKind, in.DrillResult, in.VerificationReport); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ---- 错误分诊 ---------------------------------------------------------------------

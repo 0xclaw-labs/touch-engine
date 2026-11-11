@@ -5,6 +5,7 @@
 --   - state:running(已受理未完成)|succeeded|failed|rejected(白名单外/
 --     权限不足/stale revision——拒绝也是记录,不静默丢弃);
 --   - action 必须在冻结白名单内(ops 域包裁决),resource_ref 定位目标;
+--   - request_json 保存 canonical 请求负载(幂等判等依据,与结果分离);
 --   - result_json 保存权威结果引用/快照;expected_revision 保存请求声明,
 --     供事后审计对照;
 --   - actor 由已验证会话解析,永不取自请求体。
@@ -22,6 +23,7 @@ CREATE TABLE IF NOT EXISTS ops_operations (
     authority_source  TEXT NOT NULL DEFAULT '',
     state             TEXT NOT NULL DEFAULT 'running',
     error_code        TEXT NOT NULL DEFAULT '',
+    request_json      TEXT NOT NULL DEFAULT '{}',
     result_json       TEXT NOT NULL DEFAULT 'null',
     created_at        TEXT NOT NULL,
     finished_at       TEXT NOT NULL DEFAULT ''
