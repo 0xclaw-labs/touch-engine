@@ -112,6 +112,8 @@ export default function StoresPage() {
                 {store.status === "disabled" ? <span className="tk-unknown">已停用</span> : <span className="tk-note">启用</span>}
                 {/* HUI-4584 M4: 门店渠道动作配置入口。 */}
                 <Link className="tk-quiet" href={`/work/stores/${store.id}/channels`}>渠道动作</Link>
+                {/* HUI-1676 M3: 门店首页设置入口(栏目/模板/预览/发布回滚)。 */}
+                <Link className="tk-quiet" href={`/work/stores/${store.id}/page`}>门店首页</Link>
                 {owner ? (
                   <div className="tk-row tk-gap">
                     <button className="tk-quiet" type="button" onClick={() => setEdit({ id: store.id, name: store.name, address: store.address })}>编辑</button>

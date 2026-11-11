@@ -90,6 +90,8 @@ const recorded: readonly { route: string; id: PatternId; regions: readonly strin
   { route: "/work/stores/[id]/channels", id: "settings", regions: ["primary_action", "status", "empty"] },
   // HUI-4589 B07 门店服务页:Wi-Fi/加微信/社群连接域配置(kind 专属表单)。
   { route: "/work/stores/[id]/services", id: "settings", regions: ["primary_action", "status", "empty"] },
+  // HUI-1676 M3 门店首页设置页:栏目/模板/预览/发布回滚(薄壳,交互在组件)。
+  { route: "/work/stores/[id]/page", id: "settings", regions: ["primary_action", "status", "empty"] },
   // HUI-4593 M13 成员与权限页(授权/撤回/代理协作/模板下发/白标授权)。
   { route: "/work/settings", id: "settings", regions: ["primary_action", "status", "empty"] },
   // HUI-4594 M11 线索页:授权线索/接收确认/待同步/撤回(待同步不计入已获客)。

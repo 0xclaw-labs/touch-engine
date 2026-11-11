@@ -78,6 +78,24 @@ const (
 	ReasonWindowConflict         = "window_conflict"
 	ReasonCampaignEnded          = "campaign_ended"
 	ReasonStoreMismatch          = "store_mismatch"
+
+	// ReasonReviewRewardProhibited (HUI-1676 全入口轮): 点评奖励硬拒。
+	// 点评入口只帮找到正确平台门店自主评价:无模板/AIGC、无截图核验、
+	// 不以评价作奖励触发 —— 配置保存即拒,不等启用检查。
+	ReasonReviewRewardProhibited = "review_reward_prohibited"
+)
+
+// Legitimate channel scenarios for a REWARD-bearing config, verbatim to the
+// 3535 admission truth (channeladmission.ActionScenario*). "review" is
+// deliberately absent: 点评不做奖励,这是准入真值的一部分,不是本包新政策。
+const (
+	ScenarioStorePromo = "store_promo"
+	ScenarioRewardTask = "reward_task"
+	ScenarioFollow     = "follow"
+	ScenarioService    = "service"
+	ScenarioGroupBuy   = "group_buy"
+
+	ScenarioReview = "review" // 奖励配置禁区(诊断用;永不合法)
 )
 
 // ChannelRef is one selected publish route. The triple must come from the
@@ -211,10 +229,15 @@ func ValidateSpec(s Spec) error {
 		return fmt.Errorf("campaignenable: per_order_limit requires the verifiable_receipt judgment basis")
 	}
 	// 草稿允许不完整:渠道/内容/权益引用/门店的「有没有」归启用检查(Check),
-	// 这里只管「给了的值形状对不对」。
+	// 这里只管「给了的值形状对不对」。点评(review)进奖励配置是硬拒,不等
+	// 启用检查——准入真值(3535)里点评场景从不携带奖励资格;其余未知场景
+	// 交给启用检查过 3535 Gate(unknown 永不等价 allowed),不在形状层越权。
 	for _, c := range s.Channels {
 		if c.empty() {
 			return fmt.Errorf("campaignenable: every channel needs platform + entry_mode + scenario (a bare platform string is not an admission)")
+		}
+		if c.Scenario == ScenarioReview {
+			return fmt.Errorf("%s: %s cannot carry a reward", ReasonReviewRewardProhibited, c.Platform)
 		}
 	}
 	switch s.Reward.StaffScope {

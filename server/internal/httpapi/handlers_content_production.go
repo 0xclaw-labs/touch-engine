@@ -5,8 +5,9 @@
 //     与 capabilities。管理动作走 authz.manage_content_packs,查询走 read_list
 //     (同 3553 门店内容包授权)。首次制作:空内容包(零候选/零采用)完全合法,
 //     绝不为通过校验伪建 campaign 或虚构采用版本(T05);
-//   - 公共权威 seam:报价经 production.QuoteAuthority(统一账单;配置齐全才
-//     核验,未配置=申报值落库且如实 quote_verified:false,绝不谎称已核实);
+//   - 公共权威 seam(wave2 集成已切换):报价经库层账单投影裁决
+//     (billing.AdjudicateQuoteRef × Store.QuoteProjectionFor/ConsumeQuote-
+//     Projection;核验不过不落行 fail-closed,绝不把无法核实当作已核实);
 //     任务经 production.TaskSubmitter(派诺生态 Task;本仓不自建制作队列;
 //     未配置=诚实关闭,status=recorded,绝不伪造 task_ref);
 //   - 受信生产方开关未配诚实关闭:TOUCH_SERVICE_TOKENS 无 content_return_
@@ -41,6 +42,7 @@ import (
 	"strings"
 
 	"github.com/bianjiefilm/touch-engine/server/internal/authz"
+	"github.com/bianjiefilm/touch-engine/server/internal/billing"
 	"github.com/bianjiefilm/touch-engine/server/internal/contentpack"
 	"github.com/bianjiefilm/touch-engine/server/internal/production"
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
@@ -120,6 +122,20 @@ func (s *Server) contentProducerConfigured() bool {
 	return false
 }
 
+// billingQuoteAuthorityConfigured answers honestly whether any registered
+// trusted service carries the billing_authority role — the seam that feeds
+// the in-repo billing_ai_usage projection the initiate face adjudicates
+// against (wave2 集成:4591 权威已投影到本仓,报价裁决=库层;没有该缝时投影
+// 收不到已确认报价,发起面对一切 quote_ref 如实答 not_found,绝不按申报放行)。
+func (s *Server) billingQuoteAuthorityConfigured() bool {
+	for id := range s.Cfg.ServiceTokens {
+		if s.Cfg.ServiceProducerRole(id) == billingAuthorityRole {
+			return true
+		}
+	}
+	return false
+}
+
 // productionHandoffView is the merchant-facing projection (refs are opaque;
 // no internal digests, no service tokens).
 func productionHandoffView(h store.ProductionHandoff) map[string]any {
@@ -180,13 +196,13 @@ func (s *Server) handleStoreContentProductionCapabilities(w http.ResponseWriter,
 		return
 	}
 	producerOK := s.contentProducerConfigured()
-	quoteOK := s.ProductionQuotes.Ready()
+	quoteOK := s.billingQuoteAuthorityConfigured()
 	taskOK := s.Cfg.FeatureTask && s.ProductionTasks.Ready()
 	reason := "已接通受信制作生产方。提交后由其按真实任务与账单权威执行。"
 	if !producerOK {
 		reason = "制作生产方尚未接入:还没有注册受信制作服务。这里先如实关闭发起;上传已有内容和从素材库选择不受影响,已记录的发起会保留。"
 	} else if !quoteOK {
-		reason = "受信制作生产方已注册;账单权威尚未接入,报价引用先按申报记录,费用状态以账单为准。"
+		reason = "受信制作生产方已注册;账单权威(billing_authority)尚未接入:报价引用必须先经账单权威确认并落进本仓投影才能发起制作,否则发起会被拒(找不到就按同形 404 应答);费用状态以账单为准。"
 	} else if !taskOK {
 		reason = "受信制作生产方与账单权威已接;公共任务权威未接通,提交先记录、任务暂不开始。"
 	}
@@ -267,50 +283,45 @@ func (s *Server) handleStoreContentProductionHandoffCreate(w http.ResponseWriter
 		return
 	}
 
-	// quote seam(窄接口:校验形状+归属+已确认语义;调用侧不自建价格裁决
-	// 逻辑)。配置齐全才核验;核验不过不落行(fail-closed);未配置=申报值
-	// 落库并如实标注(费用状态以账单为准)。
-	//
-	// ── HUI-4591 合流切换点(集成轮执行;本分支不 import billing,注释即契约)──
-	// 4591 已 exported 库层裁决(billing/quote.go):把上面整个 `if s.ProductionQuotes.Ready()`
-	// 块替换为
-	//   row, err := s.St.QuoteProjectionFor(tenantID, quoteRef)   // nil = 未找到(同形掩蔽)
-	//   verdict := billing.AdjudicateQuoteRef(row, billing.QuoteRefQuery{
-	//       TenantID: tenantID,            // 服务端解析的租户,绝不信请求体
-	//       QuoteRef: quoteRef,
-	//       Capability: "content_production",
-	//       RequireUnconsumed: true,       // 发起制作必须未消费
-	//   })
-	// 五拒绝码→HTTP 映射(本实现的 quote_not_confirmed 已同码,其余三条补齐):
-	//   quote_not_found/quote_cross_tenant → 404 not_found(同形掩蔽,不泄漏存在性)
-	//   quote_not_confirmed                → 422 quote_not_confirmed(现实现)
-	//   quote_already_consumed             → 409 quote_already_consumed
-	//   quote_capability_mismatch          → 422 quote_capability_mismatch
-	// verdict.Allowed → ConsumeQuoteProjection(tenantID, quoteRef, h.ID, now)
-	// 建议在建行成功后消费(消费引用=handoff id);quoteVerified=verdict.Allowed。
-	// production.BillingQuoteAuthority(平台统一账单 HTTP 形)保留为 seam 的
-	// 远程形态:账单权威仍在生态侧时用,已投影到本仓时用上面的库层裁决。
-	quoteVerified := false
-	notes := make([]string, 0, 3)
-	if s.ProductionQuotes.Ready() {
-		// 金额不落本仓(账单权威=生态统一账单,本仓只存引用与核验事实)。
-		_, qerr := s.ProductionQuotes.ConfirmedQuote(r.Context(), quoteRef)
-		if qerr != nil {
-			if errors.Is(qerr, production.ErrNotConfirmed) {
-				fail(w, http.StatusUnprocessableEntity, "quote_not_confirmed", "账单权威核验:该报价引用不是已确认状态,不能发起制作")
-				return
-			}
-			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-				"error":   "quote_authority_unavailable",
-				"message": "账单权威暂时无法核验报价;这次发起没有落库,请稍后重试(绝不把无法核实当作已核实)",
-			})
-			return
-		}
-		quoteVerified = true
-		notes = append(notes, "报价引用经账单权威核验:已确认。")
-	} else {
-		notes = append(notes, "账单权威未接入:报价引用按申报记录,quote_verified=false,费用状态以账单为准。")
+	// quote seam(wave2 集成已执行 HUI-4591 合流切换点:4591 权威已投影到
+	// 本仓,库层裁决即账单权威;调用侧不再走远程询价。production.Billing-
+	// QuoteAuthority 保留为账单权威仍在生态侧时的 seam 远程形态,本调用侧
+	// 不使用)。核验不过不落行(fail-closed);投影行取不到(nil)按同形掩蔽
+	// 应答,不泄漏存在性。幂等重放已在上方先行返回:重试不重新核价、不重复
+	// 消费(T15)。
+	row, qerr := s.St.QuoteProjectionFor(tenantID, quoteRef) // nil = 未找到(同形掩蔽)
+	if qerr != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error":   "quote_authority_unavailable",
+			"message": "账单权威投影暂时无法核验报价;这次发起没有落库,请稍后重试(绝不把无法核实当作已核实)",
+		})
+		return
 	}
+	verdict := billing.AdjudicateQuoteRef(row, billing.QuoteRefQuery{
+		TenantID:   tenantID, // 服务端解析的租户,绝不信请求体
+		QuoteRef:   quoteRef,
+		Capability: "content_production",
+		// 发起制作必须未消费:同一报价引用不产生第二笔制作(T15)。
+		RequireUnconsumed: true,
+	})
+	if !verdict.Allowed {
+		// 五拒绝码→HTTP 映射(HUI-4591 契约):not_found 与 cross_tenant 同形
+		// 掩蔽,不泄漏报价存在性。
+		switch verdict.Reason {
+		case billing.QuoteReasonNotFound, billing.QuoteReasonCrossTenant:
+			fail(w, http.StatusNotFound, "not_found", "resource not found")
+		case billing.QuoteReasonNotConfirmed:
+			fail(w, http.StatusUnprocessableEntity, "quote_not_confirmed", "账单权威核验:该报价引用不是已确认状态,不能发起制作")
+		case billing.QuoteReasonAlreadyConsumed:
+			fail(w, http.StatusConflict, "quote_already_consumed", "该报价引用已被消费,不能再次发起制作")
+		default: // billing.QuoteReasonCapabilityMismatch
+			fail(w, http.StatusUnprocessableEntity, "quote_capability_mismatch", "该报价引用的能力类别与本动作不符,不能用于发起制作")
+		}
+		return
+	}
+	quoteVerified := verdict.Allowed
+	notes := make([]string, 0, 3)
+	notes = append(notes, "报价引用经账单权威核验:已确认。")
 
 	h, replayed, err := s.St.CreateProductionHandoff(tenantID, store.ProductionHandoffInput{
 		StoreID:           storeID,
@@ -336,6 +347,14 @@ func (s *Server) handleStoreContentProductionHandoffCreate(w http.ResponseWriter
 			"replayed": true,
 			"notes":    []string{"同一幂等键重放:返回既有发起,不新建制作工程、不重复报价。"},
 		})
+		return
+	}
+
+	// 建行成功后消费(HUI-4591 契约:消费引用=handoff id;仅 confirmed→
+	// consumed,二次消费被 store 层拒绝)。失败=并发下同一报价已被另一发起
+	// 消费:如实 409,投影是权威事实,本行不冒充已核验。
+	if cerr := s.St.ConsumeQuoteProjection(tenantID, quoteRef, h.ID, nowRFC3339()); cerr != nil {
+		fail(w, http.StatusConflict, "quote_already_consumed", "该报价引用已被并发发起消费,这次发起不生效;费用状态以账单投影为准")
 		return
 	}
 

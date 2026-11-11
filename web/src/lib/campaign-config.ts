@@ -188,7 +188,8 @@ export interface RefusalCopy {
 }
 
 // 启用拒绝的服务端机器原因码 → 具体字段 + 下一步动作。服务端 422 形状:
-// {error: <reason>, field: <config field>}。
+// {error: <reason>, field: <config field>}。点评禁奖(400 review_reward_
+// prohibited,全入口轮)单独翻:点评不做奖励是准入真值,不是一般形状错误。
 export function refusalCopy(status: number, data: Record<string, unknown>): RefusalCopy {
   const field = typeof data.field === "string" ? data.field : "";
   const byReason: Record<string, string> = {
@@ -207,11 +208,23 @@ export function refusalCopy(status: number, data: Record<string, unknown>): Refu
     store_mismatch: "可用门店里有不存在或不属于本活动的门店。请重新勾选门店。",
   };
   const reason = typeof data.error === "string" ? data.error : "";
+  if (reason === "review_reward_prohibited") {
+    return {
+      field: "channels",
+      text: "点评渠道不能作为奖励任务:点评入口只帮顾客找到门店自主评价,不挂奖励。请在「发布方式」里取消勾选点评渠道。",
+    };
+  }
   const fallback = "这次启用没有完成。请检查上面标红的配置,再试一次。";
   if (status === 422 && reason && byReason[reason]) {
     return { field: field || "form", text: byReason[reason] };
   }
   return { field: "form", text: fallback };
+}
+
+// 点评(review)渠道在奖励配置里永远不可选:服务端硬拒(3535 准入真值),
+// 这里是同一结论的前置镜像。
+export function reviewProhibited(scenario: string): boolean {
+  return scenario === "review";
 }
 
 // 响应形状收口:服务端 JSON → PublishConfigRecord 的唯一一次形状断言

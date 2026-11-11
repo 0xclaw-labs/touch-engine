@@ -129,6 +129,9 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"store_service_snapshots",
 		"store_services",
 		"store_storefronts",
+		// HUI-1676 (0095-0096) 门店首页版本与发布/回滚事件
+		"storefront_publish_events",
+		"storefront_versions",
 		"stores",
 		// HUI-4593 (0066) 连锁模板分发引用
 		"template_assignment",

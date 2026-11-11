@@ -33,7 +33,7 @@ describe("账上路由恰好一条普查", () => {
   it("和账本同一组路由，一条不多一条不少", () => {
     const ledger = pageLedger().map((page) => page.route);
     const census = pageCensus();
-    expect(ledger).toHaveLength(26); // 基线15 + HUI-4584 渠道页 + HUI-4593 设置页/代理台 + HUI-4589 服务页 + HUI-4594 线索页 + HUI-4591 账单页 + HUI-1896 六视图5页
+    expect(ledger).toHaveLength(27); // 基线15 + HUI-4584 渠道页 + HUI-4593 设置页/代理台 + HUI-4589 服务页 + HUI-4594 线索页 + HUI-4591 账单页 + HUI-1896 六视图5页 + HUI-1676 门店首页设置页
     expect(census.map((page) => page.route)).toEqual(ledger);
     expect(new Set(census.map((page) => page.route)).size).toBe(census.length);
     expect(census.some((page) => page.route === "/login" || page.route.startsWith("/api"))).toBe(false);
@@ -118,6 +118,8 @@ describe("surface 归类", () => {
       ["/work/stores/[id]/channels", "work"],
       // HUI-4589:门店服务(连接域)配置页,商家工作台配置面。
       ["/work/stores/[id]/services", "work"],
+      // HUI-1676:门店首页设置页,商家工作台配置面。
+      ["/work/stores/[id]/page", "work"],
       // HUI-4593:成员与权限页是商家工作台设置页。
       ["/work/settings", "work"],
       // HUI-4594:线索页是商家侧授权线索列表页。
@@ -137,7 +139,7 @@ describe("surface 归类", () => {
       ["/s/[storeCode]/benefits", "public"],
       ["/s/[storeCode]/privacy", "public"],
     ]);
-    expect(want.size).toBe(26); // 基线15 + HUI-4584 渠道页 + HUI-4593 设置页/代理台 + HUI-4589 服务页 + HUI-4594 线索页 + HUI-4591 账单页 + HUI-1896 六视图5页
+    expect(want.size).toBe(27); // 基线15 + HUI-4584 渠道页 + HUI-4593 设置页/代理台 + HUI-4589 服务页 + HUI-4594 线索页 + HUI-4591 账单页 + HUI-1896 六视图5页 + HUI-1676 门店首页设置页
     for (const page of pageCensus()) {
       expect(page.surface).toBe(classifySurface(page.route, page.id));
       expect(page.surface).toBe(want.get(page.route));
@@ -259,6 +261,8 @@ describe("半成品标记", () => {
       ["/work/stores/[id]/channels", ["raw button", "raw input"]],
       // HUI-4589:门店服务(连接域)页,直接用原生控件(同 channels 风格)。
       ["/work/stores/[id]/services", ["raw button", "raw input"]],
+      // HUI-1676:门店首页设置页是薄壳,页面源零标记。
+      ["/work/stores/[id]/page", []],
       // HUI-4593:成员与权限页面是薄壳,交互全部在组件里,页面源零标记。
       ["/work/settings", []],
       // HUI-4594:线索页面是薄壳,交互全部在组件里,页面源零标记。
@@ -275,7 +279,7 @@ describe("半成品标记", () => {
       ["/s/[storeCode]/privacy", []],
     ]);
     const census = pageCensus();
-    expect(want.size).toBe(26); // 基线15 + HUI-4584 渠道页 + HUI-4593 设置页/代理台 + HUI-4589 服务页 + HUI-4594 线索页 + HUI-4591 账单页 + HUI-1896 六视图5页
+    expect(want.size).toBe(27); // 基线15 + HUI-4584 渠道页 + HUI-4593 设置页/代理台 + HUI-4589 服务页 + HUI-4594 线索页 + HUI-4591 账单页 + HUI-1896 六视图5页 + HUI-1676 门店首页设置页
     expect(census).toHaveLength(want.size);
     for (const page of census) {
       const source = readPage(page.file);

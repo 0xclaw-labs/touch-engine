@@ -461,6 +461,8 @@ export default function StoreChannelsPage() {
       <p className="tk-note">
         <Link href={`/work/stores/${storeId}/services`} className="tk-quiet">Wi-Fi / 加微信 / 社群等连接类服务</Link>
         {" · "}
+        <Link href={`/work/stores/${storeId}/page`} className="tk-quiet">门店首页设置(栏目/发布/回滚)</Link>
+        {" · "}
         <Link href="/work/stores" className="tk-quiet">返回门店列表</Link>
       </p>
     </main>
