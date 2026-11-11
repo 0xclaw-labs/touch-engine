@@ -147,8 +147,12 @@ func TestOperationsSummaryEndpointContract(t *testing.T) {
 			t.Fatalf("contract field %q missing: %v", field, out)
 		}
 	}
-	if len(out) != 5 {
-		t.Fatalf("summary contract is exactly five fields, got %v", out)
+	// 老契约五个字段名逐字不动;TOUCH-ALL-20261109-v1 轮新增 todos 块(附加字段)。
+	if len(out) != 6 {
+		t.Fatalf("summary contract is five legacy fields plus the additive todos block, got %v", out)
+	}
+	if _, ok := out["todos"].(map[string]any); !ok {
+		t.Fatalf("todos block missing: %v", out)
 	}
 	if out["as_of"].(string) == "" {
 		t.Fatal("as_of must be present")

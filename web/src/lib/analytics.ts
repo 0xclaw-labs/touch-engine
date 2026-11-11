@@ -90,14 +90,18 @@ export interface OperationsResponse {
   filter_echo: Record<string, string>;
   funnel: FunnelStage[];
   evidence: EvidencePanel;
+  evidence_layers: EvidenceLayersPanel;
+  leads: LeadsPanel;
   inventory: InventoryLine[];
   cost: CostPanel;
+  cost_reconciliation: CostReconciliation;
   anomalies: AnomalyPanel;
   notes: OperationsNotes;
   dimensions: {
     campaigns?: DimensionCampaign[];
     stores?: DimensionStore[];
     tags?: unknown[];
+    actions?: DimensionAction[];
   };
 }
 
@@ -108,7 +112,85 @@ export interface AnalyticsFilters {
   touchpoint?: string;
   platform?: string;
   handoffMethod?: string;
+  actionId?: string;
+  environment?: string;
 }
+
+// 六层证据(TOUCH-ALL-20261109-v1):点击/唤起尝试/媒体交接/顾客自报/店员确认/
+// 平台证实 分开计数,层与层之间不相加。
+export interface LayerCount {
+  key: string;
+  label: string;
+  value: number;
+}
+
+export interface EvidenceLayer {
+  key: string;
+  title: string;
+  available: boolean;
+  counts: LayerCount[];
+  definition: FunnelDefinition;
+  applied_filters?: string[];
+  note?: string;
+}
+
+export interface EvidenceLayersPanel {
+  layers: EvidenceLayer[];
+  note: string;
+}
+
+export interface LeadsPanel {
+  campaign_submitted: number;
+  store_submitted: number;
+  pending_sync: number;
+  receiver_confirmed: number;
+  revoked: number;
+  receiver_declared_revoked: number;
+  unique_contacts: number;
+  note: string;
+  definition: FunnelDefinition;
+}
+
+export interface CostReconciliation {
+  subscription_available: boolean;
+  subscription_paid_minor?: number | null;
+  subscription_paid_orders: number;
+  subscription_failed_orders: number;
+  subscription_note?: string;
+  ai_confirmed_minor: number;
+  ai_confirmed_count: number;
+  ai_consumed_minor: number;
+  ai_consumed_count: number;
+  ai_refunded_minor: number;
+  ai_refunded_count: number;
+  ai_failed_minor: number;
+  ai_failed_count: number;
+  hardware_available: boolean;
+  hardware_paid_minor?: number | null;
+  hardware_paid_orders: number;
+  hardware_refund_minor: number;
+  hardware_refunds: number;
+  definition: FunnelDefinition;
+  face_note: string;
+}
+
+export interface DimensionAction {
+  id: string;
+  label: string;
+  platform?: string;
+  kind?: string;
+  enabled: boolean;
+}
+
+// 环境白名单(与 3535 六环境同口径;服务端拒绝未知值 400)。
+export const ENVIRONMENT_OPTIONS = [
+  "desktop_browser",
+  "ios_safari",
+  "android_browser",
+  "ios_wechat",
+  "android_wechat",
+  "target_app",
+] as const;
 
 // 筛选键的固定顺序(与服务端 filter_echo 一致)与商家标签。
 export const FILTER_LABELS: Record<string, string> = {
@@ -118,6 +200,8 @@ export const FILTER_LABELS: Record<string, string> = {
   touchpoint: "触点",
   platform: "平台",
   handoff_method: "承接方式",
+  action_id: "动作",
+  environment: "环境",
 };
 
 const FILTER_ORDER = [
@@ -127,6 +211,8 @@ const FILTER_ORDER = [
   "touchpoint",
   "platform",
   "handoff_method",
+  "action_id",
+  "environment",
 ] as const;
 
 const FILTER_GETTERS: Record<string, (f: AnalyticsFilters) => string> = {
@@ -136,6 +222,8 @@ const FILTER_GETTERS: Record<string, (f: AnalyticsFilters) => string> = {
   touchpoint: (f) => f.touchpoint ?? "",
   platform: (f) => f.platform ?? "",
   handoff_method: (f) => f.handoffMethod ?? "",
+  action_id: (f) => f.actionId ?? "",
+  environment: (f) => f.environment ?? "",
 };
 
 // FEATURE_DASHBOARD 未开通时,端点答统一 404:缺失保持未知,不显示 0,
@@ -240,4 +328,29 @@ export interface CatalogMetric {
 
 export function metricDisplay(metric: CatalogMetric): string {
   return metric.available && typeof metric.value === "number" ? String(metric.value) : "未接入";
+}
+
+// 六层标题(固定顺序,服务端 layers 数组同序;缺失行保持未知,不拼 0)。
+export const LAYER_TITLES: { key: string; label: string }[] = [
+  { key: "action_clicked", label: "点击" },
+  { key: "invoke_attempt", label: "唤起尝试" },
+  { key: "handoff_media", label: "媒体交接" },
+  { key: "user_reported", label: "顾客自报" },
+  { key: "staff_confirmed", label: "店员确认" },
+  { key: "platform_confirmed", label: "平台证实" },
+];
+
+// 线索面板行(固定顺序):待同步与已获客是两个桶,注记必渲染。
+export function leadsPanelRows(
+  lp: LeadsPanel,
+): { key: string; label: string; value: number }[] {
+  return [
+    { key: "campaign_submitted", label: "活动来源提交", value: lp.campaign_submitted },
+    { key: "store_submitted", label: "门店留资提交", value: lp.store_submitted },
+    { key: "pending_sync", label: "待同步(Notify 已投递,未获客)", value: lp.pending_sync },
+    { key: "receiver_confirmed", label: "已获客(接收方确认入库)", value: lp.receiver_confirmed },
+    { key: "revoked", label: "已撤销", value: lp.revoked },
+    { key: "receiver_declared_revoked", label: "接收方申报撤销", value: lp.receiver_declared_revoked },
+    { key: "unique_contacts", label: "唯一联系人(去重)", value: lp.unique_contacts },
+  ];
 }

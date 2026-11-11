@@ -20,16 +20,20 @@ import { useEffect, useState } from "react";
 import { failureText, useSession } from "@/components/work/merchant-session";
 import {
   ANALYTICS_NOT_ENABLED_COPY,
+  ENVIRONMENT_OPTIONS,
   FILTER_LABELS,
+  LAYER_TITLES,
   buildAnalyticsQuery,
   emptyWindowCopy,
   evidenceRowList,
   formatMinor,
+  leadsPanelRows,
   localDayWindow,
   metricDisplay,
   stageNotAppliedLabels,
   type AnalyticsFilters,
   type CatalogMetric,
+  type EvidenceLayer,
   type FunnelStage,
   type OperationsResponse,
 } from "@/lib/analytics";
@@ -124,6 +128,10 @@ export function AnalyticsView() {
   const windowAllZero = data.funnel.length > 0 && data.funnel.every((stage) => stage.value === 0);
   const campaigns = data.dimensions.campaigns ?? [];
   const stores = data.dimensions.stores ?? [];
+  const actions = data.dimensions.actions ?? [];
+  const layerByKey = new Map<string, EvidenceLayer>(
+    (data.evidence_layers.layers ?? []).map((l) => [l.key, l]),
+  );
 
   const setField = (field: keyof AnalyticsFilters) => (value: string) =>
     setDraft((prev) => ({ ...prev, [field]: value }));
@@ -222,6 +230,37 @@ export function AnalyticsView() {
             ))}
           </select>
         </label>
+        <label className="tk-label">
+          动作
+          <select
+            className="tk-select"
+            data-filter="action"
+            value={draft.actionId ?? ""}
+            onChange={(event) => setField("actionId")(event.target.value)}
+          >
+            <option value="">全部动作</option>
+            {actions.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.label || item.id}
+                {item.enabled ? "" : "(已停用)"}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="tk-label">
+          环境
+          <select
+            className="tk-select"
+            data-filter="environment"
+            value={draft.environment ?? ""}
+            onChange={(event) => setField("environment")(event.target.value)}
+          >
+            <option value="">全部环境</option>
+            {ENVIRONMENT_OPTIONS.map((item) => (
+              <option key={item} value={item}>{item}</option>
+            ))}
+          </select>
+        </label>
         <button
           className="tk-button"
           type="button"
@@ -301,6 +340,69 @@ export function AnalyticsView() {
         <p className="tk-note" data-field="evidence-note">{data.evidence.note}</p>
       </section>
 
+      <section aria-label="证据六层" data-section="evidence_layers">
+        <h2 className="tk-subtitle">证据六层(逐层分列)</h2>
+        {(data.evidence_layers.layers ?? []).length === 0 ? (
+          <p className="tk-note" data-field="layers-empty">没有读到分层事实。缺失保持未知,不显示 0。</p>
+        ) : (
+          <ol className="tk-list" data-field="layers-list">
+            {LAYER_TITLES.map(({ key, label }) => {
+              const layer = layerByKey.get(key);
+              if (!layer) {
+                return (
+                  <li key={key} data-layer={key}>
+                    <span data-field="layer-title">{label}</span>
+                    <strong className="tk-unknown" data-field="layer-unknown">未知</strong>
+                  </li>
+                );
+              }
+              return (
+                <li key={key} data-layer={key}>
+                  <span data-field="layer-title">{layer.title || label}</span>
+                  <ul className="tk-list" data-field="layer-counts">
+                    {layer.counts.map((c) => (
+                      <li key={c.key} data-line={c.key}>
+                        {c.label}:<strong data-field="line-value">{c.value}</strong>
+                      </li>
+                    ))}
+                  </ul>
+                  {layer.note ? <span className="tk-note" data-field="layer-note">{layer.note}</span> : null}
+                  <details className="tk-note" data-field="layer-definition">
+                    <summary>口径</summary>
+                    <p>来源:{layer.definition.source}</p>
+                    <p>去重:{layer.definition.dedup_key}</p>
+                    <p>分母:{layer.definition.denominator}</p>
+                    <p>事件时间:{layer.definition.event_time}</p>
+                    <p>窗口:{layer.definition.window}</p>
+                  </details>
+                </li>
+              );
+            })}
+          </ol>
+        )}
+        <p className="tk-note" data-field="layers-note">{data.evidence_layers.note}</p>
+      </section>
+
+      <section aria-label="真实线索口径" data-section="leads">
+        <h2 className="tk-subtitle">真实线索(接收状态口径)</h2>
+        <ul className="tk-list" data-field="leads-list">
+          {leadsPanelRows(data.leads).map((row) => (
+            <li key={row.key} data-lead={row.key}>
+              {row.label}:<strong data-field="lead-value">{row.value}</strong>
+            </li>
+          ))}
+        </ul>
+        <p className="tk-note" data-field="leads-note">{data.leads.note}</p>
+        <details className="tk-note" data-field="leads-definition">
+          <summary>口径</summary>
+          <p>来源:{data.leads.definition.source}</p>
+          <p>去重:{data.leads.definition.dedup_key}</p>
+          <p>分母:{data.leads.definition.denominator}</p>
+          <p>事件时间:{data.leads.definition.event_time}</p>
+          <p>窗口:{data.leads.definition.window}</p>
+        </details>
+      </section>
+
       <section aria-label="奖励库存" data-section="inventory">
         <h2 className="tk-subtitle">奖励库存(账本口径)</h2>
         {data.inventory.length === 0 ? (
@@ -350,6 +452,63 @@ export function AnalyticsView() {
           </p>
         ) : null}
         <p className="tk-note" data-field="cost-face">{data.cost.face_note}</p>
+      </section>
+
+      <section aria-label="费用对账" data-section="cost_reconciliation">
+        <h2 className="tk-subtitle">费用对账(订阅 / AI / 硬件,只读投影)</h2>
+        {data.cost_reconciliation.subscription_available && data.cost_reconciliation.subscription_paid_minor != null ? (
+          <p data-field="recon-subscription">
+            订阅实付(支付事实订单投影):{formatMinor(data.cost_reconciliation.subscription_paid_minor)}
+            ({data.cost_reconciliation.subscription_paid_orders} 单)
+          </p>
+        ) : (
+          <p className="tk-unknown" data-field="recon-subscription-unknown">
+            订阅实付:窗口内没有支付事实,保持未知,不显示 0。
+          </p>
+        )}
+        {data.cost_reconciliation.subscription_failed_orders > 0 ? (
+          <p className="tk-note" data-field="recon-subscription-failed">
+            失败订阅单:{data.cost_reconciliation.subscription_failed_orders} 单(失败不是支出,是待处理)。
+          </p>
+        ) : null}
+        <p data-field="recon-ai">
+          AI 实际费用:已消费 {formatMinor(data.cost_reconciliation.ai_consumed_minor)}
+          ({data.cost_reconciliation.ai_consumed_count} 笔)·已确认未消费{" "}
+          {formatMinor(data.cost_reconciliation.ai_confirmed_minor)}
+          ({data.cost_reconciliation.ai_confirmed_count} 笔)
+        </p>
+        {data.cost_reconciliation.ai_refunded_minor > 0 || data.cost_reconciliation.ai_failed_minor > 0 ? (
+          <p className="tk-note" data-field="recon-ai-exceptions">
+            AI 退款 {formatMinor(data.cost_reconciliation.ai_refunded_minor)}({data.cost_reconciliation.ai_refunded_count} 笔)·
+            失败 {formatMinor(data.cost_reconciliation.ai_failed_minor)}({data.cost_reconciliation.ai_failed_count} 笔)
+            ——单列披露,不计入支出。
+          </p>
+        ) : null}
+        {data.cost_reconciliation.hardware_available && data.cost_reconciliation.hardware_paid_minor != null ? (
+          <p data-field="recon-hardware">
+            硬件支出(支付事实订单投影):{formatMinor(data.cost_reconciliation.hardware_paid_minor)}
+            ({data.cost_reconciliation.hardware_paid_orders} 单)
+          </p>
+        ) : (
+          <p className="tk-unknown" data-field="recon-hardware-unknown">
+            硬件支出:窗口内没有支付事实,保持未知,不显示 0。
+          </p>
+        )}
+        {data.cost_reconciliation.hardware_refunds > 0 ? (
+          <p className="tk-note" data-field="recon-hardware-refunds">
+            硬件退款:{formatMinor(data.cost_reconciliation.hardware_refund_minor)}
+            ({data.cost_reconciliation.hardware_refunds} 笔)——分列对账,不冲销原订单金额。
+          </p>
+        ) : null}
+        <details className="tk-note" data-field="recon-definition">
+          <summary>口径</summary>
+          <p>来源:{data.cost_reconciliation.definition.source}</p>
+          <p>去重:{data.cost_reconciliation.definition.dedup_key}</p>
+          <p>分母:{data.cost_reconciliation.definition.denominator}</p>
+          <p>事件时间:{data.cost_reconciliation.definition.event_time}</p>
+          <p>窗口:{data.cost_reconciliation.definition.window}</p>
+        </details>
+        <p className="tk-note" data-field="recon-face">{data.cost_reconciliation.face_note}</p>
       </section>
 
       <section aria-label="异常待处理" data-section="anomalies">

@@ -436,3 +436,429 @@ func TestDashboardOpsSummaryFacts(t *testing.T) {
 		t.Fatalf("manager scope summary must be scoped: %+v", sum2)
 	}
 }
+
+// ---- TOUCH-ALL-20261109-v1:六层证据/线索口径/费用对账/待办摘要 ---------------------
+
+// seedLayerFactSet 在固定事实集之上补六层/线索/费用事实:
+//   - 会话: ses-a(窗口内 created + resumed)+ ses-b(窗外 created)→distinct 1;
+//   - 服务事件: sa_1 open(窗口)+ sv_9 open(窗口,另一 id)→open=2;
+//     jump_attempt×2(1 个 ios_wechat、1 个窗外)→attempt=1(ios_wechat 筛选亦 1);
+//   - 交接: ph-1 platform_confirmed(带 editor_open_proved/staff_saw_submit/
+//     staff_verified_work/official_confirmed 各一)、ph-2 handoff_ready(带重复
+//     editor_open_proved)→requested=2 completed=2 editor=2 staff=1/1 platform=1;
+//     ph-3 previewed(窗外创建)不计;
+//   - 自报: sr-2(窗口内)+ sr-3(窗外)→user_reported=1+固定集 sr-1=1 → 2;
+//   - 线索: lead-c1 campaign pending_sync、lead-c2 campaign crm_received stored、
+//     lead-c3 store pending_sync、lead-c4 campaign revoked、lead-c5 campaign
+//     receiver 声明 revoked(receiver_state='revoked',本地仍 pending_sync)、
+//     lead-c6 窗外 crm_received;窗口内提交 5 行,unique contacts 4(重号一个);
+//   - 费用: sub-1 active 29900(窗口)、sub-2 failed、hw-1 active 120000(窗口)+
+//     refund 20000、sub-9 active 窗外、ai 4 状态各一行(其中 refunded/failed 不计支出);
+//   - 动作: act-on(启用无内容)、act-off(停用)、act-exp(启用但 expires_at 已过)、
+//     act-ok(启用且绑定内容);
+//   - 准入: admitted 且 valid_until 已过一行 + admitted 未到期一行。
+func (w *opsWorld) seedLayerFactSet(t *testing.T) {
+	t.Helper()
+	// 会话事件(3546): action_session_events
+	w.rawSessionEvent(t, "se-1", w.store1, "ses-a", "act-1", "created", "ev-1", "2026-10-14T08:00:00Z")
+	w.rawSessionEvent(t, "se-2", w.store1, "ses-a", "act-1", "resumed", "ev-2", "2026-10-14T08:05:00Z")
+	w.rawSessionEvent(t, "se-3", w.store1, "ses-b", "act-2", "created", "ev-3", "2026-10-13T08:00:00Z") // 窗外
+	// 服务事件(4589): store_service_events
+	w.rawServiceEvent(t, "svc-1", w.store1, "sa_1", "open", "ios_wechat", "2026-10-14T09:00:00Z")
+	w.rawServiceEvent(t, "svc-2", w.store1, "sv_9", "open", "ios_wechat", "2026-10-14T09:01:00Z")
+	w.rawServiceEvent(t, "svc-3", w.store1, "sa_1", "jump_attempt", "android_wechat", "2026-10-14T09:02:00Z")
+	w.rawServiceEvent(t, "svc-4", w.store1, "sa_1", "jump_attempt", "ios_wechat", "2026-10-13T09:02:00Z") // 窗外
+	// 参与行(交接外键要求)+ 交接行(1670)
+	w.rawParticipation(t, "part-ph1", w.campA1, w.store1, "nfc", "v3", "in_progress", "2026-10-14T08:00:00Z")
+	w.rawAttempt(t, "att-ph1", "part-ph1", "douyin", "h5", "v3", "handed_off", "2026-10-14T08:05:00Z")
+	w.rawParticipation(t, "part-ph2", w.campA1, w.store1, "qr", "", "awaiting_review", "2026-10-14T08:20:00Z")
+	w.rawAttempt(t, "att-ph2", "part-ph2", "douyin", "h5", "", "handed_off", "2026-10-14T08:25:00Z")
+	w.rawHandoff(t, "ph-1", w.store1, "part-ph1", "att-ph1", "platform_confirmed", "2026-10-14T09:10:00Z")
+	w.rawHandoff(t, "ph-2", w.store1, "part-ph2", "att-ph2", "handoff_ready", "2026-10-14T09:20:00Z")
+	w.rawHandoff(t, "ph-3", w.store1, "part-ph2", "att-ph2", "previewed", "2026-10-13T09:20:00Z") // 窗外
+	w.rawHandoffEvent(t, "phe-1", "ph-1", "editor_open_proved", "2026-10-14T09:12:00Z")
+	w.rawHandoffEvent(t, "phe-2", "ph-2", "editor_open_proved", "2026-10-14T09:22:00Z")
+	w.rawHandoffEvent(t, "phe-3", "ph-2", "editor_open_proved", "2026-10-14T09:23:00Z") // 重放
+	w.rawHandoffEvent(t, "phe-4", "ph-1", "staff_saw_submit", "2026-10-14T09:30:00Z")
+	w.rawHandoffEvent(t, "phe-5", "ph-1", "staff_verified_work", "2026-10-14T09:31:00Z")
+	w.rawHandoffEvent(t, "phe-6", "ph-1", "official_confirmed", "2026-10-14T09:32:00Z")
+	// 1670 v2 六层事实 kind(冻结词汇):
+	w.rawHandoffEvent(t, "phe-7", "ph-1", "customer_click", "2026-10-14T09:05:00Z")
+	w.rawHandoffEvent(t, "phe-8", "ph-1", "customer_click", "2026-10-14T09:06:00Z") // 第二次点击逐行计
+	w.rawHandoffEvent(t, "phe-9", "ph-1", "wake_attempt", "2026-10-14T09:08:00Z")
+	w.rawHandoffEvent(t, "phe-10", "ph-1", "media_handoff", "2026-10-14T09:09:00Z")
+	w.rawHandoffEvent(t, "phe-11", "ph-1", "customer_self_report", "2026-10-14T09:28:00Z")
+	w.rawHandoffEvent(t, "phe-12", "ph-1", "staff_confirm", "2026-10-14T09:29:00Z")
+	w.rawHandoffEvent(t, "phe-13", "ph-1", "platform_confirm", "2026-10-14T09:33:00Z")
+	// v2 动作交接行(action_id/environment 维度)+ 其点击事件(筛选断言用)。
+	w.rawParticipation(t, "part-v2", w.campA1, w.store1, "nfc", "v3", "in_progress", "2026-10-14T08:00:00Z")
+	w.rawAttempt(t, "att-v2", "part-v2", "douyin", "h5", "v3", "handed_off", "2026-10-14T08:05:00Z")
+	w.rawHandoffV2(t, "ph-v2", w.store1, "part-v2", "att-v2", "handoff_ready", "sa_1", "ios_wechat", "2026-10-14T09:40:00Z")
+	w.rawHandoffEvent(t, "phe-14", "ph-v2", "customer_click", "2026-10-14T09:41:00Z")
+	// 自报(固定集已有 sr-1)
+	w.rawSelfReport(t, "sr-2", w.campA1, "exported", 1)
+	// 窗外自报:直接 UPDATE created_at(夹具函数固定时间,这里改窗)
+	must(t, w.exec(`INSERT INTO customer_publish_attempts(id,tenant_id,campaign_id,link_code,platform,publisher_subject,
+		copy_text,content_version,account_label,status,self_reported,created_at,updated_at)
+		VALUES('sr-3',?,?,'LNK-x','douyin','activity_customer','文案','v1','账号','exported',1,'2026-10-13T09:00:00Z','2026-10-13T09:00:00Z')`,
+		w.tenA, w.campA1))
+	// 线索(4594 口径)
+	w.rawLead(t, "lead-c1", w.campA1, w.store1, "campaign", "pending_sync", "", 0, "2026-10-14T10:00:00Z", "13800000001")
+	w.rawLead(t, "lead-c2", w.campA1, w.store1, "campaign", "crm_received", "stored", 0, "2026-10-14T10:01:00Z", "13800000002")
+	w.rawLead(t, "lead-c3", "", w.store1, "store", "pending_sync", "", 0, "2026-10-14T10:02:00Z", "13800000003")
+	w.rawLead(t, "lead-c4", w.campA1, w.store1, "campaign", "revoked", "", 1, "2026-10-14T10:03:00Z", "13800000004")
+	w.rawLead(t, "lead-c5", w.campA1, w.store1, "campaign", "pending_sync", "revoked", 0, "2026-10-14T10:04:00Z", "13800000001") // 重号
+	w.rawLead(t, "lead-c6", w.campA1, w.store1, "campaign", "crm_received", "stored", 0, "2026-10-13T10:05:00Z", "13800000009")  // 窗外
+	// 费用(4591 投影)
+	w.rawBillingOrder(t, "sub-1", "subscription", "new", 29900, "active", "2026-10-14T06:00:00Z")
+	w.rawBillingOrder(t, "sub-2", "subscription", "renew", 29900, "failed", "2026-10-14T06:05:00Z")
+	w.rawBillingOrder(t, "hw-1", "hardware", "purchase", 120000, "active", "2026-10-14T06:10:00Z")
+	w.rawBillingOrder(t, "sub-9", "subscription", "new", 99900, "active", "2026-10-13T06:00:00Z") // 窗外
+	w.rawRefund(t, "ref-1", "hw-1", 20000, "2026-10-14T07:00:00Z")
+	w.rawAIUsage(t, "ai-1", "q-1", "consumed", 100, "2026-10-14T07:10:00Z")
+	w.rawAIUsage(t, "ai-2", "q-2", "confirmed", 120, "2026-10-14T07:11:00Z")
+	w.rawAIUsage(t, "ai-3", "q-3", "refunded", 60, "2026-10-14T07:12:00Z")
+	w.rawAIUsage(t, "ai-4", "q-4", "failed", 30, "2026-10-14T07:13:00Z")
+	// 动作(4584)+ 准入(3535)
+	w.rawStoreAction(t, "act-on", w.store1, "douyin", "review", true, "", true)
+	w.rawStoreAction(t, "act-off", w.store1, "douyin", "review", false, "", true)
+	w.rawStoreAction(t, "act-exp", w.store1, "meituan", "review", true, "2026-10-14T00:00:01Z", true)
+	w.rawStoreAction(t, "act-ok", w.store1, "xiaohongshu", "follow", true, "", false)
+	w.rawAdmission(t, "adm-1", "douyin", "h5", "publish_media", "*", "admitted", "2026-10-13T00:00:00Z") // 已过期
+	w.rawAdmission(t, "adm-2", "kuaishou", "h5", "publish_media", "*", "admitted", "2027-01-01T00:00:00Z")
+}
+
+func (w *opsWorld) rawSessionEvent(t *testing.T, id, storeID, sessionID, actionID, kind, eventID, at string) {
+	t.Helper()
+	must(t, w.exec(`INSERT INTO action_session_events(id,tenant_id,store_id,session_id,action_id,action_revision,kind,
+		source,event_id,participation_id,credential_id,content_pack_version,occurred_at)
+		VALUES(?,?,?,?,?,1,?,'touch-engine',?,'','','',?)`,
+		id, w.tenA, storeID, sessionID, actionID, kind, eventID, at))
+}
+
+func (w *opsWorld) rawServiceEvent(t *testing.T, id, storeID, serviceID, kind, env, at string) {
+	t.Helper()
+	tier := "click"
+	if kind == "jump_attempt" {
+		tier = "jump_attempt"
+	}
+	must(t, w.exec(`INSERT INTO store_service_events(id,tenant_id,store_id,service_id,event_kind,environment,evidence_tier,occurred_at)
+		VALUES(?,?,?,?,?,?,?,?)`, id, w.tenA, storeID, serviceID, kind, env, tier, at))
+}
+
+func (w *opsWorld) rawHandoff(t *testing.T, id, storeID, participationID, attemptID, status, createdAt string) {
+	t.Helper()
+	must(t, w.exec(`INSERT INTO publish_handoffs(id,tenant_id,store_id,campaign_id,link_code,participation_id,attempt_id,
+		platform,entry_mode,scenario,idempotency_key,status,evidence_source,media_json,text_json,visitor_id,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		id, w.tenA, storeID, w.campA1, "LNK-"+id, participationID, attemptID, "douyin", "h5", "storefront_publish",
+		"idem-"+id, status, "customer_action", "[]", "{}", "vis-"+id, createdAt, createdAt))
+}
+
+// rawHandoffV2 播种 1670 v2 动作交接行(带 action_id/environment 维度)。
+func (w *opsWorld) rawHandoffV2(t *testing.T, id, storeID, participationID, attemptID, status, actionID, env, createdAt string) {
+	t.Helper()
+	must(t, w.exec(`INSERT INTO publish_handoffs(id,tenant_id,store_id,campaign_id,link_code,participation_id,attempt_id,
+		platform,entry_mode,scenario,idempotency_key,status,evidence_source,media_json,text_json,visitor_id,
+		action_id,action_session_id,action_revision,method,environment,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		id, w.tenA, storeID, w.campA1, "LNK-"+id, participationID, attemptID, "douyin", "h5", "storefront_publish",
+		"idem-"+id, status, "customer_action", "[]", "{}", "vis-"+id,
+		actionID, "sess-"+id, 1, "h5", env, createdAt, createdAt))
+}
+
+func (w *opsWorld) rawHandoffEvent(t *testing.T, id, handoffID, kind, at string) {
+	t.Helper()
+	must(t, w.exec(`INSERT INTO publish_handoff_events(id,tenant_id,handoff_id,kind,actor,evidence_source,receipt_id,payload,created_at)
+		VALUES(?,?,?,?,?,?,?, '{}',?)`,
+		id, w.tenA, handoffID, kind, "test", "staff_observation", "", at))
+}
+
+func (w *opsWorld) rawLead(t *testing.T, id, campID, storeID, capture, syncState, receiverState string, revoked int, at, phone string) {
+	t.Helper()
+	revokedAt := ""
+	if revoked == 1 {
+		revokedAt = at
+	}
+	must(t, w.exec(`INSERT INTO lead_submissions(id,tenant_id,campaign_id,store_id,link_id,form_id,session_id,capture_source,
+		submission_ref,dedup_key,name,phone,wechat,marketing_optin,consent_notice_version,consent_at,consent_ip_fp,
+		sync_state,sync_error,attempts,source_version,revoked_at,created_at,updated_at,receiver_state,receipt_id,revoke_source_revision)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`,
+		id, w.tenA, campID, storeID, "", "form-"+id, "", capture,
+		"ref-"+id, "dk-"+id, "顾客", phone, "", 1, "v1", at, "fp",
+		syncState, "", 0, 1, revokedAt, at, at, receiverState, ""))
+}
+
+func (w *opsWorld) rawBillingOrder(t *testing.T, id, kind, action string, amount int64, status, at string) {
+	t.Helper()
+	must(t, w.exec(`INSERT INTO billing_orders(id,tenant_id,kind,action,plan_code,price_ref,price_snapshot,amount_minor,
+		currency,status,order_ref,payment_ref,idempotency_key,payer_grant_ref,agency_relation_ref,payer_principal,
+		actor_principal,actor_role,fail_reason,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		id, w.tenA, kind, action, "plan-basic", "price-1", "{}", amount, "FEN", status,
+		"ord-"+id, "pay-"+id, "idem-"+id, "", "", "", "", "org_owner", "", at, at))
+}
+
+func (w *opsWorld) rawRefund(t *testing.T, id, orderID string, amount int64, at string) {
+	t.Helper()
+	must(t, w.exec(`INSERT INTO billing_refunds(id,tenant_id,order_id,refund_ref,amount_minor,currency,reason,
+		invoice_title,invoice_status,invoice_ref,auditor,source,event_id,payload,occurred_at,created_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		id, w.tenA, orderID, "rr-"+id, amount, "FEN", "hardware return", "", "none", "", "auditor",
+		"authority", "evt-"+id, "{}", at, at))
+}
+
+func (w *opsWorld) rawAIUsage(t *testing.T, id, quoteRef, state string, amount int64, at string) {
+	t.Helper()
+	must(t, w.exec(`INSERT INTO billing_ai_usage(id,tenant_id,quote_ref,capability,quantity,amount_minor,currency,
+		pricing_version,state,business_ref,consumed_by_ref,occurred_at,created_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		id, w.tenA, quoteRef, "video_gen", 1, amount, "FEN", "pv1", state, "", "", at, at))
+}
+
+func (w *opsWorld) rawStoreAction(t *testing.T, id, storeID, platform, kind string, enabled bool, expiresAt string, withContent bool) {
+	t.Helper()
+	binding := ""
+	if withContent {
+		binding = "pack:1"
+	}
+	revoked := 0
+	if !enabled {
+		revoked = 1
+	}
+	must(t, w.exec(`INSERT INTO store_actions(id,tenant_id,store_id,catalog_code,platform,kind,variant,label,target_ref,
+		content_binding_ref,capability_ref,presentation,sort_order,enabled,revision,revoked,expires_at,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		id, w.tenA, storeID, "A05", platform, kind, "", "动作"+id, "https://example.com",
+		binding, "", "link", 0, boolInt(enabled), 1, revoked, expiresAt, "2026-10-14T00:00:00Z", "2026-10-14T00:00:00Z"))
+}
+
+func (w *opsWorld) rawAdmission(t *testing.T, id, platform, entryMode, scenario, tenantScope, status, validUntil string) {
+	t.Helper()
+	must(t, w.exec(`INSERT INTO channel_admissions(id,platform,entry_mode,scenario,app_binding,tenant_scope,status,
+		reward_admitted,reason_code,reason_text,cap_media,cap_title,cap_body,cap_topic,cap_poi,cap_receipt,cap_callback,
+		missing,official_sources,last_checked_at,valid_until,seed_version,payload_hash,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		id, platform, entryMode, scenario, "platform_app", tenantScope, status, 0, "ok", "",
+		"supported", "supported", "supported", "supported", "unknown", "supported", "supported",
+		"[]", "[]", validUntil, validUntil, 1, "hash", validUntil, validUntil))
+}
+
+// 六层事实:窗口内的固定事实集→逐层逐行核对;筛选/作用域/跨租户 fail-closed。
+func TestDashboardOpsLayerFacts(t *testing.T) {
+	w := seedOpsWorld(t)
+	w.seedFixedFactSet(t)
+	w.seedLayerFactSet(t)
+	start, end := opsWinBounds(t)
+	facts, _, err := w.s.DashboardOps(w.tenA, "", start, end, OpsFilter{})
+	must(t, err)
+
+	// L1 点击: distinct 会话 1(ses-b 窗外)+ 卡片打开 2(sa_1 + sv_9)
+	if facts.LayerActionSessions != 1 {
+		t.Fatalf("action sessions = %d, want 1 (distinct session, out-of-window excluded)", facts.LayerActionSessions)
+	}
+	if facts.LayerServiceOpens != 2 {
+		t.Fatalf("service opens = %d, want 2", facts.LayerServiceOpens)
+	}
+	// L2 唤起尝试: jump_attempt 1(窗外不计)+ editor_open_proved distinct 2(重放不计)
+	if facts.LayerJumpAttempts != 1 {
+		t.Fatalf("jump attempts = %d, want 1", facts.LayerJumpAttempts)
+	}
+	if facts.LayerEditorProved != 2 {
+		t.Fatalf("editor_open_proved distinct = %d, want 2", facts.LayerEditorProved)
+	}
+	// L3 媒体交接: requested=3(ph-1/ph-2/ph-v2;ph-3 窗外不计),
+	// completed=3(ph-1 confirmed 蕴含 ready 已达 + ph-2 ready + ph-v2 ready)
+	if facts.LayerHandoffRequested != 3 {
+		t.Fatalf("handoff requested = %d, want 3", facts.LayerHandoffRequested)
+	}
+	if facts.LayerHandoffCompleted != 3 {
+		t.Fatalf("handoff completed = %d, want 3", facts.LayerHandoffCompleted)
+	}
+	// L4 顾客自报: sr-1(固定集)+ sr-2(窗口内)= 2;sr-3 窗外不计
+	if facts.LayerUserReported != 2 {
+		t.Fatalf("user reported = %d, want 2", facts.LayerUserReported)
+	}
+	// L5 店员确认: staff_saw_submit 1 + staff_verified_work 1(distinct handoff)
+	if facts.LayerStaffSaw != 1 || facts.LayerStaffVerified != 1 {
+		t.Fatalf("staff facts = %d/%d, want 1/1", facts.LayerStaffSaw, facts.LayerStaffVerified)
+	}
+	// L6 平台证实: handoff platform_confirmed 1 + official_confirmed 事件 distinct 1
+	if facts.LayerPlatformHandoffs != 1 || facts.LayerOfficialEvents != 1 {
+		t.Fatalf("platform facts = %d/%d, want 1/1", facts.LayerPlatformHandoffs, facts.LayerOfficialEvents)
+	}
+	// 1670 v2 六层 kind:点击逐行 3(2+1)、wake 1、media/self/staff/platform distinct 1/1/1/1
+	if facts.LayerCustomerClick != 3 {
+		t.Fatalf("customer_click = %d, want 3 (逐事件行)", facts.LayerCustomerClick)
+	}
+	if facts.LayerWakeAttempt != 1 || facts.LayerMediaHandoff != 1 {
+		t.Fatalf("wake/media = %d/%d, want 1/1", facts.LayerWakeAttempt, facts.LayerMediaHandoff)
+	}
+	if facts.LayerSelfReportEvent != 1 || facts.LayerStaffConfirm != 1 || facts.LayerPlatformConfirm != 1 {
+		t.Fatalf("self/staff/platform confirm = %d/%d/%d, want 1/1/1",
+			facts.LayerSelfReportEvent, facts.LayerStaffConfirm, facts.LayerPlatformConfirm)
+	}
+	// v2 行的 action/environment 维度收窄发布域(ph-v2 带 sa_1/ios_wechat)。
+	facts, _, err = w.s.DashboardOps(w.tenA, "", start, end, OpsFilter{ActionID: "sa_1", Environment: "ios_wechat"})
+	must(t, err)
+	if facts.LayerHandoffRequested != 1 || facts.LayerCustomerClick != 1 {
+		t.Fatalf("action+environment filter must narrow publish rows: requested=%d click=%d, want 1/1",
+			facts.LayerHandoffRequested, facts.LayerCustomerClick)
+	}
+
+	// 筛选:环境维度只落在服务事件行;iOS 微信下 open=2、attempt=0(窗口内 attempt 是 android)。
+	facts, _, err = w.s.DashboardOps(w.tenA, "", start, end, OpsFilter{Environment: "ios_wechat"})
+	must(t, err)
+	if facts.LayerServiceOpens != 2 || facts.LayerJumpAttempts != 0 {
+		t.Fatalf("environment filter wrong: opens=%d attempts=%d, want 2/0", facts.LayerServiceOpens, facts.LayerJumpAttempts)
+	}
+	// 动作筛选:action_id 收窄服务事件与会话。
+	facts, _, err = w.s.DashboardOps(w.tenA, "", start, end, OpsFilter{ActionID: "sa_1"})
+	must(t, err)
+	if facts.LayerServiceOpens != 1 || facts.LayerJumpAttempts != 1 || facts.LayerActionSessions != 0 {
+		t.Fatalf("action filter wrong: opens=%d attempts=%d sessions=%d, want 1/1/0(sa_1 上没有会话)",
+			facts.LayerServiceOpens, facts.LayerJumpAttempts, facts.LayerActionSessions)
+	}
+	// 平台筛选落在发布域行。
+	facts, _, err = w.s.DashboardOps(w.tenA, "", start, end, OpsFilter{Platform: "kuaishou"})
+	must(t, err)
+	if facts.LayerHandoffRequested != 0 || facts.LayerPlatformHandoffs != 0 {
+		t.Fatalf("platform filter must narrow publish-domain lines: %+v", facts)
+	}
+	// 店经理作用域:store2 视角六层发布域/会话域全零(store1 的事实)。
+	facts, _, err = w.s.DashboardOps(w.tenA, w.store2, start, end, OpsFilter{})
+	must(t, err)
+	if facts.LayerActionSessions != 0 || facts.LayerHandoffRequested != 0 || facts.LayerServiceOpens != 0 {
+		t.Fatalf("manager scope must zero store1 facts: %+v", facts)
+	}
+	// 平台筛选落在发布域行(全部 douyin;kuaishou 为 0)——前置覆盖在下方保留。
+	// 跨租户 fail-closed。
+	facts, _, err = w.s.DashboardOps(w.tenB, "", start, end, OpsFilter{})
+	must(t, err)
+	if facts.LayerActionSessions != 0 || facts.LayerHandoffRequested != 0 || facts.LayerServiceOpens != 0 {
+		t.Fatalf("cross-tenant must be zero: %+v", facts)
+	}
+}
+
+// 线索口径:待同步不算已获客;两分来源;撤销与接收方申报分列;unique contacts。
+func TestDashboardOpsLeadsFacts(t *testing.T) {
+	w := seedOpsWorld(t)
+	w.seedLayerFactSet(t)
+	start, end := opsWinBounds(t)
+	facts, _, err := w.s.DashboardOps(w.tenA, "", start, end, OpsFilter{})
+	must(t, err)
+	lp := facts.Leads
+	if lp.CampaignSubmitted != 4 {
+		t.Fatalf("campaign submitted = %d, want 4 (c1/c2/c4/c5)", lp.CampaignSubmitted)
+	}
+	if lp.StoreSubmitted != 1 {
+		t.Fatalf("store submitted = %d, want 1 (c3)", lp.StoreSubmitted)
+	}
+	if lp.PendingSync != 3 {
+		t.Fatalf("pending_sync = %d, want 3 (c1/c3/c5) — 待同步不算已获客", lp.PendingSync)
+	}
+	if lp.ReceiverConfirmed != 1 {
+		t.Fatalf("receiver confirmed = %d, want 1 (c2; c6 窗外)", lp.ReceiverConfirmed)
+	}
+	if lp.Revoked != 1 {
+		t.Fatalf("revoked = %d, want 1 (c4)", lp.Revoked)
+	}
+	if lp.ReceiverDeclaredRevoked != 1 {
+		t.Fatalf("receiver declared revoked = %d, want 1 (c5)", lp.ReceiverDeclaredRevoked)
+	}
+	if lp.UniqueContacts != 4 {
+		t.Fatalf("unique contacts = %d, want 4 (c5 重号 c1)", lp.UniqueContacts)
+	}
+	// 门店筛选收窄(事实都在 store1,store2 视角全零)。
+	facts, _, err = w.s.DashboardOps(w.tenA, w.store2, start, end, OpsFilter{})
+	must(t, err)
+	if facts.Leads.CampaignSubmitted != 0 || facts.Leads.ReceiverConfirmed != 0 {
+		t.Fatalf("manager scope leads must be zero: %+v", facts.Leads)
+	}
+	// 跨租户零行。
+	facts, _, err = w.s.DashboardOps(w.tenB, "", start, end, OpsFilter{})
+	must(t, err)
+	if facts.Leads.CampaignSubmitted != 0 || facts.Leads.PendingSync != 0 {
+		t.Fatalf("cross-tenant leads must be zero: %+v", facts.Leads)
+	}
+}
+
+// 费用对账:订阅/AI/硬件分明细;退款分列;窗外不计;failed 不是支出。
+func TestDashboardOpsCostReconciliationFacts(t *testing.T) {
+	w := seedOpsWorld(t)
+	w.seedLayerFactSet(t)
+	start, end := opsWinBounds(t)
+	facts, _, err := w.s.DashboardOps(w.tenA, "", start, end, OpsFilter{})
+	must(t, err)
+	cr := facts.CostRecon
+	if cr.SubscriptionPaidMinor == nil || *cr.SubscriptionPaidMinor != 29900 {
+		t.Fatalf("subscription paid = %v, want 29900 (sub-9 窗外不计)", cr.SubscriptionPaidMinor)
+	}
+	if cr.SubscriptionPaidOrders != 1 || cr.SubscriptionFailedOrders != 1 {
+		t.Fatalf("subscription order counts = %d/%d, want 1/1", cr.SubscriptionPaidOrders, cr.SubscriptionFailedOrders)
+	}
+	if cr.AIConsumedMinor != 100 || cr.AIConfirmedMinor != 120 || cr.AIRefundedMinor != 60 || cr.AIFailedMinor != 30 {
+		t.Fatalf("AI state split wrong: %+v", cr)
+	}
+	if cr.AIRefundedCount != 1 || cr.AIFailedCount != 1 || cr.AIConsumedCount != 1 || cr.AIConfirmedCount != 1 {
+		t.Fatalf("AI state counts wrong: %+v", cr)
+	}
+	if cr.HardwarePaidMinor == nil || *cr.HardwarePaidMinor != 120000 {
+		t.Fatalf("hardware paid = %v, want 120000", cr.HardwarePaidMinor)
+	}
+	if cr.HardwareRefundMinor != 20000 || cr.HardwareRefunds != 1 {
+		t.Fatalf("hardware refunds = %d/%d, want 20000/1 分列不冲销", cr.HardwareRefundMinor, cr.HardwareRefunds)
+	}
+	// 跨租户零。
+	facts, _, err = w.s.DashboardOps(w.tenB, "", start, end, OpsFilter{})
+	must(t, err)
+	if facts.CostRecon.SubscriptionPaidMinor != nil || facts.CostRecon.HardwarePaidMinor != nil || facts.CostRecon.AIConsumedMinor != 0 {
+		t.Fatalf("cross-tenant cost recon must be empty/zero: %+v", facts.CostRecon)
+	}
+}
+
+// 待办摘要:当前态队列 + 渠道准入到期;作用域收窄;跨租户零。
+func TestDashboardOpsSummaryTodos(t *testing.T) {
+	w := seedOpsWorld(t)
+	w.seedFixedFactSet(t) // 权益账(ben-1 issued/ben-4 issued)供待核销当前态
+	w.seedLayerFactSet(t)
+	dayStart, _ := time.Parse(time.RFC3339, "2026-10-14T00:00:00Z")
+	asOf, _ := time.Parse(time.RFC3339, "2026-10-14T12:00:00Z")
+	sum, err := w.s.DashboardOpsSummary(w.tenA, "", dayStart, asOf)
+	must(t, err)
+	td := sum.Todos
+	if td.UnavailableActions != 1 { // act-off(停用);act-exp 过期另列
+		t.Fatalf("unavailable actions = %d, want 1", td.UnavailableActions)
+	}
+	if td.MissingContent != 1 { // act-on 启用未绑定;act-off 停用/act-exp 过期都不入缺素材
+		t.Fatalf("missing content = %d, want 1 (act-on)", td.MissingContent)
+	}
+	if td.ActionAuthExpired != 1 {
+		t.Fatalf("action auth expired = %d, want 1 (act-exp)", td.ActionAuthExpired)
+	}
+	if td.AdmissionExpired != 1 {
+		t.Fatalf("admission expired = %d, want 1 (adm-1)", td.AdmissionExpired)
+	}
+	if td.ActionAuthExpired+td.AdmissionExpired != 2 {
+		t.Fatalf("authorization expired = action+admission, want 2, got %d+%d", td.ActionAuthExpired, td.AdmissionExpired)
+	}
+	if td.PendingRedeem != 2 { // 当前态 issued:ben-1 + ben-4(ben-2 已核销/ben-3 reserved/ben-5 reversed 不算;无窗口)
+		t.Fatalf("pending redeem = %d, want 2", td.PendingRedeem)
+	}
+	if td.BillingFailedOrders != 1 {
+		t.Fatalf("billing failed orders = %d, want 1 (sub-2)", td.BillingFailedOrders)
+	}
+	if sum.PendingConfirm != 3 { // sr-1(固定集)+ sr-2 + sr-3:当前态队列,与窗口无关
+		t.Fatalf("todos pending confirm = %d, want 3", sum.PendingConfirm)
+	}
+	// 跨租户:自有事实零;admission tenant_scope='*' 是平台级真值,对每租户可见
+	// (adm-1 过期对 B 家同样成立),不是泄漏。
+	sum, err = w.s.DashboardOpsSummary(w.tenB, "", dayStart, asOf)
+	must(t, err)
+	if sum.Todos.UnavailableActions != 0 || sum.Todos.BillingFailedOrders != 0 || sum.Todos.ActionAuthExpired != 0 {
+		t.Fatalf("cross-tenant own facts must be zero: %+v", sum.Todos)
+	}
+	if sum.Todos.AdmissionExpired != 1 {
+		t.Fatalf("platform-scope (*) expired admission is visible to every tenant, want 1: %+v", sum.Todos)
+	}
+}
