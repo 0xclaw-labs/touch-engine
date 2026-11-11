@@ -567,8 +567,14 @@ func layersAppliedFor(layer string, f FilterSet) []string {
 		add(f.StoreID != "", "store_id")
 		add(f.ActionID != "", "action_id")
 		add(f.Environment != "", "environment")
-	case LayerHandoffMedia, LayerUserReported, LayerStaffConfirmed, LayerPlatformVerified:
+	case LayerHandoffMedia, LayerStaffConfirmed, LayerPlatformVerified:
 		publishDomain()
+	case LayerUserReported:
+		// 自报事实行(customer_publish_attempts)没有 action/environment 列,
+		// 不声明这两项——声明了就是假装过滤。
+		add(f.CampaignID != "", "campaign_id")
+		add(f.StoreID != "", "store_id")
+		add(f.Platform != "", "platform")
 	}
 	return out
 }
@@ -1006,7 +1012,8 @@ type SummaryFacts struct {
 }
 
 const todoNote = "待办是当前态队列(另有窗口流水在 anomalies),由首页渲染;统计只读,本票不改 TodayDesk;" +
-	"每项口径见 definitions,零事实=真实 0 不是未知"
+	"每项口径见 definitions,零事实=真实 0 不是未知;" +
+	"店经理作用域下渠道准入与账务异常是租户级事实,fail-closed 为 0(不跨店泄漏)"
 
 // BuildOperationsSummary assembles the fixed contract. Pure function.
 func BuildOperationsSummary(now time.Time, f SummaryFacts) OperationsSummary {
