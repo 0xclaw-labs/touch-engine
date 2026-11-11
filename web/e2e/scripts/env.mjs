@@ -279,8 +279,8 @@ async function up() {
     LEADS_PHONE_PEPPER: "e2e-phone-pepper",
     // HUI-4594：受信线索接收缝（lead-records 取数 + 持久化 ACK）。leads-ingest
     // 持 lead_receiver 角色；哑值仅用于本地走查部署（令牌纪律同其它服务 token）。
-    TOUCH_SERVICE_TOKENS: "leads-ingest:e2e-leads-receiver-token;content-producer:e2e-producer-token",
-    TOUCH_SERVICE_ROLES: "leads-ingest:lead_receiver;content-producer:content_return_producer",
+    TOUCH_SERVICE_TOKENS: "leads-ingest:e2e-leads-receiver-token;content-producer:e2e-producer-token;billing-auth:e2e-billing-authority-token",
+    TOUCH_SERVICE_ROLES: "leads-ingest:lead_receiver;content-producer:content_return_producer;billing-auth:billing_authority",
     // HUI-3531 Walk E 受信测试桩（外部账单/任务权威的本地替身，票面认可的
     // 工程联验模式）：真实生产部署换 PLATFORM_BILLING_*/PLATFORM_TASK_* 真服务。
     PLATFORM_BILLING_BASE_URL: `http://127.0.0.1:${PORTS.seams}`,

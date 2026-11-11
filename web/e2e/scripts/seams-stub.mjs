@@ -40,7 +40,8 @@ const server = createServer((req, res) => {
       });
     }
     if (req.method === "POST" && req.url === "/internal/v1/tasks") {
-      return send(200, { task_ref: `task_stub_${Date.now().toString(36)}`, status: "submitted" });
+      // 客户端验收契约=task_id（production.go TaskSubmitter）。
+      return send(200, { task_id: `task_stub_${Date.now().toString(36)}`, status: "submitted" });
     }
     if (req.url === "/healthz") {
       return send(200, { status: "ok" });
