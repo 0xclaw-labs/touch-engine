@@ -618,6 +618,14 @@ func upsertHardwareStep(tx *sql.Tx, tenantID, orderID string, in billing.Hardwar
 	return err
 }
 
+// ApplyHardwareStepInTx records one trusted delivery fact inside the caller's
+// transaction (HUI-1663 接线,4591 报告 §7「1663 落地时把交付状态机接线到本投影
+// 即可」):交付域在自身事件事务内同步推进订单投影,判定核仍是 upsertHardwareStep
+// → billing.ApplyHardwareStep 纯函数,幂等/不可跳跃纪律逐字节一致。
+func ApplyHardwareStepInTx(tx *sql.Tx, tenantID, orderID string, in billing.HardwareStepInput, at string) error {
+	return upsertHardwareStep(tx, tenantID, orderID, in, at)
+}
+
 // ApplyHardwareStep records one trusted delivery fact (五状态推进)。
 func (s *Store) ApplyHardwareStep(tenantID, orderID string, in billing.HardwareStepInput, at string) (billing.HardwareFulfillment, error) {
 	tx, err := s.DB.Begin()
