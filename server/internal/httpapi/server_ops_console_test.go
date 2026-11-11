@@ -575,3 +575,21 @@ func TestOpsGrantExpiryStopsImmediately(t *testing.T) {
 		t.Fatalf("expired grant read = %d, want 403", status)
 	}
 }
+
+func TestOpsTemplatesViewSmoke(t *testing.T) {
+	// 冒烟修复回归:目录/分发/内容版本三读面齐出(真实表列名锁进测试)。
+	f := opsFixture(t)
+	status, out := f.do(t, "GET", "/api/v1/ops/templates", "sess-owner-a", f.tenA, "")
+	if status != 200 {
+		t.Fatalf("templates view = %d %v", status, out)
+	}
+	if _, ok := out["templates"].([]any); !ok {
+		t.Fatalf("templates array missing: %v", out)
+	}
+	if _, ok := out["assignments"].([]any); !ok {
+		t.Fatalf("assignments array missing: %v", out)
+	}
+	if _, ok := out["content_versions"].([]any); !ok {
+		t.Fatalf("content_versions array missing: %v", out)
+	}
+}

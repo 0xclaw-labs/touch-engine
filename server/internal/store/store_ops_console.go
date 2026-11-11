@@ -920,9 +920,10 @@ func (s *Store) ListContentVersionsAll(limit int) ([]OpsContentVersionRow, error
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
+	// store_content_pack_versions 无 updated_at 列,按 created_at 倒序。
 	rows, err := s.DB.Query(
-		`SELECT tenant_id,pack_id,id,version,status,COALESCE(blocked_reason,''),updated_at
-		 FROM store_content_pack_versions ORDER BY updated_at DESC LIMIT ?`, limit)
+		`SELECT tenant_id,pack_id,id,version_no,status,COALESCE(blocked_reason,''),created_at
+		 FROM store_content_pack_versions ORDER BY created_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
