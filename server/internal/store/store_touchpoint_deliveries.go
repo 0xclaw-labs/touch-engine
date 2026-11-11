@@ -137,6 +137,9 @@ type TouchpointDeliveryView struct {
 	BindingStale           bool                        `json:"binding_stale"`
 	LastReadback           *DeliveryStepFact           `json:"last_readback,omitempty"`
 	LastReadbackMatches    bool                        `json:"last_readback_matches"`
+	// LastReadbackReason: 最近一次回读判定原因(ok/host_mismatch/code_mismatch/
+	// empty_read);空 = 还没有回读事实(展示面据此不说「不一致」)。
+	LastReadbackReason string `json:"last_readback_reason,omitempty"`
 }
 
 // NewTouchpointDelivery is the creation input. Store/touchpoint facts derive
@@ -294,7 +297,7 @@ type deliveryEventCanonical struct {
 	OccurredAt  string `json:"occurred_at"`
 }
 
-func deliveryEventPayload(in DeliveryEventInput, expectedURL string, matches bool, note string) (string, string, error) {
+func deliveryEventPayload(in DeliveryEventInput, expectedURL string, matches bool, reason, note string) (string, string, error) {
 	canon := deliveryEventCanonical{
 		EventType: in.EventType, DeliveryID: in.DeliveryID, DeviceRef: in.DeviceRef,
 		EvidenceRef: in.EvidenceRef, ReadURL: strings.TrimSpace(in.ReadURL), OccurredAt: in.OccurredAt,
@@ -309,6 +312,7 @@ func deliveryEventPayload(in DeliveryEventInput, expectedURL string, matches boo
 		// readback 展示字段(派生,不入判等)
 		"expected_url": expectedURL,
 		"matches":      matches,
+		"reason":       reason,
 	})
 	if err != nil {
 		return "", "", err
@@ -344,14 +348,12 @@ func (s *Store) ApplyTouchpointDeliveryEvent(in DeliveryEventInput, at string) (
 	if err != nil {
 		return res, err
 	}
-	if cur.Status == delivery.StatusSuperseded {
-		return res, delivery.ErrDeliveryClosed
-	}
 	if !delivery.IsStepEvent(in.EventType) {
 		return res, delivery.ErrUnknownStep
 	}
 
-	// 幂等闸:同 (tenant,source,event_id) 同 canonical = 读回;异负载 = 冲突。
+	// 幂等闸先于封存判定:历史事实(含被封存交付上的)重放 = 幂等读回;
+	// 只有「新」事实打到 superseded 交付才拒(delivery_closed)。
 	if existing, ok, err := s.findDeliveryEvent(in.TenantID, source, eventID); err != nil {
 		return res, err
 	} else if ok {
@@ -364,7 +366,7 @@ func (s *Store) ApplyTouchpointDeliveryEvent(in DeliveryEventInput, at string) (
 			// payload 损坏视为异负载(保守拒绝,不冒充幂等)。
 			return res, ErrDeliveryIdempotencyConflict
 		}
-		_, canonStr, err := deliveryEventPayload(in, "", false, "")
+		_, canonStr, err := deliveryEventPayload(in, "", false, "", "")
 		if err != nil {
 			return res, err
 		}
@@ -378,6 +380,9 @@ func (s *Store) ApplyTouchpointDeliveryEvent(in DeliveryEventInput, at string) (
 		res.Replayed = true
 		res.Delivery = cur
 		return res, nil
+	}
+	if cur.Status == delivery.StatusSuperseded {
+		return res, delivery.ErrDeliveryClosed
 	}
 
 	// 回读一致性(readback 专用):先判,后落。
@@ -428,7 +433,7 @@ func (s *Store) ApplyTouchpointDeliveryEvent(in DeliveryEventInput, at string) (
 		observedRevision = tp.BindingRevision
 	}
 
-	payload, _, err := deliveryEventPayload(in, expectedURL, readbackMatches, in.Note)
+	payload, _, err := deliveryEventPayload(in, expectedURL, readbackMatches, readbackReason, in.Note)
 	if err != nil {
 		return res, err
 	}
@@ -609,30 +614,25 @@ func (s *Store) deliveryView(tenantID string, d TouchpointDelivery) (TouchpointD
 			EventType: e.EventType, OperatorRef: e.OperatorRef, DeviceRef: e.DeviceRef,
 			EvidenceRef: e.EvidenceRef, ObservedBindingRevision: e.ObservedBindingRevision, OccurredAt: e.OccurredAt,
 		}
-		// steps 投影只收推进事实:回读不一致(matches=false)是纯事实记录,
-		// 不冒充「已回读」步骤。
-		if delivery.IsStepEvent(e.EventType) {
-			if e.EventType == delivery.StepReadback {
-				var p struct {
-					Matches bool `json:"matches"`
-				}
-				_ = json.Unmarshal([]byte(e.Payload), &p)
-				if !p.Matches {
-					if lastReadback == nil {
-						f := fact
-						lastReadback = &f
-					}
-					continue
-				}
-			}
-			if _, exists := v.Steps[e.EventType]; !exists {
-				v.Steps[e.EventType] = fact
-			}
-		}
+		// 回读摘要 = 最新一次回读尝试(一致与否都算——操作者要看到最近核对了
+		// 什么);steps 投影只收推进事实(matches=false 是纯事实记录,不冒充
+		// 「已回读」步骤)。
 		if e.EventType == delivery.StepReadback {
 			f := fact
 			lastReadback = &f
 			v.LastReadbackMatches = deliveryMatches(e.Payload)
+			v.LastReadbackReason = deliveryReadbackReason(e.Payload)
+			if v.LastReadbackMatches {
+				if _, exists := v.Steps[e.EventType]; !exists {
+					v.Steps[e.EventType] = fact
+				}
+			}
+			continue
+		}
+		if delivery.IsStepEvent(e.EventType) {
+			if _, exists := v.Steps[e.EventType]; !exists {
+				v.Steps[e.EventType] = fact
+			}
 		}
 	}
 	v.LastReadback = lastReadback
@@ -654,6 +654,14 @@ func deliveryMatches(payload string) bool {
 	}
 	_ = json.Unmarshal([]byte(payload), &p)
 	return p.Matches
+}
+
+func deliveryReadbackReason(payload string) string {
+	var p struct {
+		Reason string `json:"reason"`
+	}
+	_ = json.Unmarshal([]byte(payload), &p)
+	return p.Reason
 }
 
 // DeliveryReplacement mirrors one 0131 audit row.

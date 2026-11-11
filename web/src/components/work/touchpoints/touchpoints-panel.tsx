@@ -127,8 +127,8 @@ interface DeliveryView {
   binding_stale?: boolean;
   payment?: { state?: string; operator?: string; occurred_at?: string; device_ref?: string };
   steps?: Record<string, DeliveryStepFact>;
+  last_readback?: DeliveryStepFact | null;
   last_readback_matches?: boolean;
-  last_readback_read_url?: string;
   last_readback_reason?: string;
 }
 
@@ -780,7 +780,7 @@ export function TouchpointsPanel() {
                   </p>
                   {dlv.status === "written" || dlv.status === "readback" ? (
                     <p className="tk-note" data-field="delivery-readback">
-                      {dlv.last_readback_matches === undefined
+                      {!dlv.last_readback
                         ? "还没有回读记录。"
                         : readbackFace(dlv.last_readback_matches, dlv.last_readback_reason)}
                     </p>
