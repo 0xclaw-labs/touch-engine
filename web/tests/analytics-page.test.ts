@@ -131,3 +131,38 @@ describe("lib 纯函数文件", () => {
     expect(lib).toContain("export function stageNotAppliedLabels");
   });
 });
+
+// ---- TOUCH-ALL-20261109-v1:证据六层/线索口径/费用对账 + 动作/环境筛选 -------------
+
+describe("v1 轮新区块与筛选", () => {
+  const view = read(viewRel);
+
+  it("证据六层区块:六层逐层渲染+不相加注记", () => {
+    expect(view).toContain('data-section="evidence_layers"');
+    expect(view).toContain("LAYER_TITLES");
+    expect(view).toContain("evidence_layers.note");
+    expect(view).toContain("counts");
+  });
+
+  it("线索口径区块:待同步不算已获客注记必渲染", () => {
+    expect(view).toContain('data-section="leads"');
+    expect(view).toContain("leadsPanelRows");
+    expect(view).toContain("leads.note");
+    expect(view).toContain('data-lead={row.key}');
+  });
+
+  it("费用对账区块:订阅/AI/硬件分明细,未知不冒充 0", () => {
+    expect(view).toContain('data-section="cost_reconciliation"');
+    expect(view).toContain("subscription_available");
+    expect(view).toContain("ai_consumed_minor");
+    expect(view).toContain("hardware_paid_minor");
+    expect(view).toContain("hardware_refund_minor");
+  });
+
+  it("动作/环境筛选(数据源 dims.actions + 六环境白名单)", () => {
+    expect(view).toContain('data-filter="action"');
+    expect(view).toContain('data-filter="environment"');
+    expect(view).toContain("ENVIRONMENT_OPTIONS");
+    expect(view).toContain("actions");
+  });
+});

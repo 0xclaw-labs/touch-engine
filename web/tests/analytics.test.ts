@@ -114,3 +114,90 @@ describe("PR#7 目录指标(留资/CRM 单列,未接入非 0)", () => {
     expect(metricDisplay({ key: "x", title: "x", available: true, value: null })).toBe("未接入");
   });
 });
+
+// ---- TOUCH-ALL-20261109-v1:action/environment 筛选 + 新块渲染数据 ---------------
+
+import {
+  ENVIRONMENT_OPTIONS,
+  LAYER_TITLES,
+  leadsPanelRows,
+  type CostReconciliation,
+  type LeadsPanel,
+} from "../src/lib/analytics";
+
+describe("v1 轮筛选:动作/环境", () => {
+  it("actionId/environment 进查询串,空值不带", () => {
+    const q = buildAnalyticsQuery({ window_start: "s", window_end: "e" }, {
+      actionId: "sa_abc",
+      environment: "ios_wechat",
+    });
+    expect(q).toContain("action_id=sa_abc");
+    expect(q).toContain("environment=ios_wechat");
+  });
+  it("未选环境不带 environment 参数", () => {
+    const q = buildAnalyticsQuery({ window_start: "s", window_end: "e" }, {});
+    expect(q).not.toContain("action_id");
+    expect(q).not.toContain("environment");
+  });
+  it("环境白名单=3535 六环境", () => {
+    expect(ENVIRONMENT_OPTIONS).toEqual([
+      "desktop_browser", "ios_safari", "android_browser", "ios_wechat", "android_wechat", "target_app",
+    ]);
+  });
+  it("筛选标签含动作与环境(filter_echo 回显用)", () => {
+    expect(FILTER_LABELS["action_id"]).toBe("动作");
+    expect(FILTER_LABELS["environment"]).toBe("环境");
+  });
+});
+
+describe("六层证据渲染数据", () => {
+  it("LAYER_TITLES 固定六层顺序与商家措辞", () => {
+    expect(LAYER_TITLES.map((l) => l.key)).toEqual([
+      "action_clicked", "invoke_attempt", "handoff_media",
+      "user_reported", "staff_confirmed", "platform_confirmed",
+    ]);
+    expect(LAYER_TITLES[5].label).toContain("平台");
+  });
+});
+
+describe("线索口径渲染数据", () => {
+  it("四桶分列+注记,待同步不并入已获客", () => {
+    const lp: LeadsPanel = {
+      campaign_submitted: 10, store_submitted: 4, pending_sync: 6, receiver_confirmed: 3,
+      revoked: 1, receiver_declared_revoked: 1, unique_contacts: 9,
+      note: "待同步不算已获客:...", definition: {
+        source: "s", dedup_key: "d", denominator: "den", event_time: "e", window: "w",
+      },
+    };
+    const rows = leadsPanelRows(lp);
+    const byKey = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+    expect(byKey["campaign_submitted"]).toBe(10);
+    expect(byKey["store_submitted"]).toBe(4);
+    expect(byKey["pending_sync"]).toBe(6);
+    expect(byKey["receiver_confirmed"]).toBe(3);
+    expect(byKey["revoked"]).toBe(1);
+    expect(rows.some((r) => r.label.includes("待同步"))).toBe(true);
+    expect(rows.some((r) => r.label.includes("已获客"))).toBe(true);
+  });
+});
+
+describe("费用对账渲染数据", () => {
+  it("无支付事实=不可用,带未录入文案", () => {
+    const cr: CostReconciliation = {
+      subscription_available: false,
+      subscription_paid_orders: 0,
+      subscription_failed_orders: 1,
+      subscription_note: "订阅实付是支付事实订单(active)的投影;...",
+      ai_confirmed_minor: 0, ai_confirmed_count: 0,
+      ai_consumed_minor: 0, ai_consumed_count: 0,
+      ai_refunded_minor: 0, ai_refunded_count: 0,
+      ai_failed_minor: 0, ai_failed_count: 0,
+      hardware_available: false, hardware_paid_orders: 0,
+      hardware_refund_minor: 0, hardware_refunds: 0,
+      definition: { source: "s", dedup_key: "d", denominator: "den", event_time: "e", window: "w" },
+      face_note: "f",
+    };
+    expect(cr.subscription_available).toBe(false);
+    expect(cr.subscription_paid_minor).toBeUndefined();
+  });
+});
