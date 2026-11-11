@@ -20,6 +20,7 @@ import (
 	"github.com/bianjiefilm/touch-engine/server/internal/actioncatalog"
 	"github.com/bianjiefilm/touch-engine/server/internal/authz"
 	"github.com/bianjiefilm/touch-engine/server/internal/contentpack"
+	"github.com/bianjiefilm/touch-engine/server/internal/deals"
 	"github.com/bianjiefilm/touch-engine/server/internal/extrajump"
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
 )
@@ -431,6 +432,12 @@ func validateDocument(item store.StoreAction, now time.Time) map[string]any {
 	case !extrajump.OfficialAddress(item.TargetRef):
 		addError("target_ref", "target_not_official")
 		webState, webReason = "closed", "address_not_official"
+	case dealTargetRefInvalid(item.CatalogCode, item.TargetRef):
+		// HUI-4590 A19-A21 target 验证器接线(wave2 集成):团购类目的目标
+		// 除公网 https 外还必须是该类目自己平台的官方商品页域;串挂/伪装域
+		// 如实报进三分证据(web 态关闭+原因),不冒充可达。
+		addError("target_ref", "target_not_platform_official")
+		webState, webReason = "closed", "address_not_platform_official"
 	}
 	if fieldErrors == nil {
 		fieldErrors = []fieldError{}
@@ -464,6 +471,19 @@ func validateDocument(item store.StoreAction, now time.Time) map[string]any {
 		"creates_lead": false, "crm_imported": false, "reward_triggered": false, "publish_success": false,
 		"auto_follow": false, "auto_join": false, "auto_pay": false,
 	}
+}
+
+// dealTargetRefInvalid reports whether this catalog code is one of the
+// group-buy codes (HUI-4590 A19 美团团购 / A20 大众点评团购 / A21 抖音团购)
+// whose target_ref must be a public https page on the code's own platform
+// domain (deals.ProductURLValid: 官方地址门 ∧ 平台域名门,子域允许、后缀伪装
+// 拒)。非团购类目不在本门内(通用公网 https 门已在上一个 case)。
+func dealTargetRefInvalid(catalogCode, targetRef string) bool {
+	entry, ok := actioncatalog.Lookup(catalogCode)
+	if !ok || entry.Kind != actioncatalog.KindGroupBuy {
+		return false
+	}
+	return !deals.ProductURLValid(entry.Platform, targetRef)
 }
 
 func actionExpiredAt(raw string, now time.Time) bool {

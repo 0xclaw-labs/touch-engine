@@ -127,6 +127,103 @@ func TestStoreActionValidateHonestEvidence(t *testing.T) {
 	}
 }
 
+// TestStoreActionValidateGroupBuyPlatformGate 是 HUI-4590 A19-A21 target
+// 验证器接线验收（wave2 集成）：团购类目（A19 美团/A20 点评/A21 抖音）的
+// target 除公网 https 外还必须是该类目自己平台的官方商品页域；失败原因如实
+// 进三分证据（field_errors/reason_codes/web 态+原因）。会让本测试失败的改动：
+// 团购目标串挂他平台域/后缀伪装域被放行、非团购类目被平台门误伤、validate
+// 变更任何状态。
+func TestStoreActionValidateGroupBuyPlatformGate(t *testing.T) {
+	af := newActionsHTTPFixture(t, false)
+	f := af.f
+
+	// 正例与可写入负例走 PUT：https 非平台域/伪装域/串挂渠道都能通过 PUT 的
+	// 通用公网 https 门（写面不拦），由 validate 面按 catalog_code 判别如实报。
+	status, _, saved := f.do(t, "PUT", "/api/v1/stores/"+af.stoA+"/actions", af.sessOwner, af.tenA, `{"expected_revision":0,"items":[
+		{"catalog_code":"A19","label":"美团团购","target_ref":"https://www.meituan.com/deal/8891","order":1,"enabled":true},
+		{"catalog_code":"A20","label":"点评团购","target_ref":"https://evil.example.com/deal/1","order":2,"enabled":true},
+		{"catalog_code":"A19","label":"伪装域","target_ref":"https://www.meituan.com.evil.com/x","order":3,"enabled":true},
+		{"catalog_code":"A19","label":"串挂点评","target_ref":"https://www.dianping.com/shop/9","order":4,"enabled":true},
+		{"catalog_code":"A17","label":"门店 Wi-Fi","target_ref":"https://shop.example.com/wifi","order":5,"enabled":true}
+	]}`)
+	mustEqual(t, status, http.StatusOK)
+	items := itemsOf(t, saved)
+	if len(items) != 5 {
+		t.Fatalf("5 actions expected, got %d", len(items))
+	}
+
+	// http 目标仍先撞通用公网 https 门（legacy 行直插，PUT 拒收 http 写入）。
+	if _, err := f.s.St.DB.Exec(`INSERT INTO store_actions(id,tenant_id,store_id,catalog_code,platform,kind,variant,label,target_ref,
+		presentation,sort_order,enabled,revision,revoked,expires_at,legacy_campaign_id,legacy_kind,created_at,updated_at)
+		VALUES('sa_legacy_gb_http','` + af.tenA + `','` + af.stoA + `','A21','douyin','groupbuy','','旧抖音团购','http://www.douyin.com/x',
+		'link',9,1,1,0,'','cmp_old','groupbuy','now','now')`); err != nil {
+		t.Fatalf("legacy seed: %v", err)
+	}
+	// 只读基线（在全部 validate 调用之前捕获）。
+	revBefore := revisionOf(t, f, af.stoA)
+	rowsBefore := actionRows(t, f)
+	idOf := func(order float64) string {
+		for _, it := range items {
+			if it["order"].(float64) == order {
+				return it["action_id"].(string)
+			}
+		}
+		t.Fatalf("action with order %v missing", order)
+		return ""
+	}
+	validate := func(actionID string) ([]map[string]any, []string, map[string]string, string) {
+		t.Helper()
+		vstatus, _, doc := f.do(t, "POST", "/api/v1/actions/"+actionID+"/validate", af.sessOwner, af.tenA, "")
+		mustEqual(t, vstatus, http.StatusOK)
+		return fieldErrorList(t, doc["field_errors"]), codeList(t, doc["reason_codes"]),
+			methodStates(t, doc["method_states"]), methodReason(t, doc["method_states"], "web")
+	}
+
+	// 正例：合法美团团单 URL（公网 https + 平台官方域）→ 三分证据全干净。
+	errs, codes, methods, webReason := validate(idOf(1))
+	if len(errs) != 0 || len(codes) != 0 || methods["web"] != "configured" || webReason != "" {
+		t.Fatalf("legit group-buy URL must pass clean: errs=%v codes=%v methods=%v reason=%q", errs, codes, methods, webReason)
+	}
+
+	// 负例：https 非平台域 → target_not_platform_official + web closed。
+	_, codes, methods, webReason = validate(idOf(2))
+	if len(codes) != 1 || codes[0] != "target_not_platform_official" {
+		t.Fatalf("non-platform https codes = %v", codes)
+	}
+	if methods["web"] != "closed" || webReason != "address_not_platform_official" {
+		t.Fatalf("non-platform https web evidence = %v/%q", methods, webReason)
+	}
+
+	// 负例：后缀伪装域（meituan.com.evil.com）→ 同门拒绝。
+	_, codes, _, _ = validate(idOf(3))
+	if len(codes) != 1 || codes[0] != "target_not_platform_official" {
+		t.Fatalf("impostor-suffix codes = %v", codes)
+	}
+
+	// 负例：串挂他平台域名（A19 挂点评域）→ 同门拒绝（渠道错挂）。
+	_, codes, _, _ = validate(idOf(4))
+	if len(codes) != 1 || codes[0] != "target_not_platform_official" {
+		t.Fatalf("cross-channel codes = %v", codes)
+	}
+
+	// 非团购类目不受平台门约束：A17 Wi-Fi 任意公网 https 域照常干净。
+	errs, codes, methods, webReason = validate(idOf(5))
+	if len(errs) != 0 || len(codes) != 0 || methods["web"] != "configured" || webReason != "" {
+		t.Fatalf("non-groupbuy code must not hit the platform gate: errs=%v codes=%v", errs, codes)
+	}
+
+	// http 目标仍先撞通用公网 https 门（legacy 行已直插，PUT 拒收 http 写入）。
+	_, codes, _, webReason = validate("sa_legacy_gb_http")
+	if len(codes) != 1 || codes[0] != "target_not_official" || webReason != "address_not_official" {
+		t.Fatalf("http target must answer the general https gate: codes=%v reason=%q", codes, webReason)
+	}
+
+	// 只读性：validate 不改任何行（revision 与行数原样）。
+	if revisionOf(t, f, af.stoA) != revBefore || actionRows(t, f) != rowsBefore {
+		t.Fatal("group-buy gate validate mutated store action state")
+	}
+}
+
 func revisionOf(t *testing.T, f *fixture, storeID string) int {
 	t.Helper()
 	var rev int
