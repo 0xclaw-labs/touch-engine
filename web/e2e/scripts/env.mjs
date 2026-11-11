@@ -22,6 +22,7 @@ const PORTS = {
   go: Number(process.env.E2E_GO_PORT) || 18460,
   identity: Number(process.env.E2E_IDENTITY_PORT) || 18461,
   web: Number(process.env.E2E_WEB_PORT) || 18462,
+  seams: Number(process.env.E2E_SEAMS_PORT) || 18999,
 };
 const GO_URL = `http://127.0.0.1:${PORTS.go}`;
 const INTERNAL_TOKEN = "e2e-internal-token";
@@ -255,6 +256,9 @@ async function up() {
   spawnProc("identity", process.execPath, [path.join(here, "identity-stub.mjs"), String(PORTS.identity)]);
   await waitReady(`http://127.0.0.1:${PORTS.identity}/healthz`, "identity stub");
 
+  spawnProc("seams", process.execPath, [path.join(here, "seams-stub.mjs"), String(PORTS.seams)]);
+  await waitReady(`http://127.0.0.1:${PORTS.seams}/healthz`, "seams stub").catch(() => {});
+
   state.db = mkdtempSync(path.join(tmpdir(), "touch-e2e-"));
   const dbPath = path.join(state.db, "touch.db");
   state.dbPath = dbPath;
@@ -275,8 +279,15 @@ async function up() {
     LEADS_PHONE_PEPPER: "e2e-phone-pepper",
     // HUI-4594：受信线索接收缝（lead-records 取数 + 持久化 ACK）。leads-ingest
     // 持 lead_receiver 角色；哑值仅用于本地走查部署（令牌纪律同其它服务 token）。
-    TOUCH_SERVICE_TOKENS: "leads-ingest:e2e-leads-receiver-token",
-    TOUCH_SERVICE_ROLES: "leads-ingest:lead_receiver",
+    TOUCH_SERVICE_TOKENS: "leads-ingest:e2e-leads-receiver-token;content-producer:e2e-producer-token",
+    TOUCH_SERVICE_ROLES: "leads-ingest:lead_receiver;content-producer:content_return_producer",
+    // HUI-3531 Walk E 受信测试桩（外部账单/任务权威的本地替身，票面认可的
+    // 工程联验模式）：真实生产部署换 PLATFORM_BILLING_*/PLATFORM_TASK_* 真服务。
+    PLATFORM_BILLING_BASE_URL: `http://127.0.0.1:${PORTS.seams}`,
+    PLATFORM_BILLING_TOKEN: "e2e-billing-token",
+    PLATFORM_TASK_BASE_URL: `http://127.0.0.1:${PORTS.seams}`,
+    PLATFORM_TASK_TOKEN: "e2e-task-token",
+    FEATURE_TASK: "on",
     FEATURE_DASHBOARD: "on",
     // HUI-1676：规则编辑器与发布兑奖配置（默认 off；本地测试部署开,启用裁决归 HUI-3531）
     FEATURE_CAMPAIGN_RULES: "on",
