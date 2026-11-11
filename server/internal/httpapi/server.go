@@ -531,6 +531,7 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("POST /api/v1/stores/{id}/storefront/rollback", s.requireSession(s.handleStorefrontRollback))
 		mux.Handle("GET /api/v1/stores/{id}/storefront/revisions", s.requireSession(s.handleStorefrontRevisions))
 		mux.Handle("GET /api/v1/stores/{id}/storefront-preview", s.requireSession(s.handleStorefrontPreview))
+		mux.Handle("GET /api/v1/stores/{id}/deal-offers", s.requireSession(s.handleStoreDealOffersList))
 	}
 
 	mux.Handle("GET /api/v1/admin/members", s.requireSession(s.handleMemberList))

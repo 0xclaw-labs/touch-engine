@@ -37,6 +37,7 @@ import (
 
 type sfFixture struct {
 	s        *Server
+	st       *store.Store
 	ts       *httptest.Server
 	tenA     string
 	tenB     string
@@ -119,7 +120,7 @@ func newSfFixture(t *testing.T, frontOn, cacheOn bool) (*sfFixture, *sqlDB) {
 	srv := New(cfg, d, idc, upc, log.New(io.Discard, "", 0))
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return &sfFixture{s: srv, ts: ts, tenA: tenA.ID, tenB: tenB.ID, store1ID: s1.ID}, &sqlDB{d}
+	return &sfFixture{s: srv, st: st, ts: ts, tenA: tenA.ID, tenB: tenB.ID, store1ID: s1.ID}, &sqlDB{d}
 }
 
 func (f *sfFixture) do(t *testing.T, method, path, session, tenant, body string) (int, map[string]any) {
@@ -204,6 +205,7 @@ func TestStorefrontRoutes404WhenFlagOff(t *testing.T) {
 		{"POST", "/api/v1/stores/" + f.store1ID + "/storefront/rollback"},
 		{"GET", "/api/v1/stores/" + f.store1ID + "/storefront/revisions"},
 		{"GET", "/api/v1/stores/" + f.store1ID + "/storefront-preview"},
+		{"GET", "/api/v1/stores/" + f.store1ID + "/deal-offers"},
 		{"GET", "/api/v1/public/storefronts/sf_anything"},
 	} {
 		status, _ := f.do(t, tc.m, tc.p, "sess-owner-a", f.tenA, "")
@@ -521,6 +523,82 @@ func TestStorefrontPreviewFaceConstrainedAndWhitelist(t *testing.T) {
 	status, _ = f.do(t, "GET", "/api/v1/stores/"+f.store1ID+"/storefront-preview", "", "", "")
 	if status != 401 {
 		t.Fatalf("preview without session = %d, want 401", status)
+	}
+}
+
+// TestStoreDealOffersListForM3OffersSection covers the M3 offers-section data
+// face (套餐区选择器):本店可达的 active 套餐只读白名单投影——别家店不串、
+// 无会话 401、跨租户 404 掩码、内部分发凭据不下发(1671 账本真值不外泄)。
+func TestStoreDealOffersListForM3OffersSection(t *testing.T) {
+	f, _ := newSfFixture(t, true, false)
+	cp, err := f.st.CreateCampaign(store.NewCampaign{TenantID: f.tenA, StoreID: f.store1ID,
+		Title: "本店套餐活动", PublicContent: "c", CreatedBy: "seed"})
+	if err != nil {
+		t.Fatalf("campaign: %v", err)
+	}
+	off, err := f.st.CreateDealOffer(f.tenA, store.NewDealOffer{CampaignID: cp.ID,
+		Kind: store.DealKindExternalProduct, Issuer: "meituan", Provider: "meituan",
+		ProviderOfferID: "po-1", AuthorizationRef: "auth_secret_ref", Title: "双人套餐",
+		FaceValueMinor: 8800, Currency: "CNY", CreatedBy: "seed"})
+	if err != nil {
+		t.Fatalf("offer: %v", err)
+	}
+	// 非 active 套餐不出现在选择器(CreateDealOffer 恒 active;退役由平台侧真值改写)。
+	retired, err := f.st.CreateDealOffer(f.tenA, store.NewDealOffer{CampaignID: cp.ID,
+		Kind: store.DealKindMerchantBenefit, Issuer: "merchant", Title: "已退役套餐",
+		FaceValueMinor: 100, CreatedBy: "seed"})
+	if err != nil {
+		t.Fatalf("retired offer: %v", err)
+	}
+	if _, err := f.st.DB.Exec(`UPDATE deal_offers SET status='retired' WHERE id=?`, retired.ID); err != nil {
+		t.Fatalf("retire offer: %v", err)
+	}
+	// 别家店的套餐不进本店列表(跨店隔离)。
+	sto2, err := f.st.CreateStore(f.tenA, "乙店", "", "test")
+	if err != nil {
+		t.Fatalf("store 2: %v", err)
+	}
+	cp2, err := f.st.CreateCampaign(store.NewCampaign{TenantID: f.tenA, StoreID: sto2.ID,
+		Title: "别家活动", PublicContent: "c", CreatedBy: "seed"})
+	if err != nil {
+		t.Fatalf("campaign 2: %v", err)
+	}
+	if _, err := f.st.CreateDealOffer(f.tenA, store.NewDealOffer{CampaignID: cp2.ID,
+		Kind: store.DealKindMerchantBenefit, Issuer: "merchant", Title: "别家券",
+		FaceValueMinor: 100, CreatedBy: "seed"}); err != nil {
+		t.Fatalf("offer 2: %v", err)
+	}
+
+	status, out := f.owner(t, "GET", "/api/v1/stores/"+f.store1ID+"/deal-offers", "")
+	if status != 200 {
+		t.Fatalf("deal offers = %d %v, want 200", status, out)
+	}
+	items, _ := out["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("items = %v, want exactly the one active offer of this store", out["items"])
+	}
+	item, _ := items[0].(map[string]any)
+	if item["id"] != off.ID || item["title"] != "双人套餐" || item["kind"] != "external_product" || item["issuer"] != "meituan" {
+		t.Fatalf("item = %v", item)
+	}
+	if _, ok := item["face_value_minor"]; !ok {
+		t.Fatalf("face_value_minor missing (the form shows 面值): %v", item)
+	}
+	for _, leaked := range []string{"authorization_ref", "provider_offer_id", "campaign_id", "tenant_id"} {
+		if _, bad := item[leaked]; bad {
+			t.Fatalf("deal offers leaked %s: %v", leaked, item)
+		}
+	}
+
+	// 无会话不可达(商家会话约束)。
+	status, _ = f.do(t, "GET", "/api/v1/stores/"+f.store1ID+"/deal-offers", "", "", "")
+	if status != 401 {
+		t.Fatalf("no session = %d, want 401", status)
+	}
+	// 跨租户 404 掩码。
+	status, _ = f.do(t, "GET", "/api/v1/stores/"+f.store1ID+"/deal-offers", "sess-owner-b", f.tenB, "")
+	if status != 404 {
+		t.Fatalf("cross-tenant = %d, want 404", status)
 	}
 }
 

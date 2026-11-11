@@ -390,6 +390,40 @@ func (s *Server) handleStorefrontPreview(w http.ResponseWriter, r *http.Request)
 
 // ---- shared assembly ---------------------------------------------------------
 
+// handleStoreDealOffersList serves GET /api/v1/stores/{id}/deal-offers — the
+// M3 offers-section picker source (套餐区数据面): active deal offers reachable
+// from THIS store (campaigns bound to it), read-only. Whitelist projection:
+// the merchant form needs id/title/kind/issuer/face value; internal fields
+// (authorization_ref / provider_offer_id / campaign wiring / tenant) never
+// leave the server — the offer ledger itself stays HUI-1671's.
+func (s *Server) handleStoreDealOffersList(w http.ResponseWriter, r *http.Request) {
+	if !s.storefrontGate(w) {
+		return
+	}
+	c := callerFrom(r)
+	rec, ok := s.storeForActions(w, r, c)
+	if !ok {
+		return
+	}
+	if !s.requireScopedAction(c, authz.ActionReadRecord, authz.RecordScope{TenantID: c.Member.TenantID, StoreID: rec.ID}, true, w) {
+		return
+	}
+	offers, err := s.St.ListStoreDealOffers(c.Member.TenantID, rec.ID)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", "deal offers lookup failed")
+		return
+	}
+	items := make([]map[string]any, 0, len(offers))
+	for _, o := range offers {
+		items = append(items, map[string]any{
+			"id": o.ID, "title": o.Title, "kind": o.Kind,
+			"issuer": o.Issuer, "face_value_minor": o.FaceValueMinor,
+			"currency": o.Currency, "valid_until": o.ValidUntil, "status": o.Status,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
 // storefrontPreflight runs the leaf preflight over the draft with live facts.
 func (s *Server) storefrontPreflight(tenantID, storeID string, draft store.StorefrontVersion, at time.Time) ([]storefrontversion.Verdict, []string) {
 	var ids []string
