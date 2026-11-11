@@ -124,18 +124,16 @@ type Server struct {
 	// create/disable/rebind all bumpEpoch, so 0 stale requests.
 	TpCache *readcache.Cache[store.TouchpointRows]
 
-<<<<<<< HEAD
 	// Jumps (HUI-2222 wave2, M11) guards the cross-app SSO jump hand-off:
 	// short-lived single-use credentials between mint and the browser's
 	// single redemption. Wired in New; nil answers 503 fail-closed.
 	Jumps *appjump.Service
-=======
+
 	// StorefrontCache (HUI-1676) is the public storefront projection behind the
 	// same discipline: keyed by store code, epoch-validated — every publish /
 	// rollback bumps the store epoch, so a revision switch is a deterministic
 	// 0-stale-request boundary. Consulted only when FEATURE_PUBLIC_CACHE is on.
 	StorefrontCache *readcache.Cache[map[string]any]
->>>>>>> touch/hui-1676-storefront-version
 
 	// Participation (HUI-3546) owns the participation/attempt/handoff
 	// tables. Constructed always; its routes register only under
@@ -582,7 +580,6 @@ func (s *Server) Handler() http.Handler {
 	// rollback)+ 预览/审计读面,授权走既有 authz 门店作用域。
 	if s.Cfg.FeatureStorefront {
 		mux.Handle("GET /api/v1/public/storefronts/{storeCode}", http.HandlerFunc(s.handlePublicStorefront))
-<<<<<<< HEAD
 		// HUI-4589 B07 门店连接域（同一公共门店读面）：services 顾客投影 + 行为
 		// 事件（只存 open/jump_attempt/copy 证据，无成功语义）。同款双保险 gate。
 		mux.Handle("GET /api/v1/public/storefronts/{storeCode}/services", http.HandlerFunc(s.handlePublicStoreServices))
@@ -595,7 +592,10 @@ func (s *Server) Handler() http.Handler {
 	if s.Cfg.FeatureWecomCallback {
 		mux.Handle("GET /api/v1/public/wecom/callback", http.HandlerFunc(s.handleWecomCallback))
 		mux.Handle("POST /api/v1/public/wecom/callback", http.HandlerFunc(s.handleWecomCallback))
-=======
+	}
+
+	// HUI-1676 商家面：版本域四端点+预览/审计读面+店级套餐只读（同块双保险）。
+	if s.Cfg.FeatureStorefront {
 		mux.Handle("GET /api/v1/stores/{id}/storefront-draft", s.requireSession(s.handleStorefrontDraftGet))
 		mux.Handle("PUT /api/v1/stores/{id}/storefront-draft", s.requireSession(s.handleStorefrontDraftPut))
 		mux.Handle("POST /api/v1/stores/{id}/storefront/preflight", s.requireSession(s.handleStorefrontPreflight))
@@ -604,7 +604,6 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("GET /api/v1/stores/{id}/storefront/revisions", s.requireSession(s.handleStorefrontRevisions))
 		mux.Handle("GET /api/v1/stores/{id}/storefront-preview", s.requireSession(s.handleStorefrontPreview))
 		mux.Handle("GET /api/v1/stores/{id}/deal-offers", s.requireSession(s.handleStoreDealOffersList))
->>>>>>> touch/hui-1676-storefront-version
 	}
 
 	mux.Handle("GET /api/v1/admin/members", s.requireSession(s.handleMemberList))
