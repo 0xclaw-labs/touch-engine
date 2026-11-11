@@ -184,8 +184,18 @@ export function ServiceDesk() {
   }, [campaignId, loadRecords]);
 
   const loadHistory = useCallback(async () => {
-    if (!storeScope) return;
-    const res = await session.api("GET", `stores/${storeScope}/service-history?limit=200`).catch(() => null);
+    // owner(全门店,store_scope 空)回退：取门店列表第一家有权门店（与顶部
+    // campaign 选择的服务门店一致语义）；仍取不到才如实空态。
+    let scope = storeScope;
+    if (!scope) {
+      const storesRes = await session.api("GET", "stores").catch(() => null);
+      if (storesRes && storesRes.ok) {
+        const list = (storesRes.data.stores ?? storesRes.data.items ?? []) as { id: string }[];
+        scope = list[0]?.id ?? "";
+      }
+    }
+    if (!scope) return;
+    const res = await session.api("GET", `stores/${scope}/service-history?limit=200`).catch(() => null);
     if (res && res.ok && Array.isArray(res.data.items)) {
       setHistory(res.data.items as ServiceHistoryRow[]);
       setHistoryLoadedAt(new Date().toLocaleTimeString("zh-CN", { hour12: false }));
