@@ -196,11 +196,6 @@ func (r ActionCapability) IdentityKey() string {
 // states, the field_support whitelist, and the reward invariant (unknown /
 // not_admitted routes can never carry a supported reward cell).
 func (r *ActionCapability) Validate() error {
-	// ADV-7-C 附带发现①收口：seed_version 应用层先拦（DB CHECK seed_version>=1
-	// 此前把缺省 0 放到库层炸 500 internal；现在 422 invalid_record 如实拒）。
-	if r.SeedVersion < 1 {
-		return fmt.Errorf("channeladmission: %s seed_version %d must be >= 1 (use the current seed batch version)", r.IdentityKey(), r.SeedVersion)
-	}
 	switch r.Status {
 	case StatusAdmitted, StatusNotAdmitted, StatusUnknown:
 	default:

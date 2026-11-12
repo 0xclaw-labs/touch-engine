@@ -7,8 +7,7 @@ import (
 
 	"github.com/bianjiefilm/touch-engine/server/internal/channeladmission"
 	"github.com/bianjiefilm/touch-engine/server/internal/db"
-
-	"strings")
+)
 
 // openMigratedDB gives a real migrated database (embed migrations apply in
 // filename order, so 0060-0063 are part of every fresh store fixture).
@@ -497,13 +496,3 @@ func seededA02Row(t *testing.T, s *Store) channeladmission.ActionCapability {
 	return channeladmission.ActionCapability{}
 }
 
-// ADV-7-C 附带发现①回归：seed_version 缺省 0 在应用层被拒（ErrInvalidRecord
-// 语义），不再落库触发 DB CHECK 500。
-func TestUpsertActionCapabilityRejectsZeroSeedVersion(t *testing.T) {
-	_, s := openMigratedDB(t)
-	r := actionCapFixture(func(c *channeladmission.ActionCapability) { c.SeedVersion = 0 })
-	_, _, err := s.UpsertActionCapability(r, ControlAudit{Actor: "ops", Reason: "adv7c"})
-	if err == nil || !strings.Contains(err.Error(), "seed_version") {
-		t.Fatalf("zero seed_version must be refused with seed_version error, got %v", err)
-	}
-}

@@ -335,6 +335,14 @@ func (s *Server) handleChannelActionUpsert(w http.ResponseWriter, r *http.Reques
 		fail(w, http.StatusBadRequest, "reason_required", "reason (变更原因) is required for controlled writes")
 		return
 	}
+	// ADV-7-C 附带发现①收口：受控写端点应用层先拦缺省 seed_version（此前 0
+	// 落库触发 DB CHECK 炸 500 internal；现在 422 invalid_record 如实拒）。
+	// 内部造数路径不经此闸（0=手工记录语义，与种子批次版本区分）。
+	if body.SeedVersion < 1 {
+		fail(w, http.StatusUnprocessableEntity, "invalid_record",
+			"seed_version must be >= 1 (use the current seed batch version)")
+		return
+	}
 	if err := body.Validate(); err != nil {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
 			"error": "invalid_record", "message": err.Error(),

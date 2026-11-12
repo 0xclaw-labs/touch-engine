@@ -694,3 +694,16 @@ func TestPublicActionCapabilitiesInstanceTenantScoped(t *testing.T) {
 		t.Fatalf("catalog path must stay platform truth: status=%s, want unknown", routeStr(r2, "status"))
 	}
 }
+
+// ADV-7-C 附带发现①回归：受控写端点缺省 seed_version=0 → 422 invalid_record
+// （应用层先拦，不再落库触发 DB CHECK 500）。
+func TestChannelActionUpsertRejectsZeroSeedVersion(t *testing.T) {
+	f := newAdmissionFixture(t, true)
+	status, body := rawDo(t, f, http.MethodPost, "/api/v1/channel-actions", "", internalHdr(),
+		`{"catalog_code":"A92","platform":"newplat","method":"link_share","scenario":"store_promo",
+		"action_kind":"publish","label":"零种子版本","status":"unknown","seed_version":0,
+		"actor":"ops","reason":"adv7c"}`)
+	if status != http.StatusUnprocessableEntity || body["error"] != "invalid_record" {
+		t.Fatalf("zero seed_version: want 422 invalid_record, got %d %+v", status, body)
+	}
+}
