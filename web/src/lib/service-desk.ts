@@ -141,8 +141,15 @@ export interface RedeemRecordLike {
   redeemed_at?: string;
 }
 
-/** 核销事实展示:处理人+时间;未核销时不说已核销。 */
+/** 核销事实展示:处理人+时间;未核销时不说已核销。
+ * adv4 收口:更正撤销(reversed)不删除原核销事实——账本保留 redeemed_at/
+ * redeemed_by 时必须照实展示历史核销,再加「已更正撤销」语境,不得误报
+ * 「还没有核销记录」。 */
 export function redeemRecordText(ben: RedeemRecordLike): string {
+  if (ben.redeemed_at || ben.redeemed_by) {
+    const fact = `已核销 · 处理人 ${ben.redeemed_by || "未知"} · 时间 ${ben.redeemed_at || "未知"}`;
+    return ben.status === "reversed" ? `${fact}（该券已更正撤销,原核销事实保留）` : fact;
+  }
   if (ben.status !== "redeemed") {
     return "还没有核销记录。";
   }

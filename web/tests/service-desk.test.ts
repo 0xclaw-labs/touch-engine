@@ -216,3 +216,14 @@ describe("本店作用域:店经理只见本店权益记录", () => {
     expect(ownStoreBenefits(items, "")).toHaveLength(3);
   });
 });
+
+describe("adv4 收口:更正撤销后核销事实保留展示", () => {
+  it("reversed 行有核销字段时展示历史核销+撤销语境,不误报没有核销记录", () => {
+    expect(redeemRecordText({ status: "reversed", redeemed_by: "usr_mgr", redeemed_at: "2026-11-12T10:00:00Z" })).toBe(
+      "已核销 · 处理人 usr_mgr · 时间 2026-11-12T10:00:00Z（该券已更正撤销,原核销事实保留）",
+    );
+  });
+  it("reversed 但无核销字段时仍不说已核销", () => {
+    expect(redeemRecordText({ status: "reversed" })).toBe("还没有核销记录。");
+  });
+});

@@ -78,15 +78,22 @@ func (s *Server) requireScopedAction(c *caller, action authz.Action, rec authz.R
 // org_owner / store_manager hold the config permissions implicitly; staff only
 // via explicit member_permission_grant (ResolveAccess fail-closed default).
 func (s *Server) requireStoreConfig(c *caller, perm authz.Permission, rec authz.RecordScope, mask404 bool, w http.ResponseWriter) bool {
-	if !s.requireScopedAction(c, authz.ActionUpdate, rec, mask404, w) {
-		return false
-	}
+	// adv4 收口:纯权限地板——Can() 自带门店范围裁决(AllowedStoreIDs/
+	// StoreScopeSet),且 agent 的授权走 AgencyGrant 权限而非 ActionUpdate
+	// (旧矩阵对 agent 恒拒,前置腿会把已授权代理挡在权限判定之外)。
+	// owner 隐式全持/经理店界/staff 显式授权/代理授权范围,语义不变。
 	a := s.resolveAccess(c)
-	if d := authz.Can(a, string(perm), rec.StoreID); !d.Allowed {
-		fail(w, http.StatusForbidden, d.Reason, "store configuration requires an explicit config permission")
+	if d := authz.Can(a, string(perm), rec.StoreID); d.Allowed {
+		return true
+	}
+	// 未持有权限时:范围外仍按 404 掩码(不泄漏存在性),其余 403。
+	deny := authz.Authorize(s.authzMember(c), authz.ActionUpdate, rec)
+	if mask404 && deny.Reason == authz.ReasonOutOfScope {
+		fail(w, http.StatusNotFound, "not_found", "resource not found")
 		return false
 	}
-	return true
+	fail(w, http.StatusForbidden, "forbidden", "store configuration requires an explicit config permission")
+	return false
 }
 
 // campaignScoped fetches the campaign within the caller's tenant and enforces
