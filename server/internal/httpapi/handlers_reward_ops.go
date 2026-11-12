@@ -29,7 +29,8 @@ import (
 	"github.com/bianjiefilm/touch-engine/server/internal/participation"
 	"github.com/bianjiefilm/touch-engine/server/internal/rewardops"
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
-)
+
+	"github.com/bianjiefilm/touch-engine/server/internal/campaign")
 
 // rewardOpsGate answers uniform 404 when FEATURE_REWARD_OPS is off: an
 // invisible surface (rulesGate/dashGate 同一纪律).
@@ -371,6 +372,14 @@ func (s *Server) handleRewardConfirm(w http.ResponseWriter, r *http.Request) {
 	c := callerFrom(r)
 	camp, ok := s.campaignScoped(c, r.PathValue("id"), authz.ActionUpdate, w)
 	if !ok {
+		return
+	}
+	// ADV-7-A 观察项3收口：活动级暂停/结束也停新发放（=「暂停停新承诺」，与
+	// 批次级暂停同语义）。仅拦发券：已发权益的核销/查询按 F18 原承诺放行
+	// （handleRewardRedeem 不受此闸）。
+	if campaign.Status(camp.Status) != campaign.StatusActive {
+		fail(w, http.StatusUnprocessableEntity, "campaign_not_active",
+			"activity is not active: new issuance is stopped; already-issued benefits stay redeemable per the original promise")
 		return
 	}
 	var body rewardConfirmBody
