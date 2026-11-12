@@ -271,7 +271,16 @@ func (s *Server) handleStoreContentProductionHandoffCreate(w http.ResponseWriter
 	}
 
 	// 幂等重放先行:同一发起重试返回同一行,不重新核价、不重新提交任务(T15)。
+	// Walk E 终局对抗收口:同键【异负载】必须 409——预检比较包/绑定/报价三元组,
+	// 与库层 CreateProductionHandoff 的比较同口径(此前预检未比较,错误回 200 replayed)。
 	if existing, err := s.St.GetProductionHandoffByIdempotencyKey(tenantID, key); err == nil {
+		samePack := existing.PackID == packID
+		sameQuote := existing.QuoteRef == quoteRef
+		sameBinding := existing.ContentBindingRef == bindingRef
+		if !samePack || !sameQuote || !sameBinding {
+			fail(w, http.StatusConflict, "idempotency_conflict", "same idempotency_key was used with a different payload; retry must reuse the exact original request")
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"handoff":  productionHandoffView(existing),
 			"replayed": true,

@@ -91,10 +91,13 @@ describe("参与码:提取与形状预检", () => {
   });
 
   it("形状预检:校验位段缺失/长度不对先本地拒,不打网", () => {
+    // Walk E 终局对抗修正:校验段实签 2 位,弹性 1-8 位——2 位真实凭据不得再被
+    // 本地预检拒绝（曾致服务台无法核销,adv2 复现）。
     expect(looksLikeHandoffToken("ptx_aaaaaaaaaaaaaaaaaaaaaa.A")).toBe(true);
+    expect(looksLikeHandoffToken("ptx_aaaaaaaaaaaaaaaaaaaaaa.AB")).toBe(true);
     expect(looksLikeHandoffToken("ptx_short.A")).toBe(false);
     expect(looksLikeHandoffToken("ptx_aaaaaaaaaaaaaaaaaaaaaa")).toBe(false);
-    expect(looksLikeHandoffToken("ptx_aaaaaaaaaaaaaaaaaaaaaa.AB")).toBe(false);
+    expect(looksLikeHandoffToken("ptx_aaaaaaaaaaaaaaaaaaaaaa.ABCDEFGHI")).toBe(false);
     expect(looksLikeHandoffToken("")).toBe(false);
   });
 });

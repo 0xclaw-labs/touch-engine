@@ -938,3 +938,32 @@ func mustItems(t *testing.T, out map[string]any) []map[string]any {
 	}
 	return list
 }
+
+// Walk E 终局对抗收口:同键异负载必须 409（预检比较三元组），同键同负载 200。
+func TestContentProductionHandoffIdempotencyPayloadMismatch(t *testing.T) {
+	f := newProductionFixture(t, productionConfigOpts{serviceTokens: producerTokens, serviceRoles: producerRoles})
+	seedProductionHandoff(t, f)
+	packID := f.packA
+	seedQuoteRow(t, f, f.tenA, "quote_adv_other", "content_production", "")
+	seedKey := "seed-" + f.storeA // 与 seedProductionHandoff 的键一致（重放判定前提）
+
+	mk := func(key, quote string) string {
+		return fmt.Sprintf(`{"content_pack_ref":"pack:%s","quote_ref":"%s","idempotency_key":"%s"}`, packID, quote, key)
+	}
+	// 同键同负载 → 200 replayed。
+	code, out := f.do(t, "POST", "/api/v1/stores/"+f.storeA+"/content-production-handoffs", "sess-owner-a", f.tenA, mk(seedKey, "quote_confirmed_1"))
+	if code != http.StatusOK {
+		t.Fatalf("same-key same-payload replay: want 200, got %d %+v", code, out)
+	}
+	// 同键异报价 → 409。
+	code, out = f.do(t, "POST", "/api/v1/stores/"+f.storeA+"/content-production-handoffs", "sess-owner-a", f.tenA, mk(seedKey, "quote_adv_other"))
+	if code != http.StatusConflict || out["error"] != "idempotency_conflict" {
+		t.Fatalf("same-key diff quote: want 409 idempotency_conflict, got %d %+v", code, out)
+	}
+	// 同键异包 → 409。
+	code, out = f.do(t, "POST", "/api/v1/stores/"+f.storeA+"/content-production-handoffs", "sess-owner-a", f.tenA,
+		fmt.Sprintf(`{"content_pack_ref":"pack:%s","quote_ref":"quote_confirmed_1","idempotency_key":"%s"}`, "scpk_other", seedKey))
+	if code != http.StatusConflict || out["error"] != "idempotency_conflict" {
+		t.Fatalf("same-key diff pack: want 409 idempotency_conflict, got %d %+v", code, out)
+	}
+}

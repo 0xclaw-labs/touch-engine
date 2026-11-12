@@ -44,8 +44,8 @@ export interface ParticipationCard {
   attempts?: Array<Record<string, unknown>>;
 }
 
-const HANDOFF_TOKEN = /^ptx_[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{1}$/;
-const HANDOFF_PATH = /\/p\/(ptx_[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{1})/;
+const HANDOFF_TOKEN = /^ptx_[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{1,8}$/;
+const HANDOFF_PATH = /\/p\/(ptx_[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{1,8})/;
 
 // 店员两类可点证据;official 只读(系统事实,人工不能代为确认)。
 const STAFF_EVIDENCE = ["staff_observed_submission", "staff_verified_post"] as const;
@@ -60,7 +60,7 @@ export function extractHandoffToken(input: string): string | null {
   return hit ? hit[1] : null;
 }
 
-/** 打网前的形状预检:22 位随机体 + 1 位校验位。预检只是预检,权威在服务端。 */
+/** 打网前的形状预检:22 位随机体 + 1-8 位校验段（实签 2 位;Walk E 终局对抗修正——原 1 位定长把真实凭据挡在打网之前）。预检只是预检,权威在服务端。 */
 export function looksLikeHandoffToken(token: string): boolean {
   return HANDOFF_TOKEN.test((token ?? "").trim());
 }
