@@ -277,7 +277,9 @@ func (s *Server) handleStoreContentProductionHandoffCreate(w http.ResponseWriter
 		samePack := existing.PackID == packID
 		sameQuote := existing.QuoteRef == quoteRef
 		sameBinding := existing.ContentBindingRef == bindingRef
-		if !samePack || !sameQuote || !sameBinding {
+		// adv3:note 也在负载契约内（库层比较含 note,预检此前漏比）。
+		sameNote := existing.Note == strings.TrimSpace(in.Note)
+		if !samePack || !sameQuote || !sameBinding || !sameNote {
 			fail(w, http.StatusConflict, "idempotency_conflict", "same idempotency_key was used with a different payload; retry must reuse the exact original request")
 			return
 		}

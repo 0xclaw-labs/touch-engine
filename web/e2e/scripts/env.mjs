@@ -318,9 +318,15 @@ async function up() {
 
   await seed();
 
+  // Walk F/adv3 根因修复：/t 页在 WEB 进程侧也有运行时 feature 门
+  // （FEATURE_TOUCHPOINT_ENTRY，页面 notFound 第三道闸）——web 进程必须与
+  // go 同拿到 FEATURE_* 开关，否则 /t 恒 404（此前只传 TOUCH_*）。
+  const webFeatureEnv = Object.fromEntries(
+    Object.entries(goEnv).filter(([k]) => k.startsWith("FEATURE_")),
+  );
   spawnProc("web", process.execPath, [path.join(webDir, "node_modules", "next", "dist", "bin", "next"), "start", "-p", String(PORTS.web)], {
     cwd: webDir,
-    env: { ...process.env, TOUCH_SERVER_URL: GO_URL, TOUCH_INTERNAL_TOKEN: INTERNAL_TOKEN },
+    env: { ...process.env, ...webFeatureEnv, TOUCH_SERVER_URL: GO_URL, TOUCH_INTERNAL_TOKEN: INTERNAL_TOKEN },
   });
   await waitReady(`http://127.0.0.1:${PORTS.web}/login`, "next start");
 

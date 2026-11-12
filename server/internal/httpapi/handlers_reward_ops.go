@@ -461,8 +461,14 @@ func (s *Server) handleRewardRedeem(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusForbidden, decision.Reason, "not allowed to redeem this benefit")
 		return
 	}
+	// adv3 收口：全门店 owner 的核销卡无选店控件（活动级券无店绑定），空
+	// store_id 从活动归属权威派生（camp.StoreID），不再 422 reward_conflict。
+	redeemStore := body.StoreID
+	if redeemStore == "" {
+		redeemStore = camp.StoreID
+	}
 	out, outcome, err := s.St.RedeemRewardBenefit(camp.TenantID, camp.ID, ben.ID,
-		c.Member.PrincipalRef, body.StoreID, body.EventID, nowRFC3339())
+		c.Member.PrincipalRef, redeemStore, body.EventID, nowRFC3339())
 	if err != nil {
 		rewardError(w, err)
 		return
