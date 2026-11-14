@@ -14,7 +14,7 @@ jobs:
     # ubuntu-latest 两者皆有，改动对原宿主无影响。shell 显式 bash（Windows 默认 pwsh）。
     # 2026-10-20：ciwin 故障期 win-ci 专机离线 → 改跨平台标签 [xplat]（fleet 组 mac+win runner 共用，
     # 脚本纯标准库只调 git，零 OS 绑定）。mac 只有 python3 无 python，下方命令名做兼容。回退=改回 [win-ci]。
-    runs-on: [xplat]
+    runs-on: [self-hosted, macOS]
     timeout-minutes: 15
     defaults:
       run:
