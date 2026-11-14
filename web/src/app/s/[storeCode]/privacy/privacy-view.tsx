@@ -48,6 +48,8 @@ interface LeadStatusResult {
   sales_received?: string;
   owner_followed_up?: string;
   creates_platform_account?: boolean;
+  receiver_state?: string;
+  revocation_pending?: boolean;
 }
 
 export function PrivacyView() {
@@ -63,9 +65,12 @@ function PrivacyViewInner() {
   const storeCode = params?.storeCode ?? "";
   const searchParams = useSearchParams();
   const linkCode = (searchParams.get("code") ?? "").trim();
+  const leadBase = linkCode ? `/api/public/links/${encodeURIComponent(linkCode)}` : `/api/public/storefronts/${encodeURIComponent(storeCode)}`;
 
   const [form, setForm] = useState<LeadFormView | null>(null);
   const [state, setState] = useState<PrivacyState>("loading");
+  const [consulting, setConsulting] = useState(false);
+  const [existingRef, setExistingRef] = useState("");
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [wechat, setWechat] = useState("");
@@ -86,13 +91,10 @@ function PrivacyViewInner() {
 
   // 告知读取:?code 存在才读;无 code → not_open(不伪建表单)。
   useEffect(() => {
-    if (linkCode === "") {
-      setState("not_open");
-      return;
-    }
+
     let alive = true;
     setState("loading");
-    fetch(`/api/public/links/${encodeURIComponent(linkCode)}/lead-form`)
+    fetch(`${leadBase}/lead-form`)
       .then(async (res) => {
         if (!alive) return;
         const data = await res.json().catch(() => null);
@@ -109,17 +111,17 @@ function PrivacyViewInner() {
     return () => {
       alive = false;
     };
-  }, [linkCode, reloadTick]);
+  }, [leadBase, reloadTick]);
 
   const submitLead = useCallback(() => {
-    if (!form?.notice || linkCode === "") return;
+    if (!form?.notice) return;
     setSubmitError("");
     if (!consent) {
       setSubmitError("请先阅读并同意告知内容。拒绝营销通知不会挡住你看活动。");
       return;
     }
     setSubmitting(true);
-    fetch(`/api/public/links/${encodeURIComponent(linkCode)}/lead-submissions`, {
+    fetch(`${leadBase}/lead-submissions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -143,47 +145,50 @@ function PrivacyViewInner() {
       })
       .catch(() => setSubmitError("网络异常,请稍后再试"))
       .finally(() => setSubmitting(false));
-  }, [consent, form, linkCode, marketing, name, phone, wechat]);
+  }, [consent, form, leadBase, marketing, name, phone, wechat]);
 
   // 状态查询:待同步/已接收/已撤销各自真实说法;销售是否收到观察不到,
   // 永远 unknown,不伪报「销售已收到」。
   const queryStatus = useCallback(() => {
-    if (!submitted?.submission_ref || linkCode === "") return;
+    if (!(submitted?.submission_ref || existingRef.trim())) return;
     setStatusNote("");
-    fetch(`/api/public/links/${encodeURIComponent(linkCode)}/lead-status`, {
+    fetch(`${leadBase}/lead-status`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ submission_ref: submitted.submission_ref, phone }),
+      body: JSON.stringify({ submission_ref: submitted?.submission_ref || existingRef.trim(), phone }),
     })
       .then(async (res) => {
         const data = (await res.json().catch(() => null)) as LeadStatusResult | null;
         if (res.ok && data) {
-          setStatusResult(data);
+          setStatusResult(current => current?.state === "revoked" && data.state !== "revoked" ? current : data);
+          setRevokeDone(current => current || data.state === "revoked");
+          setSubmitted({submission_ref:data.submission_ref,state:data.state,crm_received:data.crm_received});
+          setState("submitted");
           setStatusNote(data.state === "revoked" ? "已撤销:这次留资已撤回。" : "");
         } else {
           setStatusNote("状态暂时读不到。可以稍后再查,或联系门店。");
         }
       })
       .catch(() => setStatusNote("网络异常,请稍后再试。"));
-  }, [linkCode, phone, submitted]);
+  }, [leadBase, phone, submitted, existingRef]);
 
   const revokeLead = useCallback(() => {
-    if (!submitted?.submission_ref || linkCode === "") return;
+    if (!(submitted?.submission_ref || existingRef.trim())) return;
     setRevokeError("");
     setRevoking(true);
-    fetch(`/api/public/links/${encodeURIComponent(linkCode)}/lead-revocations`, {
+    fetch(`${leadBase}/lead-revocations`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ submission_ref: submitted.submission_ref, phone }),
+      body: JSON.stringify({ submission_ref: submitted?.submission_ref || existingRef.trim(), phone }),
     })
       .then(async (res) => {
         const data = await res.json().catch(() => null);
-        if (res.ok && data?.state === "revoked") setRevokeDone(true);
+        if (res.ok && data?.state === "revoked") { setRevokeDone(true); setStatusResult(data); }
         else setRevokeError("撤销没有完成,请核对手机号后重试");
       })
       .catch(() => setRevokeError("网络异常,请稍后再试"))
       .finally(() => setRevoking(false));
-  }, [linkCode, phone, submitted]);
+  }, [leadBase, phone, submitted, existingRef]);
 
   const retry = useCallback(() => setReloadTick((t) => t + 1), []);
 
@@ -227,11 +232,12 @@ function PrivacyViewInner() {
         )}
         {state === "not_open" && (
           <div data-testid="privacy-not-open">
-            <p className="tk-note">这家店暂未开通在线联系与授权管理。你之前主动提交过的信息,可以直接联系门店处理;本页不会伪造提交记录。</p>
+            <p className="tk-note">这家店当前无法接收新的在线咨询。以前的提交可在下方按原编号和手机号查询；若线上无法处理，请到门店服务台向工作人员提出撤回联系方式与营销许可，并说明提交时使用的手机号。若已离店，可通过门店已公布的电话或联系渠道提出同一请求。</p>
           </div>
         )}
 
-        {state === "form" && form && (
+        {state === "form" && form && !consulting && <button type="button" className="tk-primary" onClick={() => setConsulting(true)} data-testid="consult-open">请门店联系我</button>}
+        {state === "form" && form && consulting && (
           <section className="tk-gap" data-testid="lead-disclosure">
             <h2 className="tk-section-title">把联系方式交给{merchant}</h2>
             <p className="tk-note">用途:{form.purpose || "由门店联系你,用于本次到店服务"}</p>
@@ -240,11 +246,11 @@ function PrivacyViewInner() {
             </p>
             <p className="tk-note">{form.notice?.text}</p>
             <label className="tk-label">
-              姓名
+              姓名（选填，只用于称呼）
               <input className="tk-input" value={name} onChange={(e: ChangeEvent<HTMLInputElement>) => setName(e.target.value)} placeholder="怎么称呼你" />
             </label>
             <label className="tk-label">
-              手机号
+              手机号（用于本次联系与核对撤回）
               <input className="tk-input" value={phone} onChange={(e: ChangeEvent<HTMLInputElement>) => setPhone(e.target.value)} placeholder="商家用来联系你" inputMode="numeric" />
             </label>
             <label className="tk-label">
@@ -272,7 +278,8 @@ function PrivacyViewInner() {
         {state === "submitted" && submitted?.submission_ref && (
           <section data-testid="lead-outcome" data-state={outcomeState} className={outcomeState === "received" ? "tk-outcome tk-ok" : "tk-outcome"}>
             {revokeDone ? (
-              <p className="tk-ok" data-state="revoked">{LEAD_REVOKED_COPY}</p>
+              <> <p className="tk-ok" data-state="revoked">{statusResult?.receiver_state === "revoked" ? "授权已撤回，接收方已确认处理。" : "本服务已停止使用并发起撤回；接收方处理尚待确认。可继续查询处理状态。"}</p>
+              <button type="button" className="tk-quiet" onClick={queryStatus}>查询撤回处理</button> </>
             ) : (
               <>
                 <p className="tk-lead">{outcome}</p>
@@ -297,6 +304,14 @@ function PrivacyViewInner() {
           </section>
         )}
 
+        {state !== "loading" && !submitted && <section className="tk-section" data-testid="lead-restore">
+          <h2 className="tk-section-title">查询或撤回以前的提交</h2>
+          <p className="tk-note">使用原提交编号和手机号核对。资料只在本次请求中使用，不会加入网址。</p>
+          <label className="tk-label">提交编号<input className="tk-input" value={existingRef} onChange={e=>setExistingRef(e.target.value)} autoComplete="off" /></label>
+          <label className="tk-label">原手机号<input className="tk-input" value={phone} onChange={e=>setPhone(e.target.value)} inputMode="tel" /></label>
+          <button type="button" className="tk-quiet" disabled={!existingRef.trim() || !phone.trim()} onClick={queryStatus}>读取原记录</button>
+          {statusNote && <p className="tk-note">{statusNote}</p>}
+        </section>}
         <footer className="tk-row tk-gap">
           <a className="tk-quiet" href={`/s/${encodeURIComponent(storeCode)}`} data-testid="back-to-store">返回门店</a>
         </footer>

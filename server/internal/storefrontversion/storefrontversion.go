@@ -83,39 +83,60 @@ type Section struct {
 // time. The public projection renders FROM this (version truth); live rows
 // only keep the real-time veto (revocation/expiry/disable).
 type ActionSnapshot struct {
-	ActionID       string `json:"action_id"`
-	ActionRevision int    `json:"action_revision"`
-	CatalogCode    string `json:"catalog_code"`
-	Platform       string `json:"platform"`
-	Kind           string `json:"kind"`
-	Variant        string `json:"variant"`
-	Label          string `json:"label"`
-	Presentation   string `json:"presentation"`
-	CapabilityRef  string `json:"capability_ref"`
-	SectionID      string `json:"section_id"`
+	ContentVersionID  string   `json:"content_version_id,omitempty"`
+	ContentCandidates []string `json:"content_candidates"`
+	TargetRef         string   `json:"target_ref,omitempty"`
+	ContentBindingRef string   `json:"content_binding_ref,omitempty"`
+	ActionID          string   `json:"action_id"`
+	ActionRevision    int      `json:"action_revision"`
+	CatalogCode       string   `json:"catalog_code"`
+	Platform          string   `json:"platform"`
+	Kind              string   `json:"kind"`
+	Variant           string   `json:"variant"`
+	Label             string   `json:"label"`
+	Presentation      string   `json:"presentation"`
+	CapabilityRef     string   `json:"capability_ref"`
+	SectionID         string   `json:"section_id"`
+}
+
+// ServiceSnapshot is the service whitelist frozen with the same storefront version.
+type ServiceSnapshot struct {
+	ID          string         `json:"service_id"`
+	CatalogCode string         `json:"catalog_code"`
+	Kind        string         `json:"kind"`
+	Variant     string         `json:"variant"`
+	Label       string         `json:"label"`
+	Config      map[string]any `json:"config"`
+	Order       int            `json:"order"`
+	Enabled     bool           `json:"enabled"`
+	Revision    int            `json:"revision"`
 }
 
 // Document is one storefront version's merchant-authored shape.
 type Document struct {
-	Sections     []Section
-	Actions      []ActionSnapshot // frozen payloads (aligned with ActionRefs)
-	ActionRefs   map[string]int   // action_id -> frozen action_revision
-	OfferRefs    []string
-	CampaignRefs []string
-	BrandRef     string
+	Services         []ServiceSnapshot
+	ServicesRevision int
+	Sections         []Section
+	Actions          []ActionSnapshot // frozen payloads (aligned with ActionRefs)
+	ActionRefs       map[string]int   // action_id -> frozen action_revision
+	OfferRefs        []string
+	CampaignRefs     []string
+	BrandRef         string
 }
 
 // LiveAction is the read-only live fact set the caller assembles from the
 // store's action rows (HUI-4584) at save/freeze time.
 type LiveAction struct {
-	ID            string
-	CatalogCode   string
-	Platform      string
-	Kind          string
-	Variant       string
-	Label         string
-	CapabilityRef string
-	Revision      int
+	TargetRef         string
+	ContentBindingRef string
+	ID                string
+	CatalogCode       string
+	Platform          string
+	Kind              string
+	Variant           string
+	Label             string
+	CapabilityRef     string
+	Revision          int
 }
 
 // ActionFact is the read-only world fact for one action at preflight time.
@@ -145,7 +166,14 @@ type Verdict struct {
 func FatalProblems(doc Document) []string {
 	var problems []string
 	add := func(code string) { problems = append(problems, code) }
-	if len(doc.Sections) == 0 {
+	hasService := false
+	for _, svc := range doc.Services {
+		if svc.Enabled {
+			hasService = true
+			break
+		}
+	}
+	if len(doc.Sections) == 0 && !hasService {
 		add("sections_empty")
 	}
 	if len(doc.Sections) > maxSections {
@@ -275,6 +303,7 @@ func BuildSnapshots(sections []Section, live []LiveAction) ([]ActionSnapshot, ma
 			}
 			snaps = append(snaps, ActionSnapshot{
 				ActionID: row.ID, ActionRevision: row.Revision,
+				TargetRef: row.TargetRef, ContentBindingRef: row.ContentBindingRef,
 				CatalogCode: row.CatalogCode, Platform: row.Platform, Kind: row.Kind,
 				Variant: row.Variant, Label: row.Label, CapabilityRef: row.CapabilityRef,
 				Presentation: "link", SectionID: sec.ID,
@@ -334,11 +363,13 @@ func ChangeSummary(prev, next Document) []string {
 	}
 	// Label updates come from the frozen payloads (draft snapshot vs published).
 	prevLabel := map[string]string{}
+	prevActions := map[string]ActionSnapshot{}
 	for _, a := range prev.Actions {
 		prevLabel[a.ActionID] = a.Label
+		prevActions[a.ActionID] = a
 	}
 	for _, a := range next.Actions {
-		if old, ok := prevLabel[a.ActionID]; ok && old != a.Label {
+		if old, ok := prevLabel[a.ActionID]; ok && (old != a.Label || prevActions[a.ActionID].TargetRef != a.TargetRef || prevActions[a.ActionID].ContentBindingRef != a.ContentBindingRef || prevActions[a.ActionID].ContentVersionID != a.ContentVersionID || !sameOrder(prevActions[a.ActionID].ContentCandidates, a.ContentCandidates)) {
 			out = append(out, "action_updated:"+a.ActionID)
 		}
 	}
@@ -350,6 +381,12 @@ func ChangeSummary(prev, next Document) []string {
 	}
 	if !sameIDs(prev.CampaignRefs, next.CampaignRefs) {
 		out = append(out, "campaign_refs_changed")
+	}
+	prevServices, _ := json.Marshal(prev.Services)
+	nextServices, _ := json.Marshal(next.Services)
+	if (len(prev.Services) > 0 || len(next.Services) > 0) && string(prevServices) != string(nextServices) {
+		digest := sha256.Sum256(nextServices)
+		out = append(out, "services_changed:"+hex.EncodeToString(digest[:]))
 	}
 	return out
 }

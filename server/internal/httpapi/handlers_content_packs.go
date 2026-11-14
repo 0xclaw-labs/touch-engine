@@ -230,35 +230,34 @@ func (s *Server) handleContentPackList(w http.ResponseWriter, r *http.Request) {
 	}
 	tenantID := c.Member.TenantID
 	campaignID := r.PathValue("id")
-	if _, err := s.St.GetCampaign(campaignID, tenantID); err != nil {
-		packStoreFail(w, err)
+	if _, ok := s.campaignScoped(c, campaignID, authz.ActionReadList, w); !ok {
 		return
 	}
-	packs, err := s.St.ListContentPacks(tenantID, campaignID)
+	packs, err := s.St.ListCampaignContentPacks(tenantID, campaignID)
 	if err != nil {
 		packStoreFail(w, err)
 		return
 	}
-	adoptions, err := s.St.ListAdoptions(tenantID, campaignID)
+	adoptions, err := s.St.ListCampaignContentAdoptions(tenantID, campaignID)
 	if err != nil {
 		packStoreFail(w, err)
 		return
 	}
 	items := make([]map[string]any, 0, len(packs))
 	for _, p := range packs {
-		versions, err := s.St.ListContentPackVersions(tenantID, p.ID)
+		versions, err := s.St.ListCampaignContentVersions(tenantID, campaignID, p.ID)
 		if err != nil {
 			packStoreFail(w, err)
 			return
 		}
 		versionViews := make([]map[string]any, 0, len(versions))
 		for _, v := range versions {
-			versionViews = append(versionViews, versionView(v))
+			versionViews = append(versionViews, campaignVersionView(v))
 		}
 		packAdoptions := make([]map[string]any, 0)
 		for _, a := range adoptions {
 			// adoptions are campaign-level; only show the ones rooted in this pack
-			v, err := s.St.GetContentPackVersion(a.VersionID, tenantID)
+			v, err := s.St.GetCampaignContentVersion(tenantID, campaignID, a.VersionID)
 			if err != nil {
 				continue
 			}
@@ -715,8 +714,14 @@ func (s *Server) handleMediaHandoffRedeem(w http.ResponseWriter, r *http.Request
 // publicMediaRef is the whitelist media anchor (fetch reference only; no
 // internal asset id, no grant material).
 type publicMediaRef struct {
-	AssetRef string `json:"asset_ref"`
-	SHA256   string `json:"sha256"`
+	AssetRef   string `json:"asset_ref,omitempty"`
+	MediaID    string `json:"media_id,omitempty"`
+	MimeType   string `json:"mime_type,omitempty"`
+	ByteSize   int64  `json:"byte_size,omitempty"`
+	DurationMS int64  `json:"duration_ms,omitempty"`
+	Width      int    `json:"width,omitempty"`
+	Height     int    `json:"height,omitempty"`
+	SHA256     string `json:"sha256"`
 }
 
 type publicSnapshotView struct {
@@ -743,7 +748,7 @@ func mediaRefOf(a contentpack.AssetSnapshot) *publicMediaRef {
 	return &publicMediaRef{AssetRef: a.AssetRef, SHA256: a.SHA256}
 }
 
-func snapshotViewOf(v store.ContentPackVersion, pv *contentpack.PlatformVersion) publicSnapshotView {
+func snapshotViewOf(v store.CampaignContentVersion, pv *contentpack.PlatformVersion) publicSnapshotView {
 	view := publicSnapshotView{
 		PackVersionID: v.ID, ContentKind: string(v.ContentKind),
 		Title: v.Title, Body: v.Body, Topics: v.Topics,
@@ -756,6 +761,16 @@ func snapshotViewOf(v store.ContentPackVersion, pv *contentpack.PlatformVersion)
 			view.ImageText = append(view.ImageText, *ref)
 		}
 	}
+	if v.StoreMedia != nil {
+		view.Video = storeSnapshotRef(v.StoreMedia.Video)
+		view.Cover = storeSnapshotRef(v.StoreMedia.Cover)
+		view.ImageText = nil
+		for _, m := range v.StoreMedia.ImageText {
+			if ref := storeSnapshotRef(m); ref != nil {
+				view.ImageText = append(view.ImageText, *ref)
+			}
+		}
+	}
 	if pv != nil {
 		view.Platform = pv.Platform
 		view.PlatformNote = pv.Note
@@ -766,7 +781,7 @@ func snapshotViewOf(v store.ContentPackVersion, pv *contentpack.PlatformVersion)
 }
 
 // platformAdaptation picks the requested platform's adaptation note.
-func platformAdaptation(v store.ContentPackVersion, platform string) *contentpack.PlatformVersion {
+func platformAdaptation(v store.CampaignContentVersion, platform string) *contentpack.PlatformVersion {
 	for i := range v.PlatformVersions {
 		if v.PlatformVersions[i].Platform == platform {
 			return &v.PlatformVersions[i]
@@ -786,14 +801,14 @@ func (s *Server) handlePublicContentChoices(w http.ResponseWriter, r *http.Reque
 		fail(w, http.StatusNotFound, "not_found", "resource not found")
 		return
 	}
-	adoptions, err := s.St.ListAdoptions(res.Campaign.TenantID, res.Campaign.ID)
+	adoptions, err := s.campaignPublicAdoptions(res.Campaign.TenantID, res.Campaign.ID)
 	if err != nil {
 		fail(w, http.StatusNotFound, "not_found", "resource not found")
 		return
 	}
 	items := make([]map[string]any, 0, len(adoptions))
 	for _, a := range adoptions {
-		v, err := s.St.GetContentPackVersion(a.VersionID, res.Campaign.TenantID)
+		v, err := s.St.GetCampaignContentVersion(res.Campaign.TenantID, res.Campaign.ID, a.VersionID)
 		if err != nil {
 			continue
 		}
@@ -801,7 +816,7 @@ func (s *Server) handlePublicContentChoices(w http.ResponseWriter, r *http.Reque
 		if err := contentpack.Distributable(v.Status, v.GrantUntil, now); err != nil {
 			continue // blocked/expired versions are not offered
 		}
-		p, err := s.St.GetContentPack(v.PackID, res.Campaign.TenantID)
+		p, err := s.St.GetCampaignContentPack(res.Campaign.TenantID, res.Campaign.ID, v.PackID)
 		if err != nil {
 			continue
 		}
@@ -815,6 +830,15 @@ func (s *Server) handlePublicContentChoices(w http.ResponseWriter, r *http.Reque
 		}
 		if ref := mediaRefOf(cover); ref != nil {
 			item["cover"] = ref
+		}
+		if v.StoreMedia != nil {
+			m := v.StoreMedia.Cover
+			if m.IsEmpty() && len(v.StoreMedia.ImageText) > 0 {
+				m = v.StoreMedia.ImageText[0]
+			}
+			if ref := storeSnapshotRef(m); ref != nil {
+				item["cover"] = ref
+			}
 		}
 		items = append(items, item)
 	}
@@ -835,29 +859,46 @@ func (s *Server) handlePublicContentSnapshot(w http.ResponseWriter, r *http.Requ
 	}
 	packID := strings.TrimSpace(r.URL.Query().Get("pack_id"))
 	platform := strings.TrimSpace(r.URL.Query().Get("platform"))
-	if packID == "" || platform == "" {
-		fail(w, http.StatusBadRequest, "bad_request", "pack_id and platform are required")
-		return
+	var v store.CampaignContentVersion
+	var err error
+	if pid := strings.TrimSpace(r.URL.Query().Get("participation_id")); pid != "" {
+		visitor := requireVisitor404(w, r)
+		if visitor == "" {
+			return
+		}
+		mine, e := s.Participation.GetForVisitor(r.Context(), pid, visitor)
+		pinned := strings.TrimSpace(r.URL.Query().Get("version_id"))
+		if e != nil || mine.CampaignID != res.Campaign.ID || mine.ContentPackVersion == "" || pinned != mine.ContentPackVersion {
+			fail(w, 404, "not_found", "resource not found")
+			return
+		}
+		v, err = s.St.GetCampaignContentVersion(res.Campaign.TenantID, res.Campaign.ID, mine.ContentPackVersion)
+		if err != nil {
+			fail(w, 404, "not_found", "resource not found")
+			return
+		}
+		if packID != "" && v.PackID != packID {
+			fail(w, 404, "not_found", "resource not found")
+			return
+		}
+	} else {
+		if packID == "" || platform == "" {
+			fail(w, 400, "bad_request", "pack_id and platform are required")
+			return
+		}
+		v, err = s.campaignPublicVersion(res.Campaign.TenantID, res.Campaign.ID, platform, packID)
+		if err != nil || v.PackID != packID {
+			fail(w, 404, "not_found", "resource not found")
+			return
+		}
+		if pinned := strings.TrimSpace(r.URL.Query().Get("version_id")); pinned != "" && pinned != v.ID {
+			fail(w, 409, "version_mismatch", "selected version differs from current adoption")
+			return
+		}
 	}
-	p, err := s.St.GetContentPack(packID, res.Campaign.TenantID)
-	if err != nil || p.CampaignID != res.Campaign.ID {
-		fail(w, http.StatusNotFound, "not_found", "resource not found")
-		return
-	}
-	v, err := s.St.GetAdoptedVersion(res.Campaign.TenantID, res.Campaign.ID, platform)
-	if err != nil {
-		fail(w, http.StatusNotFound, "not_found", "resource not found")
-		return
-	}
-	if v.PackID != p.ID {
-		fail(w, http.StatusNotFound, "not_found", "resource not found")
-		return
-	}
-	// HUI-2628: the customer may pin the exact version they participated with.
-	// A pinned version that is not the current adoption is a conflict, never a
-	// silent switch to whatever the merchant adopted later.
-	if pinned := strings.TrimSpace(r.URL.Query().Get("version_id")); pinned != "" && pinned != v.ID {
-		fail(w, http.StatusConflict, "version_mismatch", "the selected content version is no longer the adopted version")
+	pack, err := s.St.GetCampaignContentPack(res.Campaign.TenantID, res.Campaign.ID, v.PackID)
+	if err != nil || pack.CampaignID != res.Campaign.ID {
+		fail(w, 404, "not_found", "resource not found")
 		return
 	}
 	if err := contentpack.Distributable(v.Status, v.GrantUntil, time.Now()); err != nil {

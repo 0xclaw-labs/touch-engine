@@ -188,7 +188,7 @@ func resolveContentPackRef(ref string) (string, bool) {
 // GET /api/v1/stores/{id}/content-production-handoffs/capabilities
 func (s *Server) handleStoreContentProductionCapabilities(w http.ResponseWriter, r *http.Request) {
 	c := callerFrom(r)
-	if !s.packTenantAction(c, authz.ActionReadList, w) {
+	if !s.storeContentPackRead(c, r.PathValue("id"), w) {
 		return
 	}
 	if _, err := s.St.GetStore(r.PathValue("id"), c.Member.TenantID); err != nil {
@@ -197,14 +197,17 @@ func (s *Server) handleStoreContentProductionCapabilities(w http.ResponseWriter,
 	}
 	producerOK := s.contentProducerConfigured()
 	quoteOK := s.billingQuoteAuthorityConfigured()
+	if requester, ok := s.ProductionQuotes.(production.QuoteRequester); ok && requester.Ready() && s.productionAccount(c.Member.TenantID) != "" && s.Cfg.ProductionPricingVersion != "" && s.Cfg.ProductionDeliverables != "" {
+		quoteOK = true
+	}
 	taskOK := s.Cfg.FeatureTask && s.ProductionTasks.Ready()
-	reason := "已接通受信制作生产方。提交后由其按真实任务与账单权威执行。"
+	reason := "可获取制作报价。确认后查看任务受理与交付进度；取得候选后还需预览采用。"
 	if !producerOK {
 		reason = "制作生产方尚未接入:还没有注册受信制作服务。这里先如实关闭发起;上传已有内容和从素材库选择不受影响,已记录的发起会保留。"
 	} else if !quoteOK {
-		reason = "受信制作生产方已注册;账单权威(billing_authority)尚未接入:报价引用必须先经账单权威确认并落进本仓投影才能发起制作,否则发起会被拒(找不到就按同形 404 应答);费用状态以账单为准。"
+		reason = "制作生产方已注册，公共账务报价尚未接通。获取报价时会说明恢复方式；上传与选择已有内容不受影响。"
 	} else if !taskOK {
-		reason = "受信制作生产方与账单权威已接;公共任务权威未接通,提交先记录、任务暂不开始。"
+		reason = "制作生产方与账单报价已接；公共任务尚未接通。可查看报价，确认暂不预占新费用，待任务服务恢复后重试。"
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"production_available":       producerOK,
@@ -216,11 +219,15 @@ func (s *Server) handleStoreContentProductionCapabilities(w http.ResponseWriter,
 }
 
 type contentProductionHandoffBody struct {
-	ContentPackRef    string `json:"content_pack_ref"`
-	ContentBindingRef string `json:"content_binding_ref"`
-	QuoteRef          string `json:"quote_ref"`
-	IdempotencyKey    string `json:"idempotency_key"`
-	Note              string `json:"note"`
+	OfferToken          string `json:"offer_token"`
+	AcceptedAmountMinor *int64 `json:"accepted_amount_minor"`
+	AcceptedCurrency    string `json:"accepted_currency"`
+	AcceptedExpiresAt   string `json:"accepted_expires_at"`
+	ContentPackRef      string `json:"content_pack_ref"`
+	ContentBindingRef   string `json:"content_binding_ref"`
+	QuoteRef            string `json:"quote_ref"`
+	IdempotencyKey      string `json:"idempotency_key"`
+	Note                string `json:"note"`
 }
 
 // POST /api/v1/stores/{id}/content-production-handoffs
@@ -291,6 +298,10 @@ func (s *Server) handleStoreContentProductionHandoffCreate(w http.ResponseWriter
 		return
 	} else if !errors.Is(err, store.ErrNotFound) {
 		packStoreFail(w, err)
+		return
+	}
+
+	if in.OfferToken != "" && !s.confirmProductionOffer(w, r, in, packID) {
 		return
 	}
 
@@ -372,9 +383,12 @@ func (s *Server) handleStoreContentProductionHandoffCreate(w http.ResponseWriter
 	// task seam:公共任务权威配置齐全才提交真实任务;未配置=诚实关闭
 	// (status=recorded,绝不伪造 task_ref;本仓不自建制作队列)。
 	if s.Cfg.FeatureTask && s.ProductionTasks.Ready() {
-		params, _ := json.Marshal(map[string]string{
-			"handoff_id": h.ID, "store_id": h.StoreID, "pack_id": h.PackID, "quote_ref": h.QuoteRef,
-		})
+		taskParams, paramsErr := s.productionTaskParams(h)
+		if paramsErr != nil {
+			fail(w, 503, "production_recovery_pending", "原制作的账务恢复资料尚未读到，任务没有重新提交。请恢复同一请求，勿重新付款。")
+			return
+		}
+		params, _ := json.Marshal(taskParams)
 		taskRef, terr := s.ProductionTasks.Submit(r.Context(), production.TaskSubmission{
 			IdempotencyKey: h.IdempotencyKey, AccountID: c.Member.PrincipalRef,
 			Kind: "touch_content_production", ParamsJSON: string(params),
@@ -413,7 +427,7 @@ func (s *Server) handleStoreContentProductionHandoffCreate(w http.ResponseWriter
 // 独立可辨。
 func (s *Server) handleStoreContentProductionHandoffList(w http.ResponseWriter, r *http.Request) {
 	c := callerFrom(r)
-	if !s.packTenantAction(c, authz.ActionReadList, w) {
+	if !s.storeContentPackRead(c, r.PathValue("id"), w) {
 		return
 	}
 	tenantID := c.Member.TenantID
@@ -821,9 +835,16 @@ func (s *Server) handleProductionHandoffRetry(w http.ResponseWriter, r *http.Req
 			"公共任务权威仍未接通:这次重试没有送出;稍后再试同一凭据(不重复建工程、不重复计费)")
 		return
 	}
-	params, _ := json.Marshal(map[string]string{
-		"handoff_id": h.ID, "store_id": h.StoreID, "pack_id": h.PackID, "quote_ref": h.QuoteRef,
-	})
+	if h.StoreID != storeID {
+		fail(w, 404, "not_found", "resource not found")
+		return
+	}
+	taskParams, paramsErr := s.productionTaskParams(h)
+	if paramsErr != nil {
+		fail(w, 503, "production_recovery_pending", "原制作的账务恢复资料尚未读到，任务没有重新提交。请恢复同一请求，勿重新付款。")
+		return
+	}
+	params, _ := json.Marshal(taskParams)
 	taskRef, terr := s.ProductionTasks.Submit(r.Context(), production.TaskSubmission{
 		IdempotencyKey: h.IdempotencyKey, AccountID: c.Member.PrincipalRef,
 		Kind: "touch_content_production", ParamsJSON: string(params),

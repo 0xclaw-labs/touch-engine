@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/bianjiefilm/touch-engine/server/internal/authz"
+	"github.com/bianjiefilm/touch-engine/server/internal/campaign"
 	"github.com/bianjiefilm/touch-engine/server/internal/campaignenable"
 	"github.com/bianjiefilm/touch-engine/server/internal/channeladmission"
 	"github.com/bianjiefilm/touch-engine/server/internal/contentpack"
@@ -55,12 +56,12 @@ func (s *Server) handlePublishConfigGet(w http.ResponseWriter, r *http.Request) 
 		fail(w, http.StatusInternalServerError, "internal", "publish config lookup failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, cfg)
+	s.writePublishConfig(w, cfg)
 }
 
 // PUT /api/v1/campaigns/{id}/publish-config — save the draft (full-replace).
-// Saving over an enabled config demotes it to draft: the new version must pass
-// the enable check again before it is live.
+// Saving updates only the editable version; the published promise and explicit
+// pause state stay unchanged until a separate enable/resume/pause action.
 func (s *Server) handlePublishConfigPut(w http.ResponseWriter, r *http.Request) {
 	if !s.rulesGate(w) {
 		return
@@ -95,7 +96,7 @@ func (s *Server) handlePublishConfigPut(w http.ResponseWriter, r *http.Request) 
 		fail(w, http.StatusInternalServerError, "internal", "publish config save failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, cfg)
+	s.writePublishConfig(w, cfg)
 }
 
 // POST /api/v1/campaigns/{id}/publish-config/enable — the only path to enabled.
@@ -118,6 +119,19 @@ func (s *Server) handlePublishConfigEnable(w http.ResponseWriter, r *http.Reques
 		fail(w, http.StatusInternalServerError, "internal", "publish config lookup failed")
 		return
 	}
+	var input struct {
+		ExpectedVersion int `json:"expected_version"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			fail(w, 400, "bad_request", "invalid enable request")
+			return
+		}
+	}
+	if input.ExpectedVersion != 0 && input.ExpectedVersion != cfg.Version {
+		fail(w, 409, "version_mismatch", "草稿已更新，请重新查看并确认本次版本")
+		return
+	}
 	facts, err := s.assembleEnableFacts(c.Member.TenantID, camp, cfg, time.Now().UTC())
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "internal", "enable facts assembly failed")
@@ -132,6 +146,10 @@ func (s *Server) handlePublishConfigEnable(w http.ResponseWriter, r *http.Reques
 	}
 	disclosure := campaignenable.BuildDisclosure(cfg.Spec, cfg.Version, time.Now().UTC()).JSON()
 	if err := s.St.EnablePublishConfig(c.Member.TenantID, camp.ID, cfg.Version, disclosure, c.Member.PrincipalRef); err != nil {
+		if errors.Is(err, store.ErrPublishConfigVersionConflict) {
+			fail(w, 409, "version_mismatch", "草稿已更新，请重新检查本次版本")
+			return
+		}
 		if errors.Is(err, store.ErrNotFound) {
 			fail(w, http.StatusNotFound, "not_found", "publish config not configured")
 			return
@@ -144,7 +162,7 @@ func (s *Server) handlePublishConfigEnable(w http.ResponseWriter, r *http.Reques
 		fail(w, http.StatusInternalServerError, "internal", "publish config lookup failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	s.writePublishConfig(w, out)
 }
 
 // POST /api/v1/campaigns/{id}/publish-config/pause — 紧急暂停: stops new
@@ -160,7 +178,7 @@ func (s *Server) handlePublishConfigPause(w http.ResponseWriter, r *http.Request
 		return
 	}
 	err := s.St.PausePublishConfig(c.Member.TenantID, camp.ID, c.Member.PrincipalRef)
-	if errors.Is(err, store.ErrNotFound) {
+	if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrPublishConfigNotEnabled) {
 		fail(w, http.StatusNotFound, "not_found", "no enabled publish config")
 		return
 	}
@@ -173,12 +191,12 @@ func (s *Server) handlePublishConfigPause(w http.ResponseWriter, r *http.Request
 		fail(w, http.StatusInternalServerError, "internal", "publish config lookup failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	s.writePublishConfig(w, out)
 }
 
 // GET /api/v1/campaigns/{id}/publish-config/snapshot — the frozen告知快照 plus
 // the G3 sync contract in the rewardops.Snapshot JSON shape. Only an enabled
-// config serves a snapshot (draft/paused = not_enabled: no promised reward).
+// published config serves a snapshot; unenabled/paused return not_enabled.
 func (s *Server) handlePublishConfigSnapshot(w http.ResponseWriter, r *http.Request) {
 	if !s.rulesGate(w) {
 		return
@@ -188,7 +206,11 @@ func (s *Server) handlePublishConfigSnapshot(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	cfg, err := s.St.GetPublishConfig(c.Member.TenantID, camp.ID)
+	cfg, err := s.St.GetPublishedConfig(c.Member.TenantID, camp.ID)
+	if errors.Is(err, store.ErrPublishConfigNotEnabled) {
+		writeJSON(w, http.StatusConflict, map[string]any{"state": "not_enabled"})
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		fail(w, http.StatusNotFound, "not_found", "publish config not configured")
 		return
@@ -239,11 +261,19 @@ func (s *Server) handlePublishConfigRevisions(w http.ResponseWriter, r *http.Req
 // truths. Every source is read-only; nothing here writes participation or
 // reward tables.
 func (s *Server) assembleEnableFacts(tenantID string, camp store.Campaign, cfg store.PublishConfig, now time.Time) (campaignenable.Facts, error) {
+	return s.assembleConfigFacts(tenantID, camp, cfg, now, true, false)
+}
+
+func (s *Server) assemblePublishedFacts(tenantID string, camp store.Campaign, cfg store.PublishConfig, now time.Time) (campaignenable.Facts, error) {
+	return s.assembleConfigFacts(tenantID, camp, cfg, now, false, false)
+}
+
+func (s *Server) assembleConfigFacts(tenantID string, camp store.Campaign, cfg store.PublishConfig, now time.Time, requireAdoption, allowNoFreeStock bool) (campaignenable.Facts, error) {
 	facts := campaignenable.Facts{Now: now, RuleVersion: cfg.Version}
 
 	// 内容事实(3553):所选版本必须是本活动的当前采用版,且可分发
 	// (adopted + 授权未过期;blocked 单列原因)。
-	adoptions, err := s.St.ListAdoptions(tenantID, camp.ID)
+	adoptions, err := s.St.ListCampaignContentAdoptions(tenantID, camp.ID)
 	if err != nil {
 		return facts, err
 	}
@@ -254,9 +284,27 @@ func (s *Server) assembleEnableFacts(tenantID string, camp store.Campaign, cfg s
 			break
 		}
 	}
+	if !requireAdoption {
+		adopted = true
+	}
+	if adopted && requireAdoption {
+		for _, ch := range cfg.Spec.Channels {
+			matched := false
+			for _, a := range adoptions {
+				if a.Platform == ch.Platform && a.VersionID == cfg.Spec.ContentVerID {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				adopted = false
+				break
+			}
+		}
+	}
 	facts.ContentAdopted = adopted
 	if adopted {
-		ver, err := s.St.GetContentPackVersion(cfg.Spec.ContentVerID, tenantID)
+		ver, err := s.St.GetCampaignContentVersion(tenantID, camp.ID, cfg.Spec.ContentVerID)
 		if err != nil {
 			return facts, err
 		}
@@ -292,7 +340,7 @@ func (s *Server) assembleEnableFacts(tenantID string, camp store.Campaign, cfg s
 
 	// 权益事实(1671,只读):引用存在 + 版本对齐 + 有余量。批次按
 	// (campaign, slot) 组织,版本不齐 = G3 还没被告知这一版 = 拒绝。
-	inventory, err := s.St.ListRewardInventory(tenantID, camp.ID)
+	inventory, err := s.St.ListRewardInventoryAt(tenantID, camp.ID, now)
 	if err != nil {
 		return facts, err
 	}
@@ -303,7 +351,7 @@ func (s *Server) assembleEnableFacts(tenantID string, camp store.Campaign, cfg s
 		facts.BenefitRefPresent = true
 		if inv.RuleVersion == cfg.Version {
 			facts.BenefitVersionOK = true
-			if inv.AvailableQty > 0 {
+			if (inv.AvailableQty > 0 || allowNoFreeStock) && inventoryFitsPublishedPromise(inv, cfg, camp, now) {
 				facts.BenefitStockOK = true
 			}
 		}
@@ -311,7 +359,7 @@ func (s *Server) assembleEnableFacts(tenantID string, camp store.Campaign, cfg s
 
 	// 期限事实:活动未结束;领取窗在活动期内且窗口内部有序(兑换期不早于
 	// 领取期截止;兑换可长于活动期,券的核销期独立)。
-	facts.CampaignEnded = campaignEndedAt(camp, now)
+	facts.CampaignEnded = camp.Status == "ended" || campaignEndedAt(camp, now)
 	facts.WindowOK = windowsOK(cfg.Spec, camp, now)
 
 	// 门店事实:配置门店都必须真实存在于本租户;活动绑定了门店时,配置
@@ -370,6 +418,183 @@ func windowsOK(spec campaignenable.Spec, camp store.Campaign, now time.Time) boo
 	}
 	if strings.TrimSpace(camp.EndsAt) != "" {
 		if end, err := time.Parse(time.RFC3339, camp.EndsAt); err == nil && cu.After(end) {
+			return false
+		}
+	}
+	return true
+}
+
+// Management projection reuses the same window and publish preflight as writes.
+// It does not reserve stock or change lifecycle; unrelated store services stay open.
+type campaignAvailability struct {
+	State    string `json:"state"`
+	Label    string `json:"label"`
+	CanStart bool   `json:"can_start"`
+	Reason   string `json:"reason,omitempty"`
+}
+type campaignManagementView struct {
+	store.Campaign
+	Availability campaignAvailability `json:"availability"`
+}
+
+func (s *Server) campaignManagement(camp store.Campaign) campaignManagementView {
+	a := campaignAvailability{State: camp.Status, Label: map[string]string{"draft": "草稿（未发布）", "paused": "已暂停，停止新参与与新发放", "ended": "已结束，已发有效券仍可使用", "active": "可参与"}[camp.Status]}
+	now := s.rewardTime()
+	window := campaign.Window{StartsAt: camp.StartsAt, EndsAt: camp.EndsAt}
+	if reason := window.ResolveTime(now); reason != "" && camp.Status != "ended" {
+		a.State = reason
+		a.Label = map[string]string{"expired": "参与期已结束，已发有效券仍可使用", "not_started": "尚未到活动开始时间"}[reason]
+	} else if camp.Status == "active" {
+		a.CanStart = true
+		cfg, err := s.St.GetPublishedConfig(camp.TenantID, camp.ID)
+		if err == nil {
+			if cfg.Status != "enabled" {
+				a.State = "reward_not_enabled"
+				a.Label = "活动已开放，推广优惠尚未启用"
+				a.CanStart = false
+			} else if reason := (campaign.Window{StartsAt: cfg.Spec.Reward.ClaimFrom, EndsAt: cfg.Spec.Reward.ClaimUntil}).ResolveTime(now); reason != "" {
+				a.State = "claim_" + reason
+				a.Label = map[string]string{"not_started": "优惠尚未到领取时间", "expired": "优惠领取期已结束，已发有效券仍可使用"}[reason]
+				a.CanStart = false
+			} else if facts, err := s.assemblePublishedFacts(camp.TenantID, camp, cfg, now); err != nil {
+				a.State = "unknown"
+				a.Label = "当前可参与性未读到"
+				a.CanStart = false
+			} else if verdict := campaignenable.Check(cfg.Spec, facts); !verdict.Allowed {
+				a.State = "reward_unavailable"
+				a.Label = "推广优惠暂不可参与"
+				a.Reason = "请在活动承诺中查看预检缺项；其他门店服务不受影响"
+				a.CanStart = false
+			}
+		} else if errors.Is(err, store.ErrPublishConfigNotEnabled) {
+			a.State = "reward_not_enabled"
+			a.Label = "活动已开放，推广优惠尚未启用"
+			a.CanStart = false
+		} else if !errors.Is(err, store.ErrNotFound) {
+			a.State = "unknown"
+			a.Label = "当前可参与性未读到"
+			a.CanStart = false
+		}
+	}
+	return campaignManagementView{Campaign: camp, Availability: a}
+}
+
+func parseConfigTime(value string) time.Time { t, _ := time.Parse(time.RFC3339, value); return t }
+
+// Resume only the published revision. A newer draft remains pending and must
+// use the enable endpoint with its own channel/inventory preflight.
+func (s *Server) handlePublishConfigResume(w http.ResponseWriter, r *http.Request) {
+	if !s.rulesGate(w) {
+		return
+	}
+	c := callerFrom(r)
+	camp, ok := s.campaignScoped(c, r.PathValue("id"), authzManageRules, w)
+	if !ok {
+		return
+	}
+	live, err := s.St.GetPublishedConfig(c.Member.TenantID, camp.ID)
+	if errors.Is(err, store.ErrPublishConfigNotEnabled) || errors.Is(err, store.ErrNotFound) {
+		fail(w, 409, "not_enabled", "尚无可恢复的已启用版本")
+		return
+	}
+	if err != nil {
+		fail(w, 503, "preflight_unavailable", "原生效版本没有读到，未恢复活动")
+		return
+	}
+	var input struct {
+		ExpectedVersion int `json:"expected_version"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			fail(w, 400, "bad_request", "invalid resume request")
+			return
+		}
+	}
+	if input.ExpectedVersion != 0 && input.ExpectedVersion != live.EnabledVersion {
+		fail(w, 409, "version_mismatch", "线上版本已更新，请重新查看后恢复")
+		return
+	}
+	facts, err := s.assembleConfigFacts(c.Member.TenantID, camp, live, time.Now().UTC(), false, true)
+	if err != nil {
+		fail(w, 503, "preflight_unavailable", "原版本预检没有读到")
+		return
+	}
+	if verdict := campaignenable.Check(live.Spec, facts); !verdict.Allowed {
+		writeJSON(w, 422, map[string]any{"error": verdict.Reason, "field": verdict.Field, "message": "原生效版本当前不可恢复，请核对真实缺项"})
+		return
+	}
+	if err := s.St.ResumePublishConfig(c.Member.TenantID, camp.ID, live.EnabledVersion, c.Member.PrincipalRef); err != nil {
+		if errors.Is(err, store.ErrPublishConfigVersionConflict) {
+			fail(w, 409, "version_mismatch", "线上版本已更新，请重试")
+			return
+		}
+		fail(w, 503, "preflight_unavailable", "恢复没有完成，请回查原状态")
+		return
+	}
+	cfg, err := s.St.GetPublishConfig(c.Member.TenantID, camp.ID)
+	if err != nil {
+		fail(w, 500, "internal", "publish config lookup failed")
+		return
+	}
+	s.writePublishConfig(w, cfg)
+}
+
+func (s *Server) writePublishConfig(w http.ResponseWriter, cfg store.PublishConfig) {
+	state := "unknown"
+	live, err := s.St.GetPublishedConfig(cfg.TenantID, cfg.CampaignID)
+	if err == nil {
+		state = live.Status
+	} else if errors.Is(err, store.ErrPublishConfigNotEnabled) || errors.Is(err, store.ErrNotFound) {
+		state = "not_enabled"
+	}
+	writeJSON(w, http.StatusOK, struct {
+		store.PublishConfig
+		PublishedStatus string `json:"published_status"`
+	}{PublishConfig: cfg, PublishedStatus: state})
+}
+
+// Restoring an existing promise does not need unallocated stock, but never
+// relaxes the real batch's ownership, version, type, verification or validity.
+func inventoryFitsPublishedPromise(inv store.RewardInventory, cfg store.PublishConfig, camp store.Campaign, at time.Time) bool {
+	if inv.TenantID != cfg.TenantID || inv.CampaignID != camp.ID || inv.RuleVersion != cfg.Version || inv.BenefitSlot != cfg.Spec.Reward.Slot || inv.TotalQty <= 0 || inv.Status != store.RewardInventoryActive {
+		return false
+	}
+	kind := cfg.Spec.Reward.Kind
+	if kind == campaignenable.KindOnsiteGift || kind == campaignenable.KindOnsiteDiscount {
+		kind = store.RewardKindGiftDiscount
+	}
+	if inv.Kind != kind {
+		return false
+	}
+	if inv.StoreID != "" {
+		bound := false
+		for _, id := range cfg.Spec.Reward.StoreIDs {
+			if id == inv.StoreID {
+				bound = true
+			}
+		}
+		if !bound || (camp.StoreID != "" && camp.StoreID != inv.StoreID) {
+			return false
+		}
+	}
+	verified := false
+	for _, mode := range inv.AllowedEvidence {
+		if mode == cfg.Spec.VerificationMode {
+			verified = true
+		}
+	}
+	if !verified {
+		return false
+	}
+	if inv.ValidFrom != "" {
+		from, err := time.Parse(time.RFC3339, inv.ValidFrom)
+		if err != nil || at.Before(from) {
+			return false
+		}
+	}
+	if inv.ValidUntil != "" {
+		until, err := time.Parse(time.RFC3339, inv.ValidUntil)
+		if err != nil || at.After(until) {
 			return false
 		}
 	}

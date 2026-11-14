@@ -668,3 +668,82 @@ func TestStaffTokenEntryRateLimited(t *testing.T) {
 	status, _, _ := f.do(t, "POST", "/api/v1/participations/staff/peek", "sess-owner-a", f.tenA, fmt.Sprintf(`{"token":%q}`, token))
 	mustEqual(t, status, http.StatusOK)
 }
+
+// HUI-4661: 只读开卡也必须验证核验凭据的用途、目标和有效期。
+func TestStaffPeekRejectsInvalidCredentialAuthority(t *testing.T) {
+	for _, tc := range []struct {
+		name, field, value string
+		status             int
+	}{
+		{"customer_resume", "purpose", "customer_resume", http.StatusForbidden},
+		{"wrong_target", "target_scope", "another-store", http.StatusForbidden},
+		{"expired", "expires_at", "2020-01-01T00:00:00Z", http.StatusGone},
+		{"revoked", "revoked_at", "2020-01-01T00:00:00Z", http.StatusConflict},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newServiceDeskFixture(t)
+			pid, cookie := f.startParticipation(t, "peek-authority-"+tc.name)
+			token := f.mintStaffVerify(t, pid, cookie)
+			_, err := f.s.St.DB.Exec("UPDATE handoff_credentials SET "+tc.field+"=? WHERE participation_id=?", tc.value, pid)
+			mustNoErr(t, err)
+			status, _, out := f.do(t, "POST", "/api/v1/participations/staff/peek", "sess-mgr-a", f.tenA, fmt.Sprintf(`{"token":%q}`, token))
+			if status != tc.status {
+				t.Fatalf("peek = %d (%v), want %d", status, out, tc.status)
+			}
+			var used string
+			mustNoErr(t, f.s.St.DB.QueryRow("SELECT used_at FROM handoff_credentials WHERE participation_id=?", pid).Scan(&used))
+			if used != "" {
+				t.Fatal("read-only rejection consumed credential")
+			}
+		})
+	}
+}
+
+func TestStaffConfirmCannotChangeParticipationFrozenContext(t *testing.T) {
+	f := newServiceDeskFixture(t)
+	pid, _ := f.startParticipation(t, "confirm-frozen-context")
+	other, err := f.s.St.CreateCampaign(store.NewCampaign{TenantID: f.tenA, StoreID: f.storeA, Title: "另一活动", CreatedBy: "test", StartsAt: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339), EndsAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
+	mustNoErr(t, err)
+	_, err = f.s.St.TransitionCampaign(other.ID, f.tenA, campaign.StatusActive)
+	mustNoErr(t, err)
+	for _, target := range []struct {
+		campaign string
+		version  int
+	}{{other.ID, 1}, {f.campaignA, 2}} {
+		_, err = f.s.St.CreateRewardInventory(f.tenA, store.NewRewardInventory{CampaignID: target.campaign, Kind: store.RewardKindStoreCoupon, Name: "越界批次", BenefitSlot: "other_slot", RuleVersion: target.version, AllowedEvidence: []string{"staff_observed_submission"}, TotalQty: 3, StoreID: f.storeA, CreatedBy: "usr_owner_a"})
+		mustNoErr(t, err)
+		body := fmt.Sprintf(`{"participation_id":%q,"benefit_slot":"other_slot","rule_version":%d,"event_id":%q,"evidence":"staff_observed_submission","store_id":%q}`, pid, target.version, fmt.Sprintf("bad-context-%s-%d", target.campaign, target.version), f.storeA)
+		status, _, out := f.do(t, "POST", "/api/v1/campaigns/"+target.campaign+"/reward-confirm", "sess-mgr-a", f.tenA, body)
+		if status != http.StatusForbidden {
+			t.Errorf("confirm changed frozen context = %d (%v), want 403", status, out)
+		}
+	}
+	var count int
+	mustNoErr(t, f.s.St.DB.QueryRow("SELECT COUNT(*) FROM reward_benefits WHERE participation_id=?", pid).Scan(&count))
+	if count != 0 {
+		t.Fatalf("invalid context created %d benefits", count)
+	}
+}
+
+func TestStaffPeekReportsAllowedActionsWithoutIssuing(t *testing.T) {
+	f := newServiceDeskFixture(t)
+	pid, cookie := f.startParticipation(t, "peek-allowed-actions")
+	token := f.mintStaffVerify(t, pid, cookie)
+	for _, active := range []bool{true, false} {
+		if !active {
+			_, err := f.s.St.TransitionCampaign(f.campaignA, f.tenA, campaign.StatusPaused)
+			mustNoErr(t, err)
+		}
+		status, _, card := f.do(t, "POST", "/api/v1/participations/staff/peek", "sess-mgr-a", f.tenA, fmt.Sprintf(`{"token":%q}`, token))
+		mustEqual(t, status, http.StatusOK)
+		allowed, exists := card["confirmation_allowed"].(bool)
+		if !exists || allowed != active {
+			t.Errorf("allowed = %v, exists=%v, want %v", allowed, exists, active)
+		}
+	}
+	var count int
+	mustNoErr(t, f.s.St.DB.QueryRow("SELECT COUNT(*) FROM reward_benefits WHERE participation_id=?", pid).Scan(&count))
+	if count != 0 {
+		t.Fatalf("peek issued %d benefits", count)
+	}
+}

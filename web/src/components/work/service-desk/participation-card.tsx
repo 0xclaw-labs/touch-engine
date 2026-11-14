@@ -5,7 +5,7 @@
 // 已有处理;证据选项只来自活动已冻结规则(批次快照),official 永远只读;
 // 「暂不符合」零写入(不造第二本账),顾客补做后可再次出示。
 
-import { useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { benefitCopy, statusLabel } from "@/lib/participation";
 import { evidenceText, faceAndCostText, inventoryKindText, slotText } from "@/lib/reward-ops";
 import {
@@ -13,6 +13,7 @@ import {
   confirmRequestBody,
   evidenceChoices,
   matchBatchesForCard,
+  participationNeedsConfirmation,
   type ParticipationCard as Card,
   type ServiceBatch,
 } from "@/lib/service-desk";
@@ -25,6 +26,12 @@ const NOT_FIT_REASONS = [
 
 export interface ParticipationBenefit {
   id: string;
+  inventory_id?: string;
+  benefit_slot?: string;
+  cost_minor?: number;
+  face_value_minor?: number;
+  cost_recorded?: boolean;
+  currency?: string;
   status: string;
   evidence: string;
   code?: string;
@@ -40,14 +47,15 @@ export function ParticipationCardView(props: {
   benefit?: ParticipationBenefit;
   canConfirm: boolean;
   busy: boolean;
+  pendingConfirmation?: Record<string, unknown> | null;
   onConfirm: (body: Record<string, unknown>, evidence: string) => void;
   onNotFit: (reason: string) => void;
   onClose: () => void;
 }) {
   const { card, campaignTitle, batches, benefit, canConfirm, busy, onConfirm, onNotFit, onClose } = props;
   const candidates = useMemo(
-    () => matchBatchesForCard(batches, { rule_version: card.rule_version, store_id: card.store_id }),
-    [batches, card.rule_version, card.store_id],
+    () => matchBatchesForCard(batches, { rule_version: card.rule_version, store_id: card.store_id }).filter((b) => !benefit?.inventory_id || b.id === benefit.inventory_id),
+    [batches, card.rule_version, card.store_id, benefit?.inventory_id],
   );
   const [batchId, setBatchId] = useState(candidates[0]?.id ?? "");
   const [evidence, setEvidence] = useState("");
@@ -68,7 +76,7 @@ export function ParticipationCardView(props: {
     onConfirm(
       confirmRequestBody({
         participationId: card.id,
-        benefitSlot: batch.benefit_slot,
+        benefitSlot: benefit?.benefit_slot || batch.benefit_slot,
         ruleVersion: batch.rule_version,
         evidence,
         storeId: card.store_id,
@@ -121,8 +129,15 @@ export function ParticipationCardView(props: {
         )}
       </section>
 
-      {benefit ? (
+      {!participationNeedsConfirmation(benefit) ? (
         <p className="tk-note" data-field="card-done">这张卡已经有处理结果，请回到「已发放/已核销记录」继续核销或查看。</p>
+      ) : props.pendingConfirmation ? (
+        <section aria-label="原确认结果待确认">
+          <p className="tk-note">上一笔确认结果尚未查清，保留原证据与发放/现场兑现方式。请先回查或重试同一次确认。</p>
+          <button className="tk-button" type="button" disabled={busy} data-action="retry-confirmation" onClick={() => onConfirm(props.pendingConfirmation!, String(props.pendingConfirmation?.evidence || ""))}>
+            {busy ? "正在回查…" : "重试同一次确认"}
+          </button>
+        </section>
       ) : canConfirm ? (
         <section aria-label="确认与发放">
           <h3 className="tk-subtitle">确认符合条件</h3>
@@ -155,7 +170,7 @@ export function ParticipationCardView(props: {
                 <p className="tk-note" data-field="batch-rule">
                   此批次规则允许的证据：{choices.allowed.map(evidenceText).join("、")}。
                   {batch.kind === "gift_discount" ? " 现场赠品/折扣可现场兑现。" : ""}
-                  {" "}{faceAndCostText(batch.face_value_minor ?? 0, batch.cost_minor ?? 0, batch.currency)}
+                  {" "}{faceAndCostText(benefit?.face_value_minor ?? batch.face_value_minor ?? 0, benefit?.cost_minor ?? batch.cost_minor ?? 0, benefit?.currency ?? batch.currency, benefit?.cost_recorded ?? batch.cost_recorded)}
                 </p>
               ) : null}
               <div role="group" aria-label="选择证据" data-field="evidence-group">
@@ -242,7 +257,7 @@ export function ParticipationCardView(props: {
           )}
         </section>
       ) : (
-        <p className="tk-note" data-field="confirm-forbidden">当前角色不能确认发放，只能查看这张卡。</p>
+        <p className="tk-note" data-field="confirm-forbidden">{card.confirmation_blocked_reason || "当前角色不能确认发放，只能查看这张卡。"}</p>
       )}
 
       <p className="tk-gap">

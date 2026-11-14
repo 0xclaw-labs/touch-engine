@@ -6,6 +6,7 @@ import {
   exceptionCopy,
   journeyStage,
   rewardCardCopy,
+  rewardEntryState,
   stockLine,
   type CustomerParticipation,
 } from "../src/lib/customer-journey";
@@ -21,6 +22,29 @@ const started: CustomerParticipation = {
   content_pack_version: "v1",
   expires_at: "2026-10-21T00:00:00Z",
 };
+
+describe("活动窗口与优惠办理条件独立", () => {
+  const available = { can_start: true, label: "可参与" };
+  const enabled = { enabled: true, available_qty: 2, allowed_evidence: ["staff_observed_submission"] };
+  it("活动可参与不把未知或未启用优惠说成可以办理", () => {
+    for (const promise of [undefined, {}, { enabled: false }]) {
+      const state = rewardEntryState({ participationEnabled: true, availability: available, promise });
+      expect(state.canStart).toBe(false);
+      expect(state.conditionsConfirmed).toBe(false);
+      expect(state.closedReason).not.toContain("可参与");
+      expect(state.closedReason).toMatch(/尚未确认|尚未启用/);
+    }
+  });
+  it("未知库存和未知核验方式不能显示办理承诺", () => {
+    expect(rewardEntryState({ participationEnabled: true, availability: available, promise: { ...enabled, available_qty: undefined } }).closedReason).toContain("库存尚未确认");
+    expect(rewardEntryState({ participationEnabled: true, availability: available, promise: { ...enabled, allowed_evidence: [] } }).closedReason).toContain("核验方式尚未确认");
+  });
+  it("真实停用、库存用尽与条件齐全有不同结果", () => {
+    expect(rewardEntryState({ participationEnabled: true, availability: { can_start: false, label: "活动已暂停" }, promise: enabled }).closedReason).toBe("活动已暂停");
+    expect(rewardEntryState({ participationEnabled: true, availability: available, promise: { ...enabled, available_qty: 0 } }).closedReason).toContain("已用完");
+    expect(rewardEntryState({ participationEnabled: true, availability: available, promise: enabled })).toEqual({ canStart: true, conditionsConfirmed: true });
+  });
+});
 
 describe("journeyStage 阶段状态机", () => {
   it("无参与=browse(浏览不占奖励)", () => {

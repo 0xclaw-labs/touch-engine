@@ -135,6 +135,6 @@ describe("批次行", () => {
     });
     expect(line).toContain("开业券");
     expect(line).toContain("7/10");
-    expect(line).toContain("首发发布");
+    expect(line).toContain("活动承诺");
   });
 });

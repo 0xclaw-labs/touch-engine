@@ -21,6 +21,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -811,4 +812,120 @@ func TestTouchpointStoreRootPublicAndRebindAPI(t *testing.T) {
 	if vB["store_id"] != f.stoB.ID || vB["target_type"] != "store" {
 		t.Fatalf("store B alias = %v/%v", vB["store_id"], vB["target_type"])
 	}
+}
+
+// Regression: real HTTP creates a stable entry without campaigns or tags.
+func TestStoreRootTouchpointCreationAndRecoveryHTTP(t *testing.T) {
+	f := newTPFixture(t, map[string]string{"FEATURE_TOUCHPOINT_ENTRY": "on", "FEATURE_STOREFRONT": "on"})
+	body := fmt.Sprintf(`{"store_id":%q,"label":"前台","position":"收银台","creation_request_key":"root-create-request-1"}`, f.stoA.ID)
+	status, _, first := f.do(t, "POST", "/api/v1/touchpoints", "sess-owner-a", f.tenA, body)
+	if status != http.StatusCreated {
+		t.Fatalf("store root create = %d %v; want 201", status, first)
+	}
+	id := first["id"].(string)
+	// The same root consumes the original published storefront; no empty campaign.
+	base := "/api/v1/stores/" + f.stoA.ID
+	status, _, _ = f.do(t, "PUT", base+"/services", "sess-owner-a", f.tenA, `{"expected_revision":0,"publication_mode":"draft","items":[{"kind":"wifi","catalog_code":"A17","label":"门店网络","enabled":true,"order":1,"config":{"ssid":"稳定入口网络","encryption":"open"}}]}`)
+	mustEqual(t, status, 200)
+	status, _, draft := f.do(t, "PUT", base+"/storefront-draft", "sess-owner-a", f.tenA, `{"expected_revision":0,"sections":[]}`)
+	mustEqual(t, status, 200)
+	status, _, pre := f.do(t, "POST", base+"/storefront/preflight", "sess-owner-a", f.tenA, `{}`)
+	mustEqual(t, status, 200)
+	status, _, _ = f.do(t, "POST", base+"/storefront/publish", "sess-owner-a", f.tenA, fmt.Sprintf(`{"confirm_changes":true,"candidate_revision":%v,"expected_published_revision":0,"summary_fingerprint":%q}`, draft["revision"], pre["summary_fingerprint"]))
+	mustEqual(t, status, 200)
+	if first["tag_id"] != nil || first["campaign_id"] != nil || first["deployment_stage"] != "registered" {
+		t.Fatalf("root facts: %v", first)
+	}
+	for i := 0; i < 2; i++ {
+		status, _, replay := f.do(t, "POST", "/api/v1/touchpoints", "sess-owner-a", f.tenA, body)
+		if status != http.StatusOK || replay["id"] != id {
+			t.Fatalf("replay = %d %v", status, replay)
+		}
+	}
+	status, _, _ = f.do(t, "POST", "/api/v1/touchpoints", "sess-owner-a", f.tenA, strings.Replace(body, "前台", "另一入口", 1))
+	mustEqual(t, status, http.StatusConflict)
+	status, _, public := f.do(t, "GET", "/api/v1/public/touchpoints/"+first["code"].(string), "", "", "")
+	mustEqual(t, status, http.StatusOK)
+	if public["target_type"] != "store" || public["store_code"] == "" {
+		t.Fatalf("public root: %v", public)
+	}
+	status, _, page := f.do(t, "GET", "/api/v1/public/storefronts/"+public["store_code"].(string)+"/services", "", "", "")
+	mustEqual(t, status, 200)
+	if !containsSSID(page, "稳定入口网络") {
+		t.Fatalf("published root services: %v", page)
+	}
+	for _, path := range []string{"/api/v1/touchpoints/" + id + "/qrcode?format=json", "/api/v1/touchpoints/export.csv"} {
+		status, _, _ = f.do(t, "GET", path, "sess-owner-a", f.tenA, "")
+		mustEqual(t, status, http.StatusOK)
+	}
+	if tpDetail(t, f, id)["deployment_stage"] != "registered" {
+		t.Fatal("downloads advanced stage")
+	}
+	for _, test := range []struct {
+		session, tenant, store string
+		want                   int
+	}{
+		{"sess-mgr-a", f.tenA, f.stoB.ID, 404}, {"sess-owner-b", f.tenB, f.stoA.ID, 404}, {"sess-staff-a", f.tenA, f.stoA.ID, 403},
+	} {
+		status, _, _ = f.do(t, "POST", "/api/v1/touchpoints", test.session, test.tenant, fmt.Sprintf(`{"store_id":%q,"creation_request_key":"root-create-request-1"}`, test.store))
+		mustEqual(t, status, test.want)
+	}
+	status, _, _ = f.do(t, "POST", "/api/v1/touchpoints", "sess-mgr-a", f.tenA, fmt.Sprintf(`{"store_id":%q,"creation_request_key":"manager-create-1"}`, f.stoA.ID))
+	mustEqual(t, status, http.StatusCreated)
+	status, _, _ = f.do(t, "POST", "/api/v1/touchpoints", "sess-owner-a", f.tenA, fmt.Sprintf(`{"store_id":%q,"tag_id":"ambiguous"}`, f.stoA.ID))
+	mustEqual(t, status, http.StatusBadRequest)
+}
+
+func TestStoreRootTouchpointConcurrentAndScopeHTTP(t *testing.T) {
+	f := newTPFixture(t, nil)
+	body := fmt.Sprintf(`{"store_id":%q,"label":"双击","creation_request_key":"parallel-request-1"}`, f.stoA.ID)
+	type response struct {
+		status int
+		body   map[string]any
+	}
+	results := make(chan response, 8)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			status, _, out := f.do(t, "POST", "/api/v1/touchpoints", "sess-owner-a", f.tenA, body)
+			results <- response{status, out}
+		}()
+	}
+	wg.Wait()
+	close(results)
+	id := ""
+	created := 0
+	for r := range results {
+		if r.status != 201 && r.status != 200 {
+			t.Fatalf("parallel: %d %v", r.status, r.body)
+		}
+		if r.status == 201 {
+			created++
+		}
+		got := r.body["id"].(string)
+		if id != "" && got != id {
+			t.Fatal("duplicate alias")
+		}
+		id = got
+	}
+	if created != 1 {
+		t.Fatalf("created=%d", created)
+	}
+	status, _, _ := f.do(t, "POST", "/api/v1/touchpoints", "sess-owner-a", f.tenA, fmt.Sprintf(`{"store_id":%q,"creation_request_key":"other-store-request"}`, f.stoB.ID))
+	mustEqual(t, status, 201)
+	status, _, _ = f.do(t, "POST", "/api/v1/touchpoints", "sess-mgr-a", f.tenA, fmt.Sprintf(`{"store_id":%q,"creation_request_key":"other-store-request"}`, f.stoA.ID))
+	mustEqual(t, status, 404)
+	_, err := f.s.St.SetStoreStatus(f.stoB.ID, f.tenA, store.StoreStatusDisabled)
+	mustNoErr(t, err)
+	status, _, _ = f.do(t, "POST", "/api/v1/touchpoints", "sess-owner-a", f.tenA, fmt.Sprintf(`{"store_id":%q,"creation_request_key":"disabled-store-request"}`, f.stoB.ID))
+	mustEqual(t, status, 400)
+	m, err := f.s.St.GetMemberByPrincipal(f.tenA, "usr_mgr_a")
+	mustNoErr(t, err)
+	disabled := false
+	_, err = f.s.St.UpdateMember(m.ID, nil, &disabled, nil)
+	mustNoErr(t, err)
+	status, _, _ = f.do(t, "POST", "/api/v1/touchpoints", "sess-mgr-a", f.tenA, body)
+	mustEqual(t, status, 403)
 }

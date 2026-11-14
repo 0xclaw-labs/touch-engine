@@ -18,6 +18,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useStoreWorkspace } from "@/components/work/store-workspace-context";
+import { workspaceHref } from "@/lib/work/store-workspace";
 import { useParams } from "next/navigation";
 import { failureText, useSession } from "@/components/work/merchant-session";
 import { surfaceLabel } from "@/lib/product-finish";
@@ -27,6 +29,7 @@ import {
   buildPublishBody,
   buildRollbackBody,
   canPublish,
+  draftSectionProblem,
   previewRows,
   publishFailureText,
   summaryLineCopy,
@@ -66,6 +69,7 @@ export default function StorefrontPageDesk() {
   const params = useParams<{ id: string }>();
   const storeId = params?.id ?? "";
   const session = useSession();
+  const workspace = useStoreWorkspace();
   const canEdit = session.role === "org_owner" || session.role === "staff" || session.role === "store_manager";
 
   const [phase, setPhase] = useState<"loading" | "error" | "ready">("loading");
@@ -80,6 +84,7 @@ export default function StorefrontPageDesk() {
   const [dirty, setDirty] = useState(false);
   const [notice, setNotice] = useState("");
   const [saveError, setSaveError] = useState("");
+  const [conflictSections, setConflictSections] = useState<StorefrontSection[] | null>(null);
 
   const [pre, setPre] = useState<PreflightResult | null>(null);
   const [preflighting, setPreflighting] = useState(false);
@@ -114,6 +119,11 @@ export default function StorefrontPageDesk() {
     setConfirmed(false);
     setPre(null);
     setPhase("ready");
+    const services = await session.api("GET", `stores/${storeId}/services`);
+    if (services.ok && typeof services.data.config_revision === "number" && services.data.config_revision !== (data.services_revision ?? 0)) {
+      setDirty(true);
+      setNotice("本店服务配置有更新。保存草稿会将这些服务一起纳入预览与发布，线上版本保持不变。");
+    }
   }, [session, storeId]);
 
   const loadChannels = useCallback(async () => {
@@ -181,6 +191,12 @@ export default function StorefrontPageDesk() {
     void loadPreview().catch(() => setPreview(null));
   }, [loadPreview]);
 
+  useEffect(() => {
+    if (!workspace?.refresh) return;
+    void loadChannels(); void loadOffers();
+    setDirty(true); setPre(null); setConfirmed(false);
+  }, [workspace?.refresh, loadChannels, loadOffers]);
+
   function patchSections(next: StorefrontSection[]) {
     setSections(next);
     setDirty(true);
@@ -189,6 +205,8 @@ export default function StorefrontPageDesk() {
   }
 
   async function saveDraft() {
+    const problem = draftSectionProblem(sections);
+    if (problem) { setSaveError(problem); return; }
     const body = {
       expected_revision: draftRevision,
       sections,
@@ -199,7 +217,8 @@ export default function StorefrontPageDesk() {
     const res = await session.api("PUT", `stores/${storeId}/storefront-draft`, body);
     if (!res.ok) {
       if (res.status === 409) {
-        setSaveError("草稿刚被别人保存过。点「重新读取」对齐最新版本,再继续修改。");
+        setConflictSections(sections);
+        setSaveError("草稿刚被别人保存过。你刚才的修改已保留，先重新读取最新草稿，再恢复核对。");
         return;
       }
       setSaveError(failureText(res.status, res.data));
@@ -211,6 +230,8 @@ export default function StorefrontPageDesk() {
     setDirty(false);
     setSaveError("");
     setNotice(`草稿已保存(第 ${data.revision} 版)。线上还是第 ${data.published_revision} 版,发布前顾客看不到修改。`);
+    await loadPreview();
+    await runPreflight();
   }
 
   async function runPreflight() {
@@ -289,11 +310,11 @@ export default function StorefrontPageDesk() {
   function applyPreset(presetId: string) {
     const preset = TEMPLATE_PRESETS.find((p) => p.id === presetId);
     if (!preset) return;
-    const { sections: next, skipped } = applyTemplate(preset, channelItems);
+    const { sections: next, skipped } = applyTemplate(preset, channelItems, offersState === "ready" ? offers : []);
     patchSections(next);
     setNotice(
       skipped.length > 0
-        ? `已按「${preset.title}」生成段落;${skipped.join("、")}段先省略(这家店还没有对应动作)。保存草稿后可继续调整。`
+        ? `已按「${preset.title}」整理已有服务；${skipped.join("、")}暂未加入（尚无对应服务或套餐）。请核对后保存草稿。`
         : `已按「${preset.title}」生成段落。保存草稿后可继续调整。`,
     );
   }
@@ -321,18 +342,23 @@ export default function StorefrontPageDesk() {
 
   return (
     <main>
+      {!workspace ? <Link href={workspaceHref(storeId)}>返回本店工作区</Link> : null}
       <h1 className="tk-title">门店首页 · {storeName}</h1>
       <p className="tk-lead">
         这里排布顾客碰一碰后看到的门店首页:栏目分组、常用按钮、到店套餐、活动卡片。
         保存草稿不影响线上;明确发布后顾客才看到新版本;回滚随时可退回已发布版本。
       </p>
       <p className="tk-note" data-field="store-code">
-        顾客门店码 {storeCode}。线上第 {publishedRevision} 版{draftRevision > 0 ? ` · 草稿第 ${draftRevision} 版` : " · 还没有草稿"}。
-        {dirty ? "(有未保存修改)" : ""}
+        {publishedRevision > 0 && storeCode ? <>线上第 {publishedRevision} 版 · <a href={`/s/${encodeURIComponent(storeCode)}`} target="_blank" rel="noreferrer">查看顾客页</a></> : <>尚未发布顾客页。先添加本店服务，保存草稿并预检，再确认发布。</>}
+        {draftRevision > 0 ? ` · 草稿第 ${draftRevision} 版` : ""}{dirty ? "（有未保存修改）" : ""}
       </p>
       {notice ? <p className="tk-note" data-state="notice">{notice}</p> : null}
       {saveError ? <p className="tk-warn" data-state="save-error">{saveError}</p> : null}
 
+      {conflictSections ? <p className="tk-warn">你的修改已暂存，线上版本未改变。
+        <button className="tk-quiet" onClick={() => void loadDraft()}>重新读取最新草稿</button>
+        <button className="tk-quiet" onClick={() => {patchSections(conflictSections);setConflictSections(null);}}>恢复我的栏目修改，再核对保存</button>
+      </p> : null}
       {canEdit ? (
         <div className="tk-section" data-region="template">
           <h2 className="tk-section-title">行业模板</h2>
@@ -355,7 +381,7 @@ export default function StorefrontPageDesk() {
                     <button className="tk-quiet" type="button" data-action="apply-assignment"
                       onClick={() => {
                         const preset = TEMPLATE_PRESETS[0];
-                        const { sections: next } = applyTemplate(preset, channelItems);
+                        const { sections: next } = applyTemplate(preset, channelItems, offersState === "ready" ? offers : []);
                         patchSections(next);
                         setPendingApplied(row.id);
                         setNotice("已按基础模板生成段落。保存草稿并发布后,会自动回写这条模板分发的应用状态。");
@@ -446,15 +472,16 @@ export default function StorefrontPageDesk() {
           </div>
         ) : null}
         {offersState === "unavailable" ? (
-          <p className="tk-note">套餐列表当前不可用,套餐段可以先留空,已有引用保持不变。</p>
+          <p className="tk-note">套餐列表当前不可用。已有选择保持不变；新空栏目请先移除，待列表恢复后再添加套餐。</p>
         ) : null}
       </div>
 
       {canEdit ? (
         <div className="tk-row tk-gap tk-section" data-region="draft-actions">
-          <button className="tk-button" type="button" data-action="save-draft" disabled={!dirty} onClick={() => void saveDraft()}>
-            保存草稿
+          <button className="tk-button" type="button" data-action="save-draft" disabled={publishing || preflighting} onClick={() => void saveDraft()}>
+            保存草稿并预检
           </button>
+          <span className="tk-note">保存会纳入本店最新保存的服务与已采用内容，确认发布后才给顾客使用。</span>
           <button className="tk-quiet" type="button" data-action="reload-draft"
             disabled={!dirty} onClick={() => { void loadDraft(); setNotice(""); }}>
             放弃修改(重新读取)
@@ -506,7 +533,7 @@ export default function StorefrontPageDesk() {
           ) : null}
         </div>
         <p className="tk-note">
-          预览是真实数据面的投影,不产生参与、发布或费用。顾客实际入口是 /s/{storeCode || "{门店码}"}。
+          预览是真实数据面的投影,不产生参与、发布或费用。{publishedRevision > 0 && storeCode ? <> <a href={`/s/${encodeURIComponent(storeCode)}`} target="_blank" rel="noreferrer">查看已发布顾客页</a></> : "顾客页尚未发布，确认本页内容后再发布到线上。"}
         </p>
       </div>
 
@@ -541,7 +568,7 @@ export default function StorefrontPageDesk() {
                         <p key={i} className={v.state === "ready" ? "tk-note" : "tk-warn"}>{line}</p>
                       ))}
                       {copy.fixEntry && v.state !== "ready" ? (
-                        <p className="tk-note">{copy.fixEntry} <Link className="tk-quiet" href={`/work/stores/${storeId}/channels`}>打开渠道动作</Link></p>
+                        <p className="tk-note">{copy.fixEntry} {workspace ? <button className="tk-quiet" onClick={() => workspace.open("channels")}>修复这项服务</button> : <Link className="tk-quiet" href={`/work/stores/${storeId}/channels`}>打开渠道动作</Link>}</p>
                       ) : null}
                     </li>
                   );
@@ -558,7 +585,7 @@ export default function StorefrontPageDesk() {
               ) : (
                 <ul className="tk-list" data-field="change-summary">
                   {pre.change_summary.map((line) => (
-                    <li key={line}>{summaryLineCopy(line)}</li>
+                    <li key={line}>{summaryLineCopy(line.startsWith("action_") ? `${line.split(":")[0]}:${channelLabel(line.split(":")[1] ?? "", channelItems)}` : line)}</li>
                   ))}
                 </ul>
               )}
@@ -616,7 +643,7 @@ export default function StorefrontPageDesk() {
         <p className="tk-note">回滚后已撤销的平台授权不会被恢复;被拒时会逐项说明原因。</p>
       </div>
 
-      <p className="tk-note">
+      <p className="tk-note" hidden={!!workspace}>
         <Link href={`/work/stores/${storeId}/channels`} className="tk-quiet">去配置渠道动作</Link>
         {" · "}
         <Link href="/work/stores" className="tk-quiet">返回门店列表</Link>

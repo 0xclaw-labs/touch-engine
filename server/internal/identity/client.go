@@ -154,6 +154,36 @@ func (c *Client) LaunchShell(ctx context.Context, principalID, tenantID, appID, 
 	return raw, nil
 }
 
+// UserStatus is the minimal original Identity response; no local identity is derived.
+type UserStatus struct {
+	Exists bool   `json:"exists"`
+	UserID string `json:"user_id"`
+	Status string `json:"status"`
+}
+
+func (c *Client) UserByEmail(ctx context.Context, email string) (UserStatus, error) {
+	path := "/internal/v1/identity/users/exists"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.BaseURL, "/")+path+"?email="+url.QueryEscape(email), nil)
+	if err != nil {
+		return UserStatus{}, err
+	}
+	req.Header.Set(internalTokenHeader, c.Token)
+	req.Header.Set(appIDHeader, c.AppID)
+	res, err := c.httpClient().Do(req)
+	if err != nil {
+		return UserStatus{}, fmt.Errorf("identity user lookup unavailable")
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return UserStatus{}, &HTTPError{Path: path, Status: res.StatusCode}
+	}
+	var out UserStatus
+	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&out); err != nil {
+		return UserStatus{}, fmt.Errorf("identity user lookup invalid response")
+	}
+	return out, nil
+}
+
 func sessionString(m map[string]any, keys ...string) (string, bool) {
 	for _, k := range keys {
 		if v, ok := m[k]; ok {

@@ -40,7 +40,7 @@ describe("xiaohongshu handoff model (HUI-4586)", () => {
   it("builds the handoff model with an independent copy view", () => {
     const model = buildXhsHandoff({
       type: "js_media_handoff",
-      params: { sdk: "xhs_js", app_id: "app", type: "video", payload: JSON.stringify({ type: "video", video: "https://m.example/v" }) },
+      params: { sdk: "xhs_js", app_id: "app", verify_config: JSON.stringify({appKey:"app",nonce:"fixture",timestamp:String(Date.now()),signature:"fixture"}), type: "video", payload: JSON.stringify({ type: "video", video: "https://m.example/v" }) },
       caption: "店庆\n#探店",
       steps: ["由你本人主动唤起小红书交接"],
       media_note: "短时效受控引用",
@@ -67,7 +67,7 @@ describe("xiaohongshu handoff model (HUI-4586)", () => {
     registerXhsJsSdkLoader(null);
     expect(xhsSdkReady()).toBe(false);
     await expect(invokeXhsJs({ type: "video", video: "https://m.example/v", cover: "", images: [] })).rejects.toThrow(
-      /not wired/,
+      /签名缺失/,
     );
   });
 });

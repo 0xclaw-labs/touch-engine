@@ -33,7 +33,7 @@ describe("账上路由恰好一条普查", () => {
   it("和账本同一组路由，一条不多一条不少", () => {
     const ledger = pageLedger().map((page) => page.route);
     const census = pageCensus();
-    expect(ledger).toHaveLength(33); // 基线15 + HUI-4584 渠道页 + HUI-4593 设置页/代理台 + HUI-4589 服务页 + HUI-4594 线索页 + HUI-4591 账单页 + HUI-1896 六视图5页 + HUI-1676 门店首页设置页 + HUI-4592 运营六视图
+    expect(ledger).toHaveLength(36); // 实际 page 路由含权益复用与技术接续页，不等同业务视图数量。
     expect(census.map((page) => page.route)).toEqual(ledger);
     expect(new Set(census.map((page) => page.route)).size).toBe(census.length);
     expect(census.some((page) => page.route === "/login" || page.route.startsWith("/api"))).toBe(false);
@@ -105,6 +105,7 @@ describe("surface 归类", () => {
       ["/admin", "admin"],
       ["/admin/preview", "admin"],
       ["/work/stores", "work"],
+      ["/work/stores/[id]", "work"],
       ["/work/campaigns", "work"],
       ["/work/campaigns/new", "work"],
       ["/work/campaigns/[id]", "work"],
@@ -124,6 +125,7 @@ describe("surface 归类", () => {
       ["/work/settings", "work"],
       // HUI-4594:线索页是商家侧授权线索列表页。
       ["/work/leads", "work"],
+      ["/lead-follow-up-return/[h]", "work"],
       // HUI-4593:A1 代理工作台是商家侧代理列表页。
       ["/agency", "work"],
       // HUI-4591:M12 订购与账单是商家工作台账单页。
@@ -137,6 +139,7 @@ describe("surface 归类", () => {
       ["/ops/operations", "admin"],
       ["/c/[code]", "public"],
       ["/c/[code]/contact", "public"],
+      ["/c/[code]/benefits", "public"],
       // HUI-1665:/t 稳定入口是公开消费者面。
       ["/t/[code]", "public"],
       // HUI-1896:顾客六视图全部公开消费者面。
@@ -146,7 +149,7 @@ describe("surface 归类", () => {
       ["/s/[storeCode]/benefits", "public"],
       ["/s/[storeCode]/privacy", "public"],
     ]);
-    expect(want.size).toBe(33); // 基线15 + HUI-4584 渠道页 + HUI-4593 设置页/代理台 + HUI-4589 服务页 + HUI-4594 线索页 + HUI-4591 账单页 + HUI-1896 六视图5页 + HUI-1676 门店首页设置页 + HUI-4592 运营六视图
+    expect(want.size).toBe(36); // 实际路由，不把技术接续承载新增为业务视图。
     for (const page of pageCensus()) {
       expect(page.surface).toBe(classifySurface(page.route, page.id));
       expect(page.surface).toBe(want.get(page.route));
@@ -248,10 +251,11 @@ describe("半成品标记", () => {
       ["/admin", ["raw button", "raw input"]],
       ["/admin/preview", []],
       ["/work/stores", ["raw button", "raw input"]],
+      ["/work/stores/[id]", []],
       ["/work/campaigns", ["raw button"]],
       ["/work/campaigns/new", []],
       ["/work/campaigns/[id]", ["raw button"]],
-      ["/work/materials", ["raw button", "raw input"]],
+      ["/work/materials", []],
       // HUI-2628 r3：错误态补「重试」钮后各记 1 个 raw button（与 page-census.ts 账本同步）。
       ["/work/rewards", ["raw button", "raw input"]],
       // HUI-3562：店员台页面是薄壳，交互全部在组件里，页面源零标记。
@@ -260,6 +264,7 @@ describe("半成品标记", () => {
       ["/work/analytics", []],
       ["/c/[code]", []],
       ["/c/[code]/contact", []],
+      ["/c/[code]/benefits", []],
       // HUI-1665:/t 稳定入口页是 server 闸门薄壳,交互在 touch-entry.tsx,页面源零标记。
       ["/t/[code]", []],
       // HUI-1665:触点管理台页面是薄壳,交互全部在组件里,页面源零标记。
@@ -274,6 +279,7 @@ describe("半成品标记", () => {
       ["/work/settings", []],
       // HUI-4594:线索页面是薄壳,交互全部在组件里,页面源零标记。
       ["/work/leads", []],
+      ["/lead-follow-up-return/[h]", []],
       // HUI-4593:A1 代理工作台页面是薄壳,交互全部在组件里,页面源零标记。
       ["/agency", []],
       // HUI-4591:M12 订购与账单页面是薄壳,交互全部在组件里,页面源零标记。
@@ -293,7 +299,7 @@ describe("半成品标记", () => {
       ["/ops/operations", []],
     ]);
     const census = pageCensus();
-    expect(want.size).toBe(33); // 基线15 + HUI-4584 渠道页 + HUI-4593 设置页/代理台 + HUI-4589 服务页 + HUI-4594 线索页 + HUI-4591 账单页 + HUI-1896 六视图5页 + HUI-1676 门店首页设置页 + HUI-4592 运营六视图
+    expect(want.size).toBe(36); // 实际路由，不把技术接续承载新增为业务视图。
     expect(census).toHaveLength(want.size);
     for (const page of census) {
       const source = readPage(page.file);

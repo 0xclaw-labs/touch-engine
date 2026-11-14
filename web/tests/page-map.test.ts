@@ -175,7 +175,7 @@ describe("已有用户页面账本", () => {
 
   it("公开顾客页用 public_consumer，不记成 workspace 或 login", () => {
     const publics = pageLedger().filter((page) => page.route === "/c" || page.route.startsWith("/c/"));
-    expect(publics.map((page) => page.route).sort()).toEqual(["/c/[code]", "/c/[code]/contact"]);
+    expect(publics.map((page) => page.route).sort()).toEqual(["/c/[code]", "/c/[code]/benefits", "/c/[code]/contact"]);
     for (const page of publics) {
       expect(page.id).toBe("public_consumer");
       expect(page.id).not.toBe("workspace");

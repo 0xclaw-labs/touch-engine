@@ -75,9 +75,6 @@ type KuaishouConfig struct {
 	ReturnBase     string // 同源 https 回跳基(必须 https)
 	AuthorizeScope string // 已申请且适用的授权范围(如 user_video_publish,user_video_info)
 	StateTTL       time.Duration
-	// IncludeCaption: 仅当 3535 field_support 已核对话题/正文携带时由部署
-	// 打开(默认 false=能力 unknown 不自动携带,参考文案走顾客确认面复制)。
-	IncludeCaption bool
 	Platform       KuaishouPlatform
 	Now            func() time.Time
 }
@@ -123,13 +120,17 @@ func (a *KuaishouAdapter) Prepare(ctx context.Context, req publishhandoff.Prepar
 	if strings.TrimSpace(a.cfg.ClientID) == "" || strings.TrimSpace(a.cfg.ClientSecret) == "" {
 		return publishhandoff.PrepareResult{}, fmt.Errorf("adapters: kuaishou oauth credentials missing: 服务端凭据未配置(客户端永无 secret)")
 	}
+	if a.cfg.Platform == nil {
+		return publishhandoff.PrepareResult{}, fmt.Errorf("adapters: kuaishou platform endpoint not configured")
+	}
 	now := a.now()
-	job, err := a.ensureJob(req, now)
+	_, err := a.ensureJob(req, now)
 	if err != nil {
 		return publishhandoff.PrepareResult{}, err
 	}
 	act := publishhandoff.ClientAction{Type: publishhandoff.ClientActionOAuthConsent, Params: map[string]string{}}
-	if job.openID == "" {
+	token, tokenErr := a.loadToken(req.Handoff.TenantID, req.Handoff.ID, now)
+	if tokenErr != nil {
 		// 未授权:铸/复用一次性 state(绑定 handoff/session/app/return_to)。
 		state, authorizeURL, serr := a.stateFor(req, now)
 		if serr != nil {
@@ -142,9 +143,21 @@ func (a *KuaishouAdapter) Prepare(ctx context.Context, req publishhandoff.Prepar
 	} else {
 		// 已授权:顾客再次确认本次内容后才会提交(确认快照不变)。
 		act.Params["phase"] = "confirm_submit"
-		act.Params["account_ref"] = job.openID
+		act.Params["account_ref"] = token.OpenID
 		act.Note = "授权账号已就绪(服务端确定账号);请确认本次内容后提交。系统以 photo_id 回查官方状态,异步接受不等于最终公开。"
 	}
+	act.Caption = xhsCaption(req.Text) // independent reference copy, never the automatic payload
+	allowedText := publishhandoff.TextInput{}
+	if req.FieldSupport["title"] == "supported" {
+		allowedText.Title = req.Text.Title
+	}
+	if req.FieldSupport["body"] == "supported" {
+		allowedText.Body = req.Text.Body
+	}
+	if req.FieldSupport["topic"] == "supported" {
+		allowedText.Topics = req.Text.Topics
+	}
+	act.Params["publish_caption"] = xhsCaption(allowedText)
 	return publishhandoff.PrepareResult{ClientAction: act,
 		UnsupportedFields: append([]string(nil), req.Plan.UnsupportedFields...)}, nil
 }
@@ -164,9 +177,9 @@ func (a *KuaishouAdapter) Submit(ctx context.Context, h publishhandoff.Handoff, 
 	if strings.TrimSpace(job.photoID) != "" {
 		return nil // 已有平台任务:先回查纪律,绝不重复创建
 	}
-	if job.stage == "creating" {
+	if job.stage == "creating" || job.stage == "uploading" {
 		// in-flight 未知:拒重复创建(顾客可恢复=先用查询核对)。
-		return fmt.Errorf("%w: kuaishou create in-flight unknown (先前调用结果未知);请使用查询核对既有任务,不重复创建作品", ErrCustomerActionRequired)
+		return &ResultUnknownError{Reason: "原投稿仍在交接或发布结果未知，请查询既有任务，不重复创建作品"}
 	}
 	token, err := a.loadToken(h.TenantID, h.ID, now)
 	if err != nil {
@@ -182,8 +195,16 @@ func (a *KuaishouAdapter) Submit(ctx context.Context, h publishhandoff.Handoff, 
 		return fmt.Errorf("%w: kuaishou controlled media refs missing/expired: 请回到交接页重新获取后再提交(交接与内容版本不变)", ErrCustomerActionRequired)
 	}
 	coverRef := refs["cover"]
-	if err := a.setStage(h.TenantID, h.ID, "uploading", now); err != nil {
+	if strings.TrimSpace(coverRef) == "" {
+		return fmt.Errorf("%w: 快手投稿需要本次封面，请重新获取素材", ErrCustomerActionRequired)
+	}
+	claimed, err := a.db.Exec(`UPDATE kuaishou_publish_jobs SET stage='uploading',updated_at=? WHERE tenant_id=? AND handoff_id=? AND COALESCE(photo_id,'')='' AND stage NOT IN ('uploading','creating','accepted')`, rfc3339Adapter(now), h.TenantID, h.ID)
+	if err != nil {
 		return err
+	}
+	n, _ := claimed.RowsAffected()
+	if n != 1 {
+		return &ResultUnknownError{Reason: "原投稿正在交接，请查询既有任务"}
 	}
 	raw, ctype, ferr := a.fetchBytes(ctx, videoRef)
 	if ferr != nil {
@@ -195,19 +216,20 @@ func (a *KuaishouAdapter) Submit(ctx context.Context, h publishhandoff.Handoff, 
 		_ = a.setStage(h.TenantID, h.ID, "", now)
 		return fmt.Errorf("adapters: kuaishou video upload failed: %w", uerr)
 	}
-	if err := a.setStageToken(h.TenantID, h.ID, "uploaded", vref, now); err != nil {
+	if err := a.setStageToken(h.TenantID, h.ID, "uploading", vref, now); err != nil {
 		return err
 	}
-	cref := ""
-	if strings.TrimSpace(coverRef) != "" {
-		craw, cctype, cerr := a.fetchBytes(ctx, coverRef)
-		if cerr == nil {
-			if r, uerr2 := a.cfg.Platform.UploadMedia(ctx, token, "cover", cctype, craw); uerr2 == nil {
-				cref = r
-			}
-		}
-		// 封面上传失败不静默假冒成功:如实缺封面继续会被平台拒时如实上抛。
+	craw, cctype, cerr := a.fetchBytes(ctx, coverRef)
+	if cerr != nil {
+		_ = a.setStage(h.TenantID, h.ID, "uploaded", now)
+		return fmt.Errorf("adapters: kuaishou cover fetch failed: %w", cerr)
 	}
+	cref, cerr := a.cfg.Platform.UploadMedia(ctx, token, "cover", cctype, craw)
+	if cerr != nil {
+		_ = a.setStage(h.TenantID, h.ID, "uploaded", now)
+		return fmt.Errorf("adapters: kuaishou cover upload failed: %w", cerr)
+	}
+
 	// 创建作品 in-flight:先落 creating(崩溃窗口挂账报告:平台无客户端幂等键,
 	// creating 态重启后拒绝重复创建,宁可 unknown 不可重复作品)。
 	if err := a.setStage(h.TenantID, h.ID, "creating", now); err != nil {
@@ -215,8 +237,8 @@ func (a *KuaishouAdapter) Submit(ctx context.Context, h publishhandoff.Handoff, 
 	}
 	photoID, cerr := a.cfg.Platform.CreatePhoto(ctx, token, vref, cref, a.captionFor(h, p))
 	if cerr != nil {
-		_ = a.setStage(h.TenantID, h.ID, "uploaded", now)
-		return fmt.Errorf("adapters: kuaishou create failed: %w", cerr)
+		// Result unknown: retain creating across retries/restarts; never create a second work.
+		return &ResultUnknownError{Reason: "发布结果未知，请核对原投稿，不可重复提交"}
 	}
 	if err := a.setAccepted(h.TenantID, h.ID, token.OpenID, photoID, now); err != nil {
 		return err
@@ -228,6 +250,9 @@ func (a *KuaishouAdapter) Submit(ctx context.Context, h publishhandoff.Handoff, 
 // 绑定→去重→确认管线);审核中/处理中/失败/无权限照录观察词,不造成功。
 func (a *KuaishouAdapter) Query(ctx context.Context, h publishhandoff.Handoff) (publishhandoff.QueryOutcome, error) {
 	now := a.now()
+	if a.cfg.Platform == nil {
+		return publishhandoff.QueryOutcome{State: "unknown", Detail: map[string]string{"reason": "未配置官方查询客户端"}}, nil
+	}
 	job, err := a.loadJob(h.TenantID, h.ID)
 	if err != nil {
 		return publishhandoff.QueryOutcome{}, err
@@ -271,7 +296,7 @@ func (a *KuaishouAdapter) VerifyCallback(ctx context.Context, raw publishhandoff
 // FinishOAuth implements OAuthFinisher (state 校验在先、信任在后)。
 func (a *KuaishouAdapter) FinishOAuth(ctx context.Context, code, state string) (string, error) {
 	now := a.now()
-	if strings.TrimSpace(state) == "" || strings.TrimSpace(code) == "" {
+	if strings.TrimSpace(state) == "" {
 		return "", fmt.Errorf("adapters: kuaishou oauth code/state required")
 	}
 	if a.cfg.Platform == nil {
@@ -300,16 +325,38 @@ func (a *KuaishouAdapter) FinishOAuth(ctx context.Context, code, state string) (
 	}
 	// 一次性:先占位再交换(并发/重放窗口收窄;交换失败 state 已耗,顾客可
 	// 回交接页重新发起授权)。
-	if _, uerr := a.db.Exec(`UPDATE kuaishou_oauth_states SET used_at=? WHERE state=? AND used_at=''`,
-		rfc3339Adapter(now), state); uerr != nil {
+	consumed, uerr := a.db.Exec(`UPDATE kuaishou_oauth_states SET used_at=? WHERE state=? AND used_at=''`, rfc3339Adapter(now), state)
+	if uerr != nil {
 		return "", fmt.Errorf("adapters: kuaishou oauth state consume: %w", uerr)
+	}
+	n, _ := consumed.RowsAffected()
+	if n != 1 {
+		return "", fmt.Errorf("adapters: kuaishou state replay refused")
+	}
+	returnTo += "?handoff_id=" + url.QueryEscape(handoffID)
+	if strings.TrimSpace(code) == "" {
+		return returnTo, fmt.Errorf("adapters: kuaishou authorization denied")
 	}
 	token, xerr := a.cfg.Platform.ExchangeToken(ctx, code, a.redirectURI())
 	if xerr != nil {
-		return "", fmt.Errorf("adapters: kuaishou token exchange failed: %w", xerr)
+		return returnTo, fmt.Errorf("adapters: kuaishou token exchange failed: %w", xerr)
 	}
 	if strings.TrimSpace(token.OpenID) == "" || strings.TrimSpace(token.AccessToken) == "" {
-		return "", fmt.Errorf("adapters: kuaishou token exchange incomplete: 服务端确定账号失败")
+		return returnTo, fmt.Errorf("adapters: kuaishou token exchange incomplete: 服务端确定账号失败")
+	}
+	for _, required := range []string{"user_video_publish", "user_video_info"} {
+		found := false
+		for _, scope := range strings.Split(token.Scope, ",") {
+			if strings.TrimSpace(scope) == required {
+				found = true
+			}
+		}
+		if !found {
+			return returnTo, fmt.Errorf("adapters: kuaishou required permission missing")
+		}
+	}
+	if !now.Before(token.ExpiresAt) {
+		return returnTo, fmt.Errorf("adapters: kuaishou token expired")
 	}
 	if _, err := a.db.Exec(`INSERT INTO kuaishou_oauth_tokens
 		(id, tenant_id, handoff_id, state, open_id, access_token, refresh_token, expires_at, scope, created_at, revoked_at)
@@ -326,7 +373,7 @@ func (a *KuaishouAdapter) FinishOAuth(ctx context.Context, code, state string) (
 	if strings.Contains(returnTo, "?") {
 		sep = "&"
 	}
-	return returnTo + sep + "handoff_id=" + url.QueryEscape(handoffID) + "&oauth=ok", nil
+	return returnTo + sep + "oauth=ok", nil
 }
 
 // ---- helpers -----------------------------------------------------------------
@@ -336,7 +383,7 @@ func (a *KuaishouAdapter) redirectURI() string {
 	if base == "" {
 		return ""
 	}
-	return base + "/oauth/kuaishou/callback"
+	return base + "/api/public/handoff-callbacks/kuaishou/oauth"
 }
 
 // stateFor mints or replays the one-time OAuth state (0122). 绑定
@@ -383,7 +430,7 @@ func (a *KuaishouAdapter) stateFor(req publishhandoff.PrepareRequest, now time.T
 func (a *KuaishouAdapter) authorizeURL(state string) string {
 	base := strings.TrimRight(a.cfg.AuthorizeBase, "/")
 	q := url.Values{}
-	q.Set("client_id", a.cfg.ClientID)
+	q.Set("app_id", a.cfg.ClientID)
 	q.Set("response_type", "code")
 	q.Set("scope", a.cfg.AuthorizeScope)
 	q.Set("state", state)
@@ -397,10 +444,22 @@ func (a *KuaishouAdapter) authorizeURL(state string) string {
 // 本服务页面;形状不过=诚实错误,不回任意外站)。
 func (a *KuaishouAdapter) returnToFor(req publishhandoff.PrepareRequest) (string, error) {
 	base := strings.TrimRight(a.cfg.ReturnBase, "/")
-	if !strings.HasPrefix(base, "https://") {
-		return "", fmt.Errorf("adapters: kuaishou return base must be same-origin https")
+	u, err := url.Parse(base)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("adapters: kuaishou return base must be same-origin https origin")
 	}
-	return base + "/handoff/" + url.PathEscape(req.Handoff.ID), nil
+	if req.Handoff.ActionID == "" {
+		var link string
+		if err := a.db.QueryRow(`SELECT link_code FROM publish_handoffs WHERE id=? AND tenant_id=? AND participation_id=? AND attempt_id=? AND payload_kind=''`, req.Handoff.ID, req.Handoff.TenantID, req.Handoff.ParticipationID, req.Handoff.AttemptID).Scan(&link); err != nil || link == "" {
+			return "", fmt.Errorf("adapters: original campaign route missing")
+		}
+		return base + "/c/" + url.PathEscape(link), nil
+	}
+	var code string
+	if err := a.db.QueryRow(`SELECT store_code FROM store_storefronts WHERE tenant_id=? AND store_id=?`, req.Handoff.TenantID, req.Handoff.StoreID).Scan(&code); err != nil || code == "" {
+		return "", fmt.Errorf("adapters: kuaishou customer storefront route missing")
+	}
+	return base + "/s/" + url.PathEscape(code) + "/content/" + url.PathEscape(req.Handoff.ActionID), nil
 }
 
 func newKsState() string {
@@ -440,6 +499,18 @@ func (a *KuaishouAdapter) ensureJob(req publishhandoff.PrepareRequest, now time.
 	job, err := a.loadJob(req.Handoff.TenantID, req.Handoff.ID)
 	if err == nil {
 		// Submit 时序 Prepare(无 refs)不得覆盖 Start 时序的引用。
+		if len(req.MediaRefs) > 0 {
+			refs := map[string]string{}
+			for _, m := range req.Media {
+				if u := req.MediaRefs[m.AssetID]; u != "" {
+					refs[m.Kind] = u
+				}
+			}
+			raw, _ := json.Marshal(refs)
+			if _, e := a.db.Exec(`UPDATE kuaishou_publish_jobs SET media_refs_json=?,updated_at=? WHERE tenant_id=? AND handoff_id=?`, string(raw), rfc3339Adapter(now), req.Handoff.TenantID, req.Handoff.ID); e != nil {
+				return job, e
+			}
+		}
 		return job, nil
 	}
 	if !errors.Is(err, errKsJobMissing) {
@@ -537,16 +608,10 @@ func (a *KuaishouAdapter) saveQuery(tenantID, handoffID, state string, detail ma
 	return nil
 }
 
-// captionFor builds the reference caption. 仅当部署确认 3535 已核准文字携带
-// (IncludeCaption=true)才随提交携带;默认不携带(unknown 不自动携带)。
+// captionFor consumes only the field-support-filtered server-side payload.
+// ClientAction.Caption is independent reference copy for an explicit user copy.
 func (a *KuaishouAdapter) captionFor(h publishhandoff.Handoff, p publishhandoff.PrepareResult) string {
-	if !a.cfg.IncludeCaption {
-		return ""
-	}
-	if p.ClientAction.Caption != "" {
-		return p.ClientAction.Caption
-	}
-	return ""
+	return p.ClientAction.Params["publish_caption"]
 }
 
 // fetchBytes pulls one controlled media ref (短 TTL platform_fetch;字节只在
@@ -567,9 +632,12 @@ func (a *KuaishouAdapter) fetchBytes(ctx context.Context, ref string) ([]byte, s
 	if resp.StatusCode != http.StatusOK {
 		return nil, "", fmt.Errorf("media ref %s status %d", sanitizeRef(ref), resp.StatusCode)
 	}
-	b, err := io.ReadAll(io.LimitReader(resp.Body, maxKsMediaBytes))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxKsMediaBytes+1))
 	if err != nil {
 		return nil, "", err
+	}
+	if len(b) == 0 || len(b) > maxKsMediaBytes {
+		return nil, "", fmt.Errorf("media size invalid")
 	}
 	return b, resp.Header.Get("Content-Type"), nil
 }

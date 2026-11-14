@@ -11,6 +11,7 @@ import {
   extractHandoffToken,
   looksLikeHandoffToken,
   matchBatchesForCard,
+  participationNeedsConfirmation,
   networkUnknownCopy,
   outcomeNotice,
   ownStoreBenefits,
@@ -225,5 +226,14 @@ describe("adv4 收口:更正撤销后核销事实保留展示", () => {
   });
   it("reversed 但无核销字段时仍不说已核销", () => {
     expect(redeemRecordText({ status: "reversed" })).toBe("还没有核销记录。");
+  });
+});
+
+
+describe("预留与发放是不同事实", () => {
+  it("预留继续核对确认，只有真正发放/核销/撤销才进入已有处理", () => {
+    expect(participationNeedsConfirmation(undefined)).toBe(true);
+    expect(participationNeedsConfirmation({ status: "reserved" })).toBe(true);
+    for (const status of ["issued", "redeemed", "reversed", "expired"]) expect(participationNeedsConfirmation({ status })).toBe(false);
   });
 });

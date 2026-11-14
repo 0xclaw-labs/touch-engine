@@ -43,8 +43,8 @@ func TestValidateVersionSpec(t *testing.T) {
 		{"missing video ref", func(s *VersionSpec) { s.Video = AssetSnapshot{} }, ReasonMissingVideoRef},
 		{"missing cover ref", func(s *VersionSpec) { s.Cover = AssetSnapshot{} }, ReasonMissingCoverRef},
 		{"missing store name", func(s *VersionSpec) { s.StoreName = " " }, ReasonMissingStoreName},
-		{"missing price note", func(s *VersionSpec) { s.PriceNote = "" }, ReasonMissingPriceNote},
-		{"missing valid note", func(s *VersionSpec) { s.ValidNote = "" }, ReasonMissingValidNote},
+		{"overlong price note", func(s *VersionSpec) { s.PriceNote = strings.Repeat("p", MaxPriceNote+1) }, ReasonBadPriceNote},
+		{"overlong valid note", func(s *VersionSpec) { s.ValidNote = strings.Repeat("v", MaxValidNote+1) }, ReasonBadValidNote},
 		{"bad source", func(s *VersionSpec) { s.Source = Source("engine") }, ReasonBadSource},
 		{"missing platform in adaptation", func(s *VersionSpec) {
 			s.PlatformVersions[0].Platform = " "
@@ -87,6 +87,22 @@ func TestValidateVersionSpec(t *testing.T) {
 	bad.ContentKind = ContentKind("slideshow")
 	if ve, ok := ValidateVersionSpec(bad).(*ValidationError); !ok || ve.Reason != ReasonBadContentKind {
 		t.Fatalf("bad kind: got %v", ValidateVersionSpec(bad))
+	}
+}
+
+func TestGeneralStoreContentDoesNotInventOfferTerms(t *testing.T) {
+	spec := validVideoSpec()
+	spec.Title = "门店环境介绍"
+	spec.Body = "展示门店入口及店内环境。"
+	spec.PriceNote = ""
+	spec.ValidNote = ""
+	if err := ValidateVersionSpec(spec); err != nil {
+		t.Fatalf("content without an offer must not require invented price or expiry: %v", err)
+	}
+	// Display notes are optional; asset grant expiry remains independently enforced.
+	spec.GrantUntil = "not-a-date"
+	if err := ValidateVersionSpec(spec); err == nil {
+		t.Fatal("optional offer notes must not disable the real asset grant boundary")
 	}
 }
 

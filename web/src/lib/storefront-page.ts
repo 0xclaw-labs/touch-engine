@@ -38,6 +38,7 @@ export interface StorefrontDraftDoc {
   campaign_refs?: string[];
   brand_ref?: string;
   published_revision: number;
+  services_revision?: number;
 }
 
 export interface PreflightVerdict {
@@ -109,8 +110,8 @@ export const TEMPLATE_PRESETS: TemplatePreset[] = [
     title: "基础到店",
     description: "常用服务一段 + 到店优惠一段。适合先用起来的大多数门店。",
     groups: [
-      { id: "s1", type: "actions", title: "常用服务", codes: ["A08", "A09", "A10", "A11", "A12", "A13", "A14", "A15", "A16"] },
-      { id: "s2", type: "actions", title: "关注我们", codes: ["A13", "A14", "A15", "A16", "A17", "A18"] },
+      { id: "s1", type: "actions", title: "常用服务", codes: ["A17", "A18", "A08", "A09", "A10", "A11", "A12"] },
+      { id: "s2", type: "actions", title: "关注我们", codes: ["A13", "A14", "A15", "A16"] },
       { id: "s3", type: "offers", title: "到店优惠", codes: [] },
     ],
   },
@@ -119,7 +120,7 @@ export const TEMPLATE_PRESETS: TemplatePreset[] = [
     title: "餐饮到店",
     description: "点评与关注在前,团购套餐单独一段。适合堂食/到店核销为主的门店。",
     groups: [
-      { id: "s1", type: "actions", title: "留下好评", codes: ["A08", "A09", "A10", "A11", "A12"] },
+      { id: "s1", type: "actions", title: "分享真实体验", codes: ["A08", "A09", "A10", "A11", "A12"] },
       { id: "s2", type: "actions", title: "关注我们", codes: ["A13", "A14", "A15", "A16"] },
       { id: "s3", type: "offers", title: "团购套餐", codes: ["A19", "A20", "A21"] },
     ],
@@ -145,6 +146,7 @@ export function templateById(id: string): TemplatePreset | undefined {
 export function applyTemplate(
   preset: TemplatePreset,
   items: ChannelItem[],
+  offers: DealOfferItem[] = [],
 ): { sections: StorefrontSection[]; skipped: string[] } {
   const byCode = new Map<string, ChannelItem[]>();
   for (const item of items) {
@@ -155,15 +157,17 @@ export function applyTemplate(
   }
   const sections: StorefrontSection[] = [];
   const skipped: string[] = [];
+  const assigned = new Set<string>();
   for (const group of preset.groups) {
     if (group.type === "offers") {
-      sections.push({ id: group.id, type: "offers", title: group.title, offer_refs: [] });
+      if (offers.length === 0) { skipped.push(group.title); continue; }
+      sections.push({ id: group.id, type: "offers", title: group.title, offer_refs: Array.from(new Set(offers.map((offer) => offer.id))) });
       continue;
     }
     const ids: string[] = [];
     for (const code of group.codes) {
       for (const item of byCode.get(code) ?? []) {
-        if (!ids.includes(item.action_id)) ids.push(item.action_id);
+        if (!assigned.has(item.action_id)) { ids.push(item.action_id); assigned.add(item.action_id); }
       }
     }
     if (ids.length === 0) {
@@ -172,7 +176,22 @@ export function applyTemplate(
     }
     sections.push({ id: group.id, type: "actions", title: group.title, action_ids: ids });
   }
+  // A grouping preset must not silently drop enabled services just because the
+  // industry example predates their catalogue entry. Publication still runs
+  // the same authoritative preflight and explicit confirmation.
+  const remaining = items.filter((item) => item.enabled && !assigned.has(item.action_id)).sort((a, b) => a.order - b.order);
+  if (remaining.length) sections.push({ id: "configured-services", type: "actions", title: "更多门店服务", action_ids: remaining.map((item) => item.action_id) });
   return { sections, skipped };
+}
+
+export function draftSectionProblem(sections: StorefrontSection[]): string {
+  if (sections.length === 0) return "还没有可展示的服务。请先添加门店服务，或在栏目中选择已有入口。";
+  for (const section of sections) {
+    const title = section.title.trim() || "未命名栏目";
+    if (section.type === "offers" && !section.offer_refs?.length) return `「${title}」还没有套餐。请添加本店套餐，或移除这个空栏目后保存。`;
+    if (section.type === "actions" && !section.action_ids?.length) return `「${title}」还没有服务入口。请添加已配置的入口，或移除这个空栏目后保存。`;
+  }
+  return "";
 }
 
 // ---- 预检结果与发布确认的产品语言 -------------------------------------------
@@ -222,11 +241,12 @@ export function summaryLineCopy(line: string): string {
     section_reordered: `段落顺序有调整`,
     action_added: `新增动作 ${arg}`,
     action_removed: `移除动作 ${arg}`,
-    action_updated: `动作 ${arg} 的名称有修改`,
+    action_updated: `服务 ${arg} 的名称、目标或内容绑定有修改`,
     offers_changed: `段落「${arg}」的套餐有变化`,
     offer_refs_changed: `套餐引用有变化`,
     campaign_refs_changed: `活动卡片有变化`,
     brand_changed: `品牌信息有变化`,
+    services_changed: "Wi-Fi、微信或社群等连接服务配置有变化（含名称、连接信息与显示顺序）",
   };
   return byKind[kind] ?? line;
 }
@@ -280,6 +300,7 @@ export interface PreviewPayload {
   sections?: { section_id: string; type?: string; title: string; action_ids?: string[]; offer_refs?: string[] }[];
   actions?: StorefrontActionSnapshot[];
   activity_cards?: { campaign_code: string; state: string }[];
+  services?: { service_id:string; label?:string; kind?:string; wifi?: {ssid?:string} }[];
   preview?: boolean;
 }
 
@@ -296,5 +317,6 @@ export function previewRows(payload: PreviewPayload): { title: string; lines: st
     if (lines.length === 0) continue;
     rows.push({ title: sec.title, lines });
   }
+  for (const service of payload.services ?? []) rows.push({title:service.label || "门店服务",lines:[service.wifi?.ssid ? `Wi-Fi：${service.wifi.ssid}` : "顾客可打开此服务办理"]});
   return rows;
 }

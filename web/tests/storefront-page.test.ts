@@ -11,6 +11,7 @@ import {
   summaryLineCopy,
   templateById,
   verdictCopy,
+  draftSectionProblem,
   type ChannelItem,
   type PreflightResult,
 } from "../src/lib/storefront-page";
@@ -35,7 +36,7 @@ describe("行业模板", () => {
   it("应用模板 = 目录码归组到本店真实动作;停用动作不进;空段落整段省略并说明", () => {
     const dining = templateById("dining");
     expect(dining).toBeTruthy();
-    const { sections, skipped } = applyTemplate(dining!, items);
+    const { sections, skipped } = applyTemplate(dining!, items, [{ id: "offer-local", title: "到店套餐", kind: "local", issuer: "store" }]);
     const s1 = sections.find((s) => s.id === "s1");
     expect(s1?.action_ids).toEqual(["sa_dp"]);
     const s3 = sections.find((s) => s.id === "s3");
@@ -43,13 +44,25 @@ describe("行业模板", () => {
     // A10/A11/A12/A13/A14/A16 里本店只配了 A13(抖音关注在 s2),s1 缺的段不虚构。
     const s2 = sections.find((s) => s.id === "s2");
     expect(s2?.action_ids).toEqual(["sa_dy"]);
-    // 没有任何实例的段(A10 等没有)不影响;offers 段永远保留骨架。
+    expect(s3?.offer_refs).toEqual(["offer-local"]);
     expect(skipped).toEqual([]);
     // 全停用的店:动作段全部省略并给出说明,不虚构入口。
     const disabled = items.map((i) => ({ ...i, enabled: false }));
     const empty = applyTemplate(dining!, disabled);
-    expect(empty.sections.every((s) => s.type === "offers")).toBe(true);
+    expect(empty.sections).toEqual([]);
     expect(empty.skipped.length).toBeGreaterThan(0);
+  });
+
+  it("无套餐不会制造空段，单独配置的内容仍有真实入口且不会在多个栏目重复", () => {
+    const basic = templateById("basic")!;
+    const contentOnly = applyTemplate(basic, [{ action_id: "sa_video", catalog_code: "A01", label: "门店视频", enabled: true, order: 0 }]);
+    expect(contentOnly.sections.some((s) => s.type === "offers")).toBe(false);
+    expect(contentOnly.sections.flatMap((s) => s.action_ids || [])).toEqual(["sa_video"]);
+    const assigned = applyTemplate(basic, items).sections.flatMap((s) => s.action_ids || []);
+    expect(new Set(assigned).size).toBe(assigned.length);
+    expect(draftSectionProblem(contentOnly.sections)).toBe("");
+    expect(draftSectionProblem([{ id: "empty", type: "offers", title: "到店优惠", offer_refs: [] }])).toContain("到店优惠");
+    expect(draftSectionProblem([{ id: "empty", type: "offers", title: "到店优惠", offer_refs: [] }])).toContain("套餐");
   });
 });
 

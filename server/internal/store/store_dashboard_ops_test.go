@@ -305,11 +305,11 @@ func TestDashboardOpsFilters(t *testing.T) {
 		t.Fatalf("nfc filter: visits=%d started=%d, want 12/2", facts.VisitTotal, facts.StartedTotal)
 	}
 
-	// 内容版本 v3:参与 part-1/part-3/part-5=3;不适用于访问级(无关联)→访问不筛=17。
+	// 内容版本 v3:只筛冻结尝试；开始事实没有冻结内容版本,不适用→仍为5。
 	facts, _, err = w.s.DashboardOps(w.tenA, "", start, end, OpsFilter{ContentPackVersion: "v3"})
 	must(t, err)
-	if facts.StartedTotal != 3 {
-		t.Fatalf("cpversion filter started = %d, want 3", facts.StartedTotal)
+	if facts.StartedTotal != 5 {
+		t.Fatalf("cpversion not applicable to started = %d, want 5", facts.StartedTotal)
 	}
 	if facts.VisitTotal != 17 {
 		t.Fatalf("cpversion must not pretend to filter visits: %d", facts.VisitTotal)
@@ -353,8 +353,8 @@ func TestDashboardOpsStoreScopeManager(t *testing.T) {
 	if facts.StartedTotal != 1 || facts.IssuedTotal != 0 {
 		t.Fatalf("manager scope store2: started=%d issued=%d, want 1/0", facts.StartedTotal, facts.IssuedTotal)
 	}
-	if len(facts.Inventory) != 1 { // 租户级批次对全店可见(store_id='')
-		t.Fatalf("tenant-wide batch must stay visible to manager")
+	if len(facts.Inventory) != 0 { // 空store批次所属活动为store1,不授予store2共享权限。
+		t.Fatalf("other store campaign batch must not be visible to manager")
 	}
 	// 空租户 fail-closed。
 	empty, _, err := w.s.DashboardOps("", "", start, end, OpsFilter{})

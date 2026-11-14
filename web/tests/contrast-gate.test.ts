@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-// @ts-expect-error - the deterministic gate is plain ESM, not a TS module
 import { PAGE_CHECKS, RESOLVED_PATH, TOUCH_SURFACES, contrastRatio, evaluateContrast } from "../scripts/contrast-gate.mjs";
 
 const resolved = JSON.parse(readFileSync(RESOLVED_PATH, "utf8")) as unknown;

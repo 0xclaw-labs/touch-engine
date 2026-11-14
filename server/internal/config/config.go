@@ -173,6 +173,10 @@ type Config struct {
 	CopyModelID        string
 	CopyModelVersion   string
 	CopyPricingVersion string
+	// Production billing mapping is deployment-owned; browsers cannot select accounts.
+	ProductionBillingAccounts string
+	ProductionPricingVersion  string
+	ProductionDeliverables    string
 
 	// Lead capture (HUI-1747): delivery goes through platform-notify directed
 	// events. The target acquisition app and the phone-fingerprint pepper are
@@ -226,6 +230,11 @@ type Config struct {
 	PublishHandoffKsSecret     string // PUBLISH_HANDOFF_KUAISHOU_CLIENT_SECRET (仅服务器)
 	PublishHandoffKsAuthBase   string // PUBLISH_HANDOFF_KUAISHOU_AUTHORIZE_BASE (官方授权页基)
 	PublishHandoffKsReturnBase string // PUBLISH_HANDOFF_KUAISHOU_RETURN_BASE (同源 https 回跳基)
+
+	PublishHandoffDouyinSecret      string // PUBLISH_HANDOFF_DOUYIN_CLIENT_SECRET (仅服务器)
+	PublishHandoffDouyinQueryURL    string // 受信结果服务，不是杜撰的官方查询API
+	PublishHandoffDouyinQueryBearer string
+	PublishHandoffXhsSecret         string // PUBLISH_HANDOFF_XHS_APP_SECRET (仅服务器)
 
 	FeatureUpload           bool
 	FeatureNotify           bool
@@ -310,6 +319,9 @@ func Load(get func(string) string) Config {
 		CopyModelID:                    strings.TrimSpace(get("COPY_MODEL_ID")),
 		CopyModelVersion:               strings.TrimSpace(get("COPY_MODEL_VERSION")),
 		CopyPricingVersion:             strings.TrimSpace(get("COPY_PRICING_VERSION")),
+		ProductionBillingAccounts:      get("TOUCH_PRODUCTION_BILLING_ACCOUNTS"),
+		ProductionPricingVersion:       strings.TrimSpace(get("TOUCH_PRODUCTION_PRICING_VERSION")),
+		ProductionDeliverables:         strings.TrimSpace(get("TOUCH_PRODUCTION_DELIVERABLES")),
 		LeadsTargetApp:                 get("LEADS_TARGET_APP_ID"),
 		LeadsPhonePepper:               get("LEADS_PHONE_PEPPER"),
 		LeadsFollowUpBaseURL:           strings.TrimRight(strings.TrimSpace(get("LEADS_FOLLOW_UP_BASE_URL")), "/"),
@@ -360,6 +372,11 @@ func Load(get func(string) string) Config {
 		CashierAppID:                   strings.TrimSpace(get("TOUCH_CASHIER_APP_ID")),
 		CashierTargetID:                strings.TrimSpace(get("TOUCH_CASHIER_TARGET_ID")),
 		SubscriptionStatus:             firstNonEmpty(get("TOUCH_SUBSCRIPTION_STATUS"), "unconfirmed"),
+
+		PublishHandoffDouyinSecret:      strings.TrimSpace(get("PUBLISH_HANDOFF_DOUYIN_CLIENT_SECRET")),
+		PublishHandoffDouyinQueryURL:    strings.TrimSpace(get("PUBLISH_HANDOFF_DOUYIN_QUERY_URL")),
+		PublishHandoffDouyinQueryBearer: strings.TrimSpace(get("PUBLISH_HANDOFF_DOUYIN_QUERY_BEARER")),
+		PublishHandoffXhsSecret:         strings.TrimSpace(get("PUBLISH_HANDOFF_XHS_APP_SECRET")),
 	}
 }
 

@@ -28,7 +28,8 @@ import (
 // XhsPublicConfig is the PUBLIC verify config the JS SDK needs at invoke time
 // (AppID 级标识;AppSecret 类机密永不进入本结构,更不进浏览器)。
 type XhsPublicConfig struct {
-	AppID string // 公开的应用标识(无 secret)
+	Signer XhsSigner
+	AppID  string // 公开的应用标识(无 secret)
 }
 
 // XiaohongshuAdapter implements the xiaohongshu platform contract (HUI-4586).
@@ -69,6 +70,9 @@ func (a *XiaohongshuAdapter) Prepare(ctx context.Context, req publishhandoff.Pre
 	if req.Handoff.Method != "js_media_handoff" {
 		return publishhandoff.PrepareResult{}, fmt.Errorf("%w: xiaohongshu method %q is not served by this adapter", publishhandoff.ErrUnsupported, req.Handoff.Method)
 	}
+	if a.cfg.Signer == nil {
+		return publishhandoff.PrepareResult{}, fmt.Errorf("adapters: xiaohongshu official signer not configured")
+	}
 	payload, ok := xhsPayloadFor(req)
 	if !ok {
 		return publishhandoff.PrepareResult{}, fmt.Errorf("adapters: xiaohongshu media refs missing: A02 视频或 A07 有序图片均未在受控引用中出现")
@@ -79,6 +83,15 @@ func (a *XiaohongshuAdapter) Prepare(ctx context.Context, req publishhandoff.Pre
 		"app_id": a.cfg.AppID,
 		"type":   payload.Type,
 	}
+	verify, err := a.cfg.Signer.Sign(ctx)
+	if err != nil {
+		return publishhandoff.PrepareResult{}, fmt.Errorf("adapters: xiaohongshu sign: %w", err)
+	}
+	if verify.AppKey != a.cfg.AppID || verify.Nonce == "" || verify.Timestamp == "" || verify.Signature == "" {
+		return publishhandoff.PrepareResult{}, fmt.Errorf("adapters: xiaohongshu signature incomplete")
+	}
+	auth, _ := json.Marshal(verify)
+	params["verify_config"] = string(auth)
 	raw, _ := json.Marshal(payload)
 	params["payload"] = string(raw)
 	// 文案独立 copy_view:用户主动复制是另一个显式操作,不代表发布成功/奖励

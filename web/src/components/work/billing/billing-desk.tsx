@@ -10,9 +10,12 @@
 //   - 下单按钮只对持有 billing:manage_payer 的成员显示(服务端再拦一道);
 //   - 订阅到期:新增收费能力受限文案 + 旧权益不受锁说明(F18/T16)。
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { failureText, useSession } from "@/components/work/merchant-session";
+import { useAppSwitch } from "@/components/eco-nav/use-app-switch";
 import {
+  blocksNewSubscription,
+  nextOrderStep,
   AIUsageView,
   BillingOrderView,
   CheckoutRef,
@@ -33,6 +36,10 @@ import {
   subscriptionStatusText,
 } from "@/lib/billing";
 
+import { deliveryStatusFace, deliveryEventFace, readbackFace } from "@/lib/touchpoint-deliveries";
+
+interface PhysicalDelivery { id: string; hardware_order_id: string; status: string; binding_stale: boolean; last_readback_matches: boolean; last_readback_reason: string; replacement_of?: string; steps: Record<string, { occurred_at: string }> }
+
 type LoadPhase = "loading" | "error" | "ready";
 type BillingTab = "plan" | "orders" | "ai" | "refunds";
 
@@ -48,8 +55,11 @@ interface CatalogResolved {
   };
 }
 
+interface SubscriptionQuote { amount_minor: number; currency: string; price_ref: string; pricing_version: string; service_days: number }
+
 interface OrderDetail {
   order: BillingOrderView;
+  checkout?: CheckoutRef & { reason?: string };
   items?: HardwareItemView[];
   fulfillment?: HardwareFulfillmentView;
 }
@@ -63,6 +73,7 @@ const TABS: { key: BillingTab; label: string }[] = [
 
 export function BillingDesk() {
   const session = useSession();
+  const { switchApp } = useAppSwitch(session.tenantId);
   const [phase, setPhase] = useState<LoadPhase>("loading");
   const [error, setError] = useState("");
   const [tab, setTab] = useState<BillingTab>("plan");
@@ -71,6 +82,8 @@ export function BillingDesk() {
   const [orders, setOrders] = useState<BillingOrderView[]>([]);
   const [aiUsage, setAiUsage] = useState<AIUsageView[]>([]);
   const [refunds, setRefunds] = useState<RefundView[]>([]);
+  const [deliveries,setDeliveries] = useState<PhysicalDelivery[]>([]);
+  const [deliveryError,setDeliveryError] = useState("");
   const [detail, setDetail] = useState<OrderDetail | null>(null);
   const [permissions, setPermissions] = useState<string[] | null>(null);
   const [note, setNote] = useState("");
@@ -78,18 +91,36 @@ export function BillingDesk() {
   const [attempt, setAttempt] = useState(0);
   // 下单在飞闸:幂等键按一次明确的下单意图生成,双击不得变成两笔订单。
   const [ordering, setOrdering] = useState(false);
+  const orderLock = useRef(false);
+  const lookupVersion = useRef(0);
+  const [ordersReady, setOrdersReady] = useState(false);
+  const [catalogError, setCatalogError] = useState("");
+  const [quote,setQuote] = useState<SubscriptionQuote | null>(null);
+  const [quoteBusy,setQuoteBusy] = useState(false);
+  const quoteVersion = useRef(0);
+  const [purchase, setPurchase] = useState<{ action: "new" | "renew" | "expand"; plan: string; count?: number } | null>(null);
+  const generation = useRef(0);
+  useEffect(() => () => { ++generation.current; }, [session.tenantId]);
 
   const loadAll = useCallback(async () => {
     setPhase("loading");
     setError("");
-    const [subRes, catRes, ordRes, aiRes, refRes, accRes] = await Promise.all([
+    const seq = ++generation.current;
+    setSub(null); setOrders([]); setDetail(null); setEffective({}); setPermissions([]); setAiUsage([]); setRefunds([]); setOrdersReady(false); setPurchase(null); setQuote(null);
+    const [subRes, catRes, ordRes, aiRes, refRes, accRes, deliveryRes] = await Promise.all([
       session.api("GET", "billing/subscription"),
       session.api("GET", "billing/price-catalog"),
       session.api("GET", "billing/orders"),
       session.api("GET", "billing/ai-usage"),
       session.api("GET", "billing/refunds"),
       session.api("GET", "access/effective"),
+      session.api("GET", "touchpoint-deliveries"),
     ]);
+    if (seq !== generation.current) return;
+    setOrdersReady(ordRes.ok);
+    setDeliveries(deliveryRes.ok && Array.isArray(deliveryRes.data.items) ? deliveryRes.data.items as PhysicalDelivery[] : []);
+    setDeliveryError(deliveryRes.ok ? "" : "实卡记录暂不可查或当前账号无交付查询权限，请由商家负责人从「门店投放入口」核对交付记录。");
+    setCatalogError(catRes.ok ? "" : "价格目录暂时读不到，请刷新重试；持续失败请联系平台运营恢复生效目录。");
     if (subRes.ok) {
       setSub(subRes.data as unknown as SubscriptionView);
     } else {
@@ -98,76 +129,142 @@ export function BillingDesk() {
     if (catRes.ok && catRes.data && typeof catRes.data.effective === "object") {
       setEffective(catRes.data.effective as CatalogResolved);
     }
-    if (ordRes.ok && Array.isArray(ordRes.data.items)) setOrders(ordRes.data.items as BillingOrderView[]);
+    if (ordRes.ok && Array.isArray(ordRes.data.items)) {
+      const rows = ordRes.data.items as BillingOrderView[];
+      setOrders(rows);
+      for (let i = window.sessionStorage.length - 1; i >= 0; --i) {
+        const slot = window.sessionStorage.key(i);
+        if (slot?.startsWith(`touch-billing-intent:${session.tenantId}:`) && slot.endsWith(":order")) {
+          const original = rows.find((o) => o.id === window.sessionStorage.getItem(slot));
+          if (original && !blocksNewSubscription(original)) { window.sessionStorage.removeItem(slot); window.sessionStorage.removeItem(slot.slice(0,-6)); }
+        }
+      }
+    }
     if (aiRes.ok && Array.isArray(aiRes.data.items)) setAiUsage(aiRes.data.items as AIUsageView[]);
     if (refRes.ok && Array.isArray(refRes.data.items)) setRefunds(refRes.data.items as RefundView[]);
     if (accRes.ok && Array.isArray(accRes.data.permissions)) {
       setPermissions(accRes.data.permissions as string[]);
     } else {
       // FEATURE_AUTHZ off(access/effective 404):回退角色判定(见 lib)。
-      setPermissions(null);
+      setPermissions(accRes.status === 404 ? null : []);
     }
     setPhase(subRes.ok ? "ready" : "error");
   }, [session]);
 
   useEffect(() => {
-    void loadAll();
+    void loadAll().catch(() => { setError("账单暂时没有连上，请刷新重试。"); setPhase("error"); });
   }, [loadAll, attempt]);
 
   const manage = canManageBilling(session.role, permissions);
 
-  const placeOrder = useCallback(
-    async (action: "new" | "renew" | "expand", planCode: string, additionalStores?: number) => {
-      if (ordering) return;
-      setOrdering(true);
-      setNote("");
-      const body: Record<string, unknown> = {
-        action,
-        plan_code: planCode,
-        idempotency_key: `web-${planCode}-${action}-${Date.now()}`,
-      };
-      if (typeof additionalStores === "number") body.additional_stores = additionalStores;
-      const res = await session.api("POST", "billing/subscription-orders", body);
-      if (!res.ok) {
-        setNote(failureText(res.status, res.data));
+  const openCheckout = useCallback(async (checkout: CheckoutRef, seq: number) => {
+    if (!checkout.available || !checkout.app_id || !checkout.launch_target_id) return false;
+    // Reuse the shell's existing mint -> redeem contract. A mint response
+    // deliberately has no launch URL and is never payment evidence.
+    const target = await switchApp(checkout.app_id, checkout.launch_target_id);
+    if (seq !== generation.current) return false;
+    if (target.ok) {
+      window.location.href = target.launchUrl;
+      return true;
+    }
+    setNote(`原订单仍保留。${target.message} 可回查原订单后再次前往收银台。`);
+    return false;
+  }, [switchApp]);
+
+  const continuePayment = useCallback(async (id: string) => {
+    if (orderLock.current) return;
+    orderLock.current = true;
+    setOrdering(true); setNote("");
+    const seq = generation.current;
+    try {
+      const res = await session.api("GET", `billing/orders/${id}`);
+      if (seq !== generation.current) return;
+      if (!res.ok) { setNote(failureText(res.status, res.data)); return; }
+      const original = res.data as unknown as OrderDetail;
+      setDetail(original);
+      if (!original.checkout?.available) {
+        setNote(original.checkout?.reason === "original_payer_required"
+          ? "原付款授权已变化，请由原付款人或平台核对这笔订单。此次没有重新下单。"
+          : original.checkout?.reason === "not_awaiting_payment"
+            ? "原订单已不在待支付状态，请按回查结果继续办理，无需再次付款。"
+            : "收费通道尚未可用。原订单保留，请联系平台恢复后继续办理，无需重新下单。");
         return;
       }
+      await openCheckout(original.checkout, seq);
+    } catch {
+      if (seq === generation.current) setNote("原订单状态未能确认，请先回查；此次没有重新下单或确认付款。");
+    } finally { orderLock.current = false; setOrdering(false); }
+  }, [session, openCheckout]);
+
+  async function reviewPurchase(action: "new" | "renew" | "expand", plan: string, count?: number) {
+    const seq = ++quoteVersion.current;
+    const tenantSeq = generation.current;
+    setQuote(null); setPurchase(null); setQuoteBusy(true); setNote("");
+    try {
+      const res = await session.api("POST","billing/subscription-quote",{action,plan_code:plan,additional_stores:count});
+      if (seq !== quoteVersion.current || tenantSeq !== generation.current) return;
+      if (!res.ok) {setNote(failureText(res.status,res.data));return;}
+      setQuote(res.data as unknown as SubscriptionQuote); setPurchase({action,plan,count});
+    } catch { if (seq === quoteVersion.current && tenantSeq === generation.current) setNote("报价暂不可用，请稍后重试；尚未创建订单。"); }
+    finally {if(seq === quoteVersion.current) setQuoteBusy(false);}
+  }
+
+  const placeOrder = useCallback(
+    async (action: "new" | "renew" | "expand", planCode: string, additionalStores?: number) => {
+      if (orderLock.current || !quote || !ordersReady || orders.some(blocksNewSubscription) || !sub?.checkout?.available) return;
+      orderLock.current = true;
+      setOrdering(true);
+      const seq = generation.current;
+      setNote("");
+      try {
+      // Persist one intent through response loss, refresh and browser back.
+      const intentSlot = `touch-billing-intent:${session.tenantId}:${action}:${planCode}:${additionalStores ?? 0}`;
+      let intentKey = window.sessionStorage.getItem(intentSlot);
+      if (!intentKey) { intentKey = crypto.randomUUID(); window.sessionStorage.setItem(intentSlot, intentKey); }
+      const body: Record<string, unknown> = { action, plan_code: planCode, price_ref: quote.price_ref, idempotency_key: intentKey };
+      if (typeof additionalStores === "number") body.additional_stores = additionalStores;
+      const res = await session.api("POST", "billing/subscription-orders", body);
+      if (seq !== generation.current) return;
+      if (!res.ok) { setNote(failureText(res.status, res.data)); return; }
       const checkout = (res.data as { checkout?: CheckoutRef }).checkout;
       const order = (res.data as { order?: BillingOrderView }).order;
-      try {
+      if (order) window.sessionStorage.setItem(intentSlot + ":order",order.id);
         if (checkout && checkout.available && checkout.app_id) {
-          // 生态收银台跳转:复用 eco-nav switch(shell launch 铸造一次性 URL)。
-          const sw = await session.api("POST", "eco-nav/switch", {
-            app_id: checkout.app_id,
-            launch_target_id: checkout.launch_target_id,
-          });
-          const target = sw.data as { launch_url?: string };
-          if (sw.ok && target.launch_url) {
-            window.location.href = target.launch_url;
-            return;
-          }
-          setNote("订单已登记，但生态收银台跳转暂不可用；请稍后在本页「回查」订单状态。");
+          const launched = await openCheckout(checkout, seq);
+          if (seq !== generation.current) return;
+          if (launched) return;
         } else {
           setNote("生态收银台未接入：订单已登记为处理中，开通以服务端支付事实为准。可用「回查」刷新状态。");
         }
         if (order) setDetail(null);
         setAttempt((a) => a + 1);
+      } catch {
+        if (seq === generation.current) setNote("订单结果暂未确认。请先回查订单；重试会沿用本次办理编号，避免重复下单。");
       } finally {
+        orderLock.current = false;
         setOrdering(false);
+        setPurchase(null);
       }
     },
-    [session, ordering],
+    [session, ordersReady, orders, sub, quote, openCheckout],
   );
 
   const lookupOrder = useCallback(
     async (id: string) => {
       setNote("");
+      const seq = generation.current;
+      const lookupSeq = ++lookupVersion.current;
+      try {
       const res = await session.api("GET", `billing/orders/${id}`);
+      if (seq !== generation.current || lookupSeq !== lookupVersion.current) return;
       if (!res.ok) {
         setNote(failureText(res.status, res.data));
         return;
       }
-      setDetail(res.data as unknown as OrderDetail);
+      const fresh = res.data as unknown as OrderDetail;
+      setDetail(fresh);
+      if (fresh.order) setOrders((previous) => previous.map((o) => o.id === fresh.order.id ? fresh.order : o));
+      } catch { if (seq === generation.current && lookupSeq === lookupVersion.current) setNote("原订单暂时查不到，请稍后重试，无需重复购买。"); }
     },
     [session],
   );
@@ -200,8 +297,16 @@ export function BillingDesk() {
     <section data-pn-page="billing">
       <h2>订购与账单</h2>
       <p className="tk-kicker">
-        套餐、订单、AI 用量与发票退款（公共订单权威投影；本页不展示也不保存任何余额）
+        {session.tenantName} · 查看当前服务、接续订单与交付，再办理续费和扩店
       </p>
+      <section className="tk-section" data-testid="billing-summary">
+        <h3>当前服务与待办</h3>
+        <p>{session.tenantName} · {subPane ? subscriptionStatusText(subPane.status) : "暂无已确认服务"} · {storeQuotaText(usage.limit, usage.live)}</p>
+        <p>服务期至：{subPane?.paid_until || "尚无生效期限"}。付款主体：{session.role === "agent" ? "仅按商家已有的独立付款授权办理" : "当前组织，由有付款权限的人确认办理"}。</p>
+        {!ordersReady ? <p role="alert">订单暂时读不到，请刷新重试，确认已有订单后再购买。</p> : null}
+        {orders.filter((o) => blocksNewSubscription(o) || (o.kind === "hardware" && o.status !== "cancelled")).map((o) => <p key={o.id}>{planCodeText(o.plan_code)} · {formatAmount(o.amount_minor,o.currency)} · {nextOrderStep(o)} <button type="button" className="tk-quiet" onClick={() => { setTab("orders"); void lookupOrder(o.id); }}>回查原订单</button></p>)}
+        {!sub?.checkout?.available ? <p>收费通道尚未可用，请联系平台恢复生态收银台；已有订单可继续回查。</p> : null}
+      </section>
       <div role="tablist" aria-label="账单页签">
         {TABS.map((t) => (
           <button key={t.key} role="tab" type="button" data-action={`tab-${t.key}`}
@@ -227,6 +332,7 @@ export function BillingDesk() {
             </ul>
           )}
           <h3>价格目录（生效版本）</h3>
+          {catalogError ? <p role="alert">{catalogError}</p> : null}
           {monthly || yearly ? (
             <ul data-testid="catalog-facts">
               {monthly ? (
@@ -246,23 +352,32 @@ export function BillingDesk() {
                 </li>
               ) : null}
             </ul>
-          ) : (
-            <p>价格目录暂无生效行（价格与档位由平台运营发布；本页不发明价格）。</p>
+          ) : catalogError ? null : (
+            <p>价格目录暂无生效行，请联系平台运营发布有效档位后刷新。已有订单仍可回查。</p>
           )}
-          {manage ? (
+          {purchase && quote ? <section className="tk-section" aria-label="确认购买">
+            <h3>确认{orderActionText(purchase.action)}</h3>
+            <p>组织：{session.tenantName}。付款资格：{session.role === "agent" ? "商家独立代付授权" : "组织付款权限"}。</p>
+            <p>商品：{planCodeText(purchase.plan)}；价格版本：{quote.pricing_version}；服务期 {quote.service_days} 天。</p>
+            <p>预计金额：{formatAmount(quote.amount_minor,quote.currency)}。本次报价来自当前生效目录，价格引用随订单校验；生效日以支付后的服务事实为准；未到期续费接续原服务期。</p>
+            {!sub?.checkout?.available ? <p>可先核对本次报价。收费通道尚未可用，恢复后才能确认下单；当前没有创建订单。</p> : null}
+            <button className="tk-button" type="button" disabled={ordering || !sub?.checkout?.available} onClick={() => void placeOrder(purchase.action,purchase.plan,purchase.count)}>确认并前往受控支付</button>
+            <button className="tk-quiet" type="button" disabled={ordering} onClick={() => setPurchase(null)}>返回修改</button>
+          </section> : null}
+          {manage && ordersReady && !orders.some(blocksNewSubscription) && (monthly || yearly) ? (
             <div data-testid="plan-actions">
               <h3>续费 / 扩店</h3>
               <p>未到期续费从服务期届满起算（剩余天数不丢）；扩店按现行目录加店价计差价；降档在当前服务期届满后生效，已承诺权益不追溯削减。</p>
               {monthly ? (
-                <button className="tk-quiet" type="button" data-action="order-renew-month" disabled={ordering}
-                  onClick={() => void placeOrder("renew", "store.plan.month")}>
-                  续费 {planCodeText("store.plan.month")}
+                <button className="tk-quiet" type="button" data-action="order-renew-month" disabled={ordering || quoteBusy}
+                  onClick={() => void reviewPurchase(subPane?.status === "unconfirmed" || !subPane ? "new" : "renew", "store.plan.month")}>
+                  查看{planCodeText("store.plan.month")}{subPane?.status === "unconfirmed" || !subPane ? "开通" : "续费"}报价
                 </button>
               ) : null}
               {yearly ? (
-                <button className="tk-quiet" type="button" data-action="order-renew-year" disabled={ordering}
-                  onClick={() => void placeOrder("renew", "store.plan.year")}>
-                  续费 {planCodeText("store.plan.year")}
+                <button className="tk-quiet" type="button" data-action="order-renew-year" disabled={ordering || quoteBusy}
+                  onClick={() => void reviewPurchase(subPane?.status === "unconfirmed" || !subPane ? "new" : "renew", "store.plan.year")}>
+                  查看{planCodeText("store.plan.year")}{subPane?.status === "unconfirmed" || !subPane ? "开通" : "续费"}报价
                 </button>
               ) : null}
               <label>
@@ -276,20 +391,29 @@ export function BillingDesk() {
                 />
               </label>
               {monthly ? (
-                <button className="tk-quiet" type="button" data-action="order-expand-month" disabled={ordering}
-                  onClick={() => void placeOrder("expand", "store.plan.month", expandStores)}>
-                  按月付扩店 {expandStores} 家
+                <button className="tk-quiet" type="button" data-action="order-expand-month" disabled={ordering || quoteBusy}
+                  onClick={() => void reviewPurchase("expand", subPane?.plan_code || "store.plan.month", expandStores)}>
+                  查看扩店 {expandStores} 家的报价
                 </button>
               ) : null}
             </div>
           ) : (
-            <p data-testid="plan-readonly">本账号为只读账单视图；续费/扩店由组织负责人操作（代理续费协助走代理工作台，代发起需付款授权）。</p>
+            <p data-testid="plan-readonly">{!manage ? "当前账号没有付款权限。请交由本组织负责人或已有独立付款授权的人办理；配置权限不包含付款权限。" : orders.some(blocksNewSubscription) ? "已有订单正在办理，请先回查原订单，不需要重复购买。" : "待目录与订单读取恢复后即可查看报价，请按上方缺项联系平台。"}</p>
           )}
         </div>
       )}
 
       {tab === "orders" && (
         <div data-testid="pane-orders">
+          <section className="tk-section"><h3>实卡交付事实</h3>
+            {deliveryError ? <p>{deliveryError}</p> : deliveries.length === 0 ? <p>暂无实卡交付记录。硬件付款不代表已绑定、写卡、回读或现场验收。</p> : deliveries.map((record) => <article key={record.id}>
+              <p>{deliveryStatusFace(record.status)}{record.replacement_of ? " · 补换卡记录" : ""}</p>
+              {record.binding_stale ? <p role="alert">门店入口绑定已变更，旧实测不能代表当前绑定，请重新核对。</p> : null}
+              <p>{readbackFace(record.last_readback_reason ? record.last_readback_matches : undefined,record.last_readback_reason)}</p>
+              <ul>{Object.entries(record.steps ?? {}).map(([event,fact]) => <li key={event}>{deliveryEventFace(event)}：{fact.occurred_at}</li>)}</ul>
+              <a href="/work/touchpoints">进入门店投放入口查看交付与补换</a>
+            </article>)}
+          </section>
           {orders.length === 0 ? (
             <p>还没有订单。新购/续费/扩店下单后，这里展示处理中→开通中→已开通（或失败）四态。</p>
           ) : (
@@ -315,10 +439,12 @@ export function BillingDesk() {
             <div data-testid="order-detail">
               <h3>订单详情（状态回查结果）</h3>
               <p>
-                状态：{orderStatusText(detail.order.status)}
+                {nextOrderStep(detail.order)} 状态：{orderStatusText(detail.order.status)}
                 {detail.order.payment_ref ? ` · 支付引用 ${detail.order.payment_ref}` : " · 暂无支付事实"}
                 {detail.order.order_ref ? ` · 权威订单引用 ${detail.order.order_ref}` : ""}
               </p>
+              {detail.checkout?.available ? <button className="tk-button" type="button" disabled={ordering} onClick={() => void continuePayment(detail.order.id)}>继续支付原订单</button> : null}
+              {detail.checkout?.reason === "original_payer_required" ? <p>原付款授权已变化，请由原付款人或平台核对这笔订单。查看订单不会授予付款权限。</p> : null}
               {detail.items && detail.fulfillment ? (
                 <ul data-testid="hardware-facts">
                   {detail.items.map((it) => (

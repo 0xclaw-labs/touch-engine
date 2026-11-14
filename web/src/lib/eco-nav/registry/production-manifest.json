@@ -75,13 +75,13 @@
         {
           "target_id": "ti-dhuman-web",
           "kind": "launch",
-          "url": "https://dhuman.modelxing.com/"
+          "url": "https://dhuman.modelxing.com/studio/"
         }
       ],
       "receipt_targets": []
     },
     {
-      "app_id": "pilotseaview",
+      "app_id": "nextmodel-web",
       "display_name": "星模",
       "enabled": true,
       "supported_source_kinds": [
@@ -122,6 +122,52 @@
           "target_id": "ti-agentbuddy-web",
           "kind": "launch",
           "url": "https://agentbuddy.modelxing.com/"
+        }
+      ],
+      "receipt_targets": []
+    },
+    {
+      "app_id": "guanlan-order",
+      "display_name": "观澜接单",
+      "enabled": true,
+      "supported_source_kinds": [
+        "order"
+      ],
+      "capabilities": [
+        {
+          "name": "order.handoff",
+          "menu_visible": true,
+          "requires_billing": false
+        }
+      ],
+      "launch_targets": [
+        {
+          "target_id": "ti-orders-web",
+          "kind": "launch",
+          "url": "https://order.modelxing.com/workbench"
+        }
+      ],
+      "receipt_targets": []
+    },
+    {
+      "app_id": "leads-engine",
+      "display_name": "数海获客",
+      "enabled": true,
+      "supported_source_kinds": [
+        "standalone"
+      ],
+      "capabilities": [
+        {
+          "name": "crm.workspace",
+          "menu_visible": true,
+          "requires_billing": false
+        }
+      ],
+      "launch_targets": [
+        {
+          "target_id": "ti-leads-engine-web",
+          "kind": "launch",
+          "url": "https://leads.modelxing.com/"
         }
       ],
       "receipt_targets": []

@@ -22,7 +22,7 @@ describe("奖励未知不是成功", () => {
 });
 
 describe("商家今天的下一步", () => {
-  it("没有门店时第一件是登记门店，奖励未知不是完成", () => {
+  it("没有门店时先登记，不把未知摘要列为操作任务", () => {
     const items = planToday({
       stores: 0,
       active: [],
@@ -35,11 +35,11 @@ describe("商家今天的下一步", () => {
       redemptionKnown: false,
     });
     expect(items[0]).toMatchObject({ id: "stores", href: "/work/stores", tone: "empty" });
-    expect(items.some((item) => item.href === "/work/rewards" && item.tone === "unknown")).toBe(true);
+    expect(items.some((item) => item.tone === "unknown")).toBe(false);
     expect(items.some((item) => item.tone === "confirmed")).toBe(false);
   });
 
-  it("进行中的活动、暂停、结束、素材和待同步留资各走真实页面", () => {
+  it("草稿和确需补材可操作，正常活动终态不变成待办", () => {
     const items = planToday({
       stores: 1,
       active: [{ id: "cmp_live", title: "到店送一杯" }],
@@ -52,20 +52,12 @@ describe("商家今天的下一步", () => {
       redemptionKnown: false,
     });
     expect(items.map((item) => item.href)).toEqual(expect.arrayContaining([
-      "/work/campaigns/cmp_draft",
-      "/work/campaigns?state=paused",
-      "/work/campaigns/cmp_live",
-      "/work/campaigns?state=ended",
-      "/work/materials",
-      "/work/analytics",
-      "/work/rewards",
+      "/work/campaigns/cmp_draft", "/work/materials", "/work/leads?return=/",
     ]));
-    expect(items.find((item) => item.id === "paused")?.tone).toBe("paused");
-    expect(items.find((item) => item.id === "ended")?.tone).toBe("ended");
-    expect(items.find((item) => item.id === "rewards")?.tone).toBe("unknown");
+    expect(items.some((item) => ["paused", "ended", "active", "rewards"].includes(item.id))).toBe(false);
   });
 
-  it("status=active 且 ends_at 早于现在时，交接去过期列表，不写成今天进行中", () => {
+  it("活动正常过期不冒充今天待办", () => {
     const items = planToday({
       stores: 1,
       active: [{ id: "cmp_late", title: "窗口已过", ends_at: "2020-01-01T00:00:00Z" }],
@@ -77,14 +69,8 @@ describe("商家今天的下一步", () => {
       rewardKnown: true,
       redemptionKnown: true,
     });
-    const expired = items.find((item) => item.href === "/work/campaigns?state=expired");
-    expect(expired).toMatchObject({ tone: "expired" });
-    expect(expired?.title).not.toContain("今天进行中");
-    expect(items.some((item) => item.tone === "now")).toBe(false);
-    expect(items.some((item) => item.title.includes("今天进行中"))).toBe(false);
-    const desk = readFileSync(path.resolve(process.cwd(), "src/components/work/today-desk.tsx"), "utf8");
-    expect(desk).toContain("ends_at");
-    expect(desk).toMatch(/tone === "expired"/);
+    expect(items.some(item => item.tone === "expired" || item.tone === "now")).toBe(false);
+    expect(items[0].id).toBe("quiet");
   });
 });
 

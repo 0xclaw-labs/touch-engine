@@ -93,34 +93,68 @@ func (s *Server) touchpointScoped(c *caller, id string, w http.ResponseWriter) (
 
 func (s *Server) handleTouchpointProvision(w http.ResponseWriter, r *http.Request) {
 	c := callerFrom(r)
-	scope, ok := s.requireTagFace(c, w)
-	if !ok {
+	if _, ok := s.requireTagFace(c, w); !ok {
 		return
 	}
 	var in struct {
-		TagID    string `json:"tag_id"`
-		Label    string `json:"label"`
-		Position string `json:"position"`
+		TagID      string `json:"tag_id"`
+		StoreID    string `json:"store_id"`
+		Label      string `json:"label"`
+		Position   string `json:"position"`
+		RequestKey string `json:"creation_request_key"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || strings.TrimSpace(in.TagID) == "" {
-		fail(w, http.StatusBadRequest, "bad_request", "tag_id is required")
+	if err := json.NewDecoder(io.LimitReader(r.Body, 16<<10)).Decode(&in); err != nil {
+		fail(w, 400, "bad_request", "invalid creation request")
 		return
 	}
-	// 门店经理只能为本店标签启用入口(服务端强制,客户端输入不放宽)。
-	if scope != "" {
-		tv, err := s.St.GetTagView(in.TagID, c.Member.TenantID)
-		if errors.Is(err, store.ErrNotFound) || (err == nil && tv.StoreID != scope) {
-			fail(w, http.StatusNotFound, "not_found", "tag not found")
-			return
-		}
-		if err != nil {
-			fail(w, http.StatusInternalServerError, "internal", "tag lookup failed")
-			return
-		}
+	in.TagID, in.StoreID, in.RequestKey = strings.TrimSpace(in.TagID), strings.TrimSpace(in.StoreID), strings.TrimSpace(in.RequestKey)
+	if (in.TagID == "" && in.StoreID == "") || (in.TagID != "" && (in.StoreID != "" || in.RequestKey != "")) {
+		fail(w, 400, "bad_request", "choose a store entry or an existing tag")
+		return
 	}
-	a, err := s.St.ProvisionTouchpoint(c.Member.TenantID, in.TagID, in.Label, in.Position, c.Member.PrincipalRef)
+	var a store.TouchpointAlias
+	var err error
+	replayed := false
+	if in.TagID == "" {
+		if len(in.RequestKey) < 8 || len(in.RequestKey) > 160 || len(in.Label) > 240 || len(in.Position) > 240 {
+			fail(w, 400, "bad_request", "a stable creation_request_key and bounded label/position are required")
+			return
+		}
+		if _, ok := s.storeTargetScoped(c, in.StoreID, w); !ok {
+			return
+		}
+		// Authorize the original record before revealing whether this key exists or conflicts.
+		old, _, lookup := s.St.TouchpointCreation(c.Member.TenantID, in.RequestKey)
+		if lookup == nil {
+			if !s.requireScopedAction(c, authz.ActionManageTags, authz.RecordScope{TenantID: c.Member.TenantID, StoreID: old.StoreID}, true, w) {
+				return
+			}
+		} else if !errors.Is(lookup, store.ErrNotFound) {
+			fail(w, 500, "internal", "creation recovery failed")
+			return
+		}
+		a, replayed, err = s.St.ProvisionStoreTouchpoint(c.Member.TenantID, in.StoreID, in.Label, in.Position, in.RequestKey, c.Member.PrincipalRef)
+		// Recheck the transaction's winning record too: a concurrent request may
+		// have claimed this key after the preliminary lookup.
+		if a.ID != "" && !s.requireScopedAction(c, authz.ActionManageTags, authz.RecordScope{TenantID: c.Member.TenantID, StoreID: a.StoreID}, true, w) {
+			return
+		}
+	} else {
+		tv, lookup := s.St.GetTagView(in.TagID, c.Member.TenantID)
+		if lookup != nil {
+			fail(w, 404, "not_found", "tag not found")
+			return
+		}
+		if !s.requireScopedAction(c, authz.ActionManageTags, authz.RecordScope{TenantID: c.Member.TenantID, StoreID: tv.StoreID}, true, w) {
+			return
+		}
+		a, err = s.St.ProvisionTouchpoint(c.Member.TenantID, in.TagID, in.Label, in.Position, c.Member.PrincipalRef)
+	}
 	switch {
 	case err == nil:
+	case errors.Is(err, store.ErrTouchpointCreationConflict):
+		fail(w, 409, "creation_request_conflict", "same creation request has different input")
+		return
 	case errors.Is(err, store.ErrTagAlreadyProvisioned):
 		fail(w, http.StatusConflict, "already_provisioned", "this tag already has a stable entry")
 		return
@@ -136,7 +170,11 @@ func (s *Server) handleTouchpointProvision(w http.ResponseWriter, r *http.Reques
 		fail(w, http.StatusInternalServerError, "internal", "touchpoint lookup failed")
 		return
 	}
-	writeJSON(w, http.StatusCreated, s.touchpointAdminView(v, false))
+	status := http.StatusCreated
+	if replayed {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, s.touchpointAdminView(v, false))
 }
 
 // parseTouchpointFilter reads the shared list/export filters. Unknown values

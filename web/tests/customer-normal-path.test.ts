@@ -8,7 +8,7 @@ describe("HUI-2222 public normal path guards", () => {
   it("does not render a dead participation CTA when the server says it is closed", () => {
     const page = read("src/app/c/[code]/public-campaign.tsx");
     expect(page).toContain("capabilities?.participation");
-    expect(page).toContain("canParticipate && !participationOpen");
+    expect(page).toContain("rewardCanStart && !participationOpen");
     expect(page).toContain("这家店还没有开放在线参与");
     expect(page).toContain("closedReason");
     expect(page).toContain("canReadContent");
@@ -33,7 +33,7 @@ describe("HUI-2222 public normal path guards", () => {
     expect(content).toContain("marking?.ad_required");
     const panel = read("src/components/work/content-pack-panel.tsx");
     expect(panel).toContain("ai-marking");
-    const materials = read("src/app/work/materials/page.tsx");
+    const materials = read("src/components/work/store-content-drawer.tsx");
     expect(materials).toContain("ai_generated");
     expect(materials).toContain("marking: { ad_required: true");
   });

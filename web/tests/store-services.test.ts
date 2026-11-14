@@ -75,7 +75,9 @@ describe("保存失败分流与文案", () => {
     expect(saveServicesFailure(400, { error: "bad_service_config", message: "url 必须是…" }).kind).toBe("error");
     expect(servicesSaveError(400, { error: "bad_service_config", message: "url 必须是…" })).toContain("url 必须是…");
     expect(servicesSaveError(400, { error: "duplicate_service_id" })).toContain("两次");
-    expect(servicesSaveError(403, { error: "forbidden" })).toContain("管辖");
+    expect(servicesSaveError(403, { error: "forbidden" })).toContain("配置任务授权");
+    expect(servicesSaveError(403, { error: "forbidden" })).not.toContain("只能配置自己管辖");
+    expect(servicesSaveError(403, { error: "out_of_scope" })).toContain("门店不在你的授权范围");
   });
 
   it("保存闸：stale/reloading/脏/阻塞组合", () => {

@@ -17,6 +17,8 @@ import {
   writeTenantMemory,
   type MembershipScope,
 } from "@/lib/workspace-tenant";
+import { observeSsoAccountChanges, resetWorkspaceAfterSso, resetWorkspaceForAccountChange } from "@/lib/sso-workspace-reset";
+import { AgencyWorkContext } from "./agency-console/agency-work-context";
 import type { SessionFeatures } from "@/lib/work/service-desk";
 
 export interface MerchantResult {
@@ -48,6 +50,7 @@ export interface MerchantSession {
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   switchTenant: (tenantId: string) => void;
+  clearWorkspace: () => void;
   api: (method: string, path: string, body?: unknown) => Promise<MerchantResult>;
   retryConnection: () => void;
 }
@@ -96,7 +99,7 @@ export function MerchantGate({ children }: { children: ReactNode }) {
     );
   }
   if (session.phase !== "ready") return <Login session={session} />;
-  return <SessionContext.Provider value={session}>{children}</SessionContext.Provider>;
+  return <SessionContext.Provider value={session}>{session.role === "agent" ? <AgencyWorkContext session={session} /> : null}{children}</SessionContext.Provider>;
 }
 
 function Login({ session }: { session: MerchantSession }) {
@@ -232,6 +235,7 @@ function useMerchantSession(): MerchantSession {
   }, [phase, router]);
 
   useEffect(() => {
+    resetWorkspaceAfterSso();
     const seq = beginTenantOp();
     const remembered = window.localStorage.getItem(TENANT_STORAGE_KEY);
     void readScopes().then((items) => {
@@ -254,6 +258,15 @@ function useMerchantSession(): MerchantSession {
     setAttempt((a) => a + 1);
   }, []);
 
+  useEffect(() => observeSsoAccountChanges(() => {
+    // Another tab has exchanged the shared session cookie. Unmount the old
+    // business subtree before discovering the current account's memberships.
+    setTenantId(""); setRole(""); setEmail(""); setTenantName("");
+    setFeatures(NO_FEATURES); setOptions([]); setError("");
+    setPhase("loading");
+    setAttempt((value) => value + 1);
+  }), []);
+
   const api = useCallback(async (method: string, path: string, body?: unknown) => {
     const res = await fetch("/api/" + path.replace(/^\//, ""), {
       method,
@@ -275,6 +288,7 @@ function useMerchantSession(): MerchantSession {
     });
     const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     if (!res.ok) throw new ApiFailure(loginFailureText(res.status, data), res.status, "login_rejected");
+    resetWorkspaceForAccountChange(window.localStorage);
     const seq = beginTenantOp();
     const items = await readScopes();
     if (seq !== currentTenantOp()) return;
@@ -283,7 +297,23 @@ function useMerchantSession(): MerchantSession {
   }, [applyScopes]);
 
   const logout = useCallback(async () => {
-    await fetch("/api/auth/logout", { method: "POST" });
+    let result: Response;
+    try {
+      result = await fetch("/api/auth/logout", { method: "POST" });
+    } catch {
+      setError("没有连上退出服务，当前身份仍需核验。请重试。");
+      setPhase("error");
+      return;
+    }
+    if (!result.ok) {
+      setError("退出没有完成，请重试。当前身份仍需核验。");
+      setPhase("error");
+      return;
+    }
+    resetWorkspaceForAccountChange(window.localStorage);
+    setTenantId("");
+    setTenantName("");
+    setOptions([]);
     setRole("");
     setEmail("");
     setFeatures(NO_FEATURES);
@@ -311,6 +341,13 @@ function useMerchantSession(): MerchantSession {
     });
   }, [confirmTenant, options]);
 
+  const clearWorkspace = useCallback(() => {
+    beginTenantOp();
+    window.localStorage.removeItem(TENANT_STORAGE_KEY);
+    setTenantId(""); setRole(""); setTenantName(""); setFeatures(NO_FEATURES); setError("");
+    setPhase(options.length > 0 ? "choose" : "none");
+  }, [options]);
+
   return useMemo(() => ({
     tenantId,
     role,
@@ -323,9 +360,10 @@ function useMerchantSession(): MerchantSession {
     login,
     logout,
     switchTenant,
+    clearWorkspace,
     api,
     retryConnection,
-  }), [api, email, error, features, login, logout, options, phase, retryConnection, role, switchTenant, tenantId, tenantName]);
+  }), [api, email, error, features, login, logout, options, phase, retryConnection, role, switchTenant, clearWorkspace, tenantId, tenantName]);
 }
 
 export { failureText };

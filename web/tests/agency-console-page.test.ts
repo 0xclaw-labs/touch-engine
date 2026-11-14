@@ -51,7 +51,8 @@ describe("A1 控制台结构", () => {
   it("受控进入沿用既有 switchTenant 单缝并跳 M1(/),不新造权限体系", () => {
     expect(desk).toContain('data-action="enter-merchant"');
     expect(desk).toContain("session.switchTenant(tenantId)");
-    expect(desk).toContain('window.location.href = "/"');
+    expect(desk).toContain('let pendingEnterPath = "/"');
+    expect(desk).toContain("window.location.href = pendingEnterPath");
     expect(desk).toContain("只能进入已授权商户");
     // 复用横幅组件(正在为谁工作/权限/付款主体),不复制实现
     expect(desk).toContain("<AgentBanner");

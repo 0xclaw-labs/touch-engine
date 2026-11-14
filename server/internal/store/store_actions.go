@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/bianjiefilm/touch-engine/server/internal/storefrontversion"
 	"strings"
 	"time"
 
@@ -55,27 +56,29 @@ type StorefrontPublic struct {
 
 // StoreAction is one store action instance.
 type StoreAction struct {
-	ID                string `json:"action_id"`
-	TenantID          string `json:"-"`
-	StoreID           string `json:"-"`
-	CatalogCode       string `json:"catalog_code"`
-	Platform          string `json:"platform"`
-	Kind              string `json:"kind"`
-	Variant           string `json:"variant"`
-	Label             string `json:"label"`
-	TargetRef         string `json:"target_ref"`
-	ContentBindingRef string `json:"content_binding_ref"`
-	CapabilityRef     string `json:"capability_ref"`
-	Presentation      string `json:"presentation"`
-	SortOrder         int    `json:"order"`
-	Enabled           bool   `json:"enabled"`
-	Revision          int    `json:"revision"`
-	Revoked           bool   `json:"-"`
-	ExpiresAt         string `json:"-"`
-	LegacyCampaignID  string `json:"legacy_campaign_id,omitempty"`
-	LegacyKind        string `json:"legacy_kind,omitempty"`
-	CreatedAt         string `json:"-"`
-	UpdatedAt         string `json:"-"`
+	ContentVersionID  string   `json:"-"`
+	ContentCandidates []string `json:"-"`
+	ID                string   `json:"action_id"`
+	TenantID          string   `json:"-"`
+	StoreID           string   `json:"-"`
+	CatalogCode       string   `json:"catalog_code"`
+	Platform          string   `json:"platform"`
+	Kind              string   `json:"kind"`
+	Variant           string   `json:"variant"`
+	Label             string   `json:"label"`
+	TargetRef         string   `json:"target_ref"`
+	ContentBindingRef string   `json:"content_binding_ref"`
+	CapabilityRef     string   `json:"capability_ref"`
+	Presentation      string   `json:"presentation"`
+	SortOrder         int      `json:"order"`
+	Enabled           bool     `json:"enabled"`
+	Revision          int      `json:"revision"`
+	Revoked           bool     `json:"-"`
+	ExpiresAt         string   `json:"-"`
+	LegacyCampaignID  string   `json:"legacy_campaign_id,omitempty"`
+	LegacyKind        string   `json:"legacy_kind,omitempty"`
+	CreatedAt         string   `json:"-"`
+	UpdatedAt         string   `json:"-"`
 }
 
 // StoreActionInput is one desired item of a ReplaceStoreActions call. The
@@ -246,6 +249,34 @@ func (s *Store) configRevision(storeID string) (int, bool, error) {
 //   - Identical content replays the current state (no revision bump, no snapshot).
 //   - Every real change bumps config_revision and stores one immutable snapshot.
 func (s *Store) ReplaceStoreActions(tenantID, storeID string, expectedRevision int, inputs []StoreActionInput) (int, []StoreAction, error) {
+	return s.replaceStoreActions(tenantID, storeID, expectedRevision, inputs, nil)
+}
+func (s *Store) StageStoreActions(tenantID, storeID string, expectedRevision int, inputs []StoreActionInput) (int, []StoreAction, error) {
+	existing, _, err := s.ListStoreActions(tenantID, storeID)
+	if err != nil {
+		return 0, nil, err
+	}
+	snapshots := make([]storefrontversion.ActionSnapshot, 0, len(existing))
+	for _, row := range existing {
+		if !publicVisible(row, time.Now()) {
+			continue
+		}
+		snap := actionSnapshot(row)
+		platform := snap.Platform
+		snap.Platform = "" // Preserve the legacy store-wide candidate pool during staged migration.
+		if err := s.FreezeActionContent(tenantID, storeID, &snap); err != nil {
+			return 0, nil, err
+		}
+		snap.Platform = platform
+		snapshots = append(snapshots, snap)
+	}
+	raw, err := json.Marshal(snapshots)
+	if err != nil {
+		return 0, nil, err
+	}
+	return s.replaceStoreActions(tenantID, storeID, expectedRevision, inputs, &raw)
+}
+func (s *Store) replaceStoreActions(tenantID, storeID string, expectedRevision int, inputs []StoreActionInput, baseline *[]byte) (int, []StoreAction, error) {
 	if _, err := s.GetStore(storeID, tenantID); err != nil {
 		return 0, nil, err
 	}
@@ -319,7 +350,16 @@ func (s *Store) ReplaceStoreActions(tenantID, storeID string, expectedRevision i
 		desired = append(desired, item)
 	}
 
+	if baseline != nil {
+		if _, err := tx.Exec(`INSERT INTO store_action_configs(store_id,config_revision,updated_at,public_baseline) VALUES(?,?,?,?) ON CONFLICT(store_id) DO UPDATE SET public_baseline=COALESCE(store_action_configs.public_baseline,excluded.public_baseline)`, storeID, current, now(), string(*baseline)); err != nil {
+			return 0, nil, err
+		}
+	}
 	if sameSet(existing, desired) {
+		if err := tx.Commit(); err != nil {
+			return 0, nil, err
+		}
+		s.bumpEpoch()
 		return current, existing, nil
 	}
 

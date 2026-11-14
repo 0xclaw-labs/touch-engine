@@ -74,7 +74,7 @@ export function presentAccountSeparation(view: SeparationView): PresentedSeparat
     const name = benefitNames[item.kind] ?? "营销权益";
     return `${name} ${yuan(item.face_minor)} 元在活动里，不是平台现金。`;
   });
-  const rewardText = lines.length > 0 ? lines.join("") : "营销奖励留在活动里。当前没有优惠券、积分、抽奖或团购券。";
+  const rewardText = lines.length > 0 ? lines.join("") : "当前财务投影没有营销权益汇总。各活动的实际库存、待发放和已发权益以上方活动账本为准。";
 
   return {
     packageText,

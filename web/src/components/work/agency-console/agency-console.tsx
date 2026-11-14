@@ -15,9 +15,10 @@
 //     由平台订阅/资金权威统一裁决,本部署未接入收费通道,不伪造开通成功;
 //   - 硬件交付/结算:真实依赖未接入,显示诚实空态与归属说明,零伪造状态。
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { failureText, useMerchantSession, type MerchantSession } from "@/components/work/merchant-session";
 import { AgentBanner, ACTION_LABELS, type AccessEffective, type AgencyRel } from "@/components/work/settings/settings-desk";
+import { nextOrderStep, subscriptionStatusText, type SubscriptionView, type BillingOrderView } from "@/lib/billing";
 import { surfaceLabel } from "@/lib/product-finish";
 import { SharedLogin, type SignInBridge } from "@/components/login/SharedLogin";
 
@@ -47,9 +48,17 @@ interface GrantedRelation extends AgencyRel {
 // 成功路径依赖模块状态而不是组件存活:任何一次重挂的 AgencyDesk 挂载时都会
 // 检查本标记,条件满足即跳 M1。
 let pendingEnterTarget = "";
+let pendingEnterPath = "/";
 
 export function AgencyConsole() {
   const session = useMerchantSession();
+  const cleared = useRef(false);
+  useEffect(() => {
+    if (!cleared.current && !pendingEnterTarget && (session.phase === "ready" || session.phase === "choose" || session.phase === "none")) {
+      cleared.current = true;
+      session.clearWorkspace();
+    }
+  }, [session]);
   if (session.phase === "loading") {
     return (
       <main className="tk-page">
@@ -90,6 +99,8 @@ function AgencyLogin({ session }: { session: MerchantSession }) {
 }
 
 function AgencyDesk({ session }: { session: MerchantSession }) {
+  const [jobs, setJobs] = useState<Record<string, { service?: SubscriptionView; orders: BillingOrderView[]; error?: string }>>({});
+  const drawerVersion = useRef(0);
   const [phase, setPhase] = useState<"loading" | "error" | "empty" | "ready">("loading");
   const [error, setError] = useState("");
   const [merchants, setMerchants] = useState<{ rel: GrantedRelation; name: string }[]>([]);
@@ -126,7 +137,19 @@ function AgencyDesk({ session }: { session: MerchantSession }) {
     }
     const relData = (await relRes.json().catch(() => ({}))) as { items?: GrantedRelation[] };
     const granted = (relData.items ?? []).filter((r) => !r.revoked_at);
-    setMerchants(granted.map((rel) => ({ rel, name: rel.tenant_name || rel.tenant_id })));
+    setMerchants(granted.map((rel) => ({ rel, name: rel.tenant_name || "已授权商家" })));
+    const facts = await Promise.all(granted.map(async (rel) => {
+      if (!(rel.allowed_actions ?? []).includes("renewal")) return [rel.id, { orders: [], error: "未获续费协助授权，请商家负责人办理账单与交付事项。" }] as const;
+      try {
+        const headers = { "x-tenant-id": rel.tenant_id };
+        const [serviceRes, ordersRes] = await Promise.all([fetch("/api/billing/subscription",{headers}), fetch("/api/billing/orders",{headers})]);
+        if (!serviceRes.ok || !ordersRes.ok) return [rel.id, { orders: [], error: "商家服务与订单暂时读不到，请重试；授权过期时请联系商家重新授权。" }] as const;
+        const service = await serviceRes.json() as SubscriptionView;
+        const orders = await ordersRes.json() as { items?: BillingOrderView[] };
+        return [rel.id, { service, orders: orders.items ?? [] }] as const;
+      } catch { return [rel.id, { orders: [], error: "没有连上商家账单，请稍后重试。" }] as const; }
+    }));
+    setJobs(Object.fromEntries(facts));
     setPhase(granted.length === 0 ? "empty" : "ready");
   }, []);
 
@@ -153,13 +176,14 @@ function AgencyDesk({ session }: { session: MerchantSession }) {
   // 受控进入:switchTenant 单缝(成员行+激活关系双门槛;代理 scope 由后端
   // access/effective 每请求裁决)。修复轮 3(F1):等待切换真正落地再跳 M1,
   // 落地后 M1 显示的就是被授权租户的数据。
-  function enter(tenantId: string) {
+  function enter(tenantId: string, path = "/") {
     if (!merchants.some((m) => m.rel.tenant_id === tenantId)) {
       setEnterError("只能进入已授权商户。");
       return;
     }
     setEnterError("");
     pendingEnterTarget = tenantId;
+    pendingEnterPath = path;
     setPendingEnter(tenantId);
     session.switchTenant(tenantId);
   }
@@ -170,7 +194,7 @@ function AgencyDesk({ session }: { session: MerchantSession }) {
     if (session.phase === "ready" && session.tenantId === pendingEnterTarget) {
       pendingEnterTarget = "";
       setPendingEnter("");
-      window.location.href = "/"; // M1:今天要做的事(已是授权租户上下文)
+      window.location.href = pendingEnterPath; // M1:今天要做的事(已是授权租户上下文)
       return;
     }
     if (session.phase === "error") {
@@ -182,14 +206,17 @@ function AgencyDesk({ session }: { session: MerchantSession }) {
 
   // 门店配置入口:按该商户租户读门店(代理只读门槛),展开抽屉。
   async function openStores(tenantId: string, name: string) {
+    const seq = ++drawerVersion.current;
     setDrawer({ tenantId, name, stores: [], loading: true });
     const res = await fetch("/api/stores", { headers: { "x-tenant-id": tenantId } });
+    if (seq !== drawerVersion.current) return;
     if (!res.ok) {
       setDrawer({ tenantId, name, stores: [], loading: false });
       setEnterError(failureText(res.status, {}));
       return;
     }
     const data = (await res.json().catch(() => ({}))) as { items?: StoreRec[] };
+    if (seq !== drawerVersion.current) return;
     setDrawer({ tenantId, name, stores: data.items ?? [], loading: false });
   }
 
@@ -216,9 +243,9 @@ function AgencyDesk({ session }: { session: MerchantSession }) {
         <section className="tk-section" data-section="inside-banner">
           <p data-field="back-row">
             当前位于 <strong>{insideName || "商户工作台"}</strong>。
-            <a className="tk-quiet" href="/agency" data-action="back-console">返回商户列表</a>
+            <a className="tk-quiet" href="/agency" onClick={session.clearWorkspace} data-action="back-console">返回商户列表</a>
           </p>
-          <AgentBanner tenantName={insideName} access={access} backHref="/agency" />
+          <AgentBanner tenantName={insideName} access={access} backHref="/agency" onBack={session.clearWorkspace} />
         </section>
       ) : null}
 
@@ -240,7 +267,7 @@ function AgencyDesk({ session }: { session: MerchantSession }) {
                 <strong>{name}</strong>
                 <span className="tk-note"> {describeScope(rel)}</span>
                 <span className="tk-note"> {rel.valid_until ? `授权至 ${rel.valid_until.slice(0, 10)}` : "长期授权"}</span>
-                <span className="tk-note" data-field="payer">{rel.payer_grant_ref ? "已获代付授权" : "无代付授权"}</span>
+                <span className="tk-note" data-field="payer">{rel.payer_granted ? "已获代付授权" : "无代付授权"}</span>
                 <div className="tk-row tk-gap">
                   <button className="tk-button" type="button" data-action="enter-merchant" onClick={() => void enter(rel.tenant_id)}>
                     进入工作台
@@ -274,8 +301,7 @@ function AgencyDesk({ session }: { session: MerchantSession }) {
                   type="button"
                   data-action="go-store-config"
                   onClick={() => {
-                    session.switchTenant(drawer.tenantId);
-                    window.location.href = "/work/stores";
+                    enter(drawer.tenantId, "/work/stores");
                   }}
                 >
                   去配置
@@ -284,7 +310,7 @@ function AgencyDesk({ session }: { session: MerchantSession }) {
             ))}
           </ul>
           <p className="tk-note">配置权限以商家授予为准；未获授权的动作在工作台内会被明确拒绝并说明。</p>
-          <button className="tk-quiet" type="button" data-action="close-stores" onClick={() => setDrawer(null)}>收起</button>
+          <button className="tk-quiet" type="button" data-action="close-stores" onClick={() => { ++drawerVersion.current; setDrawer(null); }}>收起</button>
         </section>
       ) : null}
 
@@ -297,13 +323,18 @@ function AgencyDesk({ session }: { session: MerchantSession }) {
             {merchants.map(({ rel, name }) => (
               <li key={rel.id} data-role="renewal-row">
                 <strong>{name}</strong>
+                {jobs[rel.id]?.error ? <p>{jobs[rel.id].error}</p> : <>
+                  <p>当前服务：{subscriptionStatusText(jobs[rel.id]?.service?.subscription?.status || "unconfirmed")}；服务期至 {jobs[rel.id]?.service?.subscription?.paid_until || "尚未生效"}。</p>
+                  {(jobs[rel.id]?.orders ?? []).filter((o) => ["processing","opening","failed"].includes(o.status) || o.kind === "hardware").map((order) => <p key={order.id}>{nextOrderStep(order)} <button className="tk-quiet" type="button" onClick={() => enter(rel.tenant_id, "/work/billing")}>进入商家回查原单</button></p>)}
+                  <button className="tk-quiet" type="button" onClick={() => enter(rel.tenant_id, "/work/billing")}>办理开通、续费与交付查询</button>
+                </>}
                 <span className="tk-note">
                   {(rel.allowed_actions ?? []).includes("renewal")
                     ? "已获续费协助授权：可代发起开通/续费申请（资格已具备）"
                     : "未获续费协助授权（需商家授予「续费协助」）"}
                 </span>
                 <span className="tk-note" data-field="renewal-payer">
-                  {rel.payer_grant_ref ? "付款授权：已授予（真实扣费仍由平台按付款授权裁决）" : "付款授权：未授予，收费动作不可代付"}
+                  {rel.payer_granted ? "付款授权：已授予（真实扣费仍由平台按付款授权裁决）" : "付款授权：未授予，收费动作不可代付"}
                 </span>
               </li>
             ))}
@@ -311,15 +342,14 @@ function AgencyDesk({ session }: { session: MerchantSession }) {
         )}
         <p className="tk-note" data-field="renewal-authority">
           开通与续费的发起、支付与生效由平台订阅与资金权威统一裁决：真实服务端支付状态才开通。
-          本部署尚未接入收费通道，这里不做任何代收代付。
+          收费通道是否可用以商家账单页为准；配置代理无独立付款授权时交由商家负责人付款，这里不做任何代收代付。
         </p>
       </section>
 
       <section className="tk-section" data-section="hardware">
         <h2 className="tk-section-title">硬件交付状态</h2>
         <p className="tk-state" data-state="empty" data-field="hardware-empty">
-          硬件交付状态归平台硬件交付域，本部署尚未接入。这里不做任何伪造状态；
-          交付事实以平台交付记录为准。
+          各商家的硬件订单请从上方授权事项进入账单回查，分别核对出库、写卡、回读与现场验收。付款不代表实卡完成交付。没有续费查询授权时，请交由商家负责人核对。
         </p>
       </section>
 

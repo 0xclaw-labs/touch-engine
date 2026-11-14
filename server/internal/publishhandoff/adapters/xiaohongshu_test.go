@@ -3,8 +3,10 @@ package adapters
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bianjiefilm/touch-engine/server/internal/publishhandoff"
 )
@@ -35,7 +37,7 @@ func xhsRequest(method string, media []publishhandoff.MediaItem) publishhandoff.
 }
 
 func TestXhsPrepareVideoPayloadHasNoTextFields(t *testing.T) {
-	a := NewXiaohongshuAdapter(adapterTestDB(t), XhsPublicConfig{AppID: "xhs_app"})
+	a := NewXiaohongshuAdapter(adapterTestDB(t), XhsPublicConfig{AppID: "xhs_app", Signer: fakeXhsSigner{}})
 	res, err := a.Prepare(context.Background(), xhsRequest("js_media_handoff", []publishhandoff.MediaItem{
 		{Kind: publishhandoff.MediaVideo, AssetID: "mvid"},
 		{Kind: publishhandoff.MediaCover, AssetID: "mcov"},
@@ -71,7 +73,7 @@ func TestXhsPrepareVideoPayloadHasNoTextFields(t *testing.T) {
 }
 
 func TestXhsPrepareOrderedImagesKeepsOrder(t *testing.T) {
-	a := NewXiaohongshuAdapter(adapterTestDB(t), XhsPublicConfig{AppID: "xhs_app"})
+	a := NewXiaohongshuAdapter(adapterTestDB(t), XhsPublicConfig{AppID: "xhs_app", Signer: fakeXhsSigner{}})
 	res, err := a.Prepare(context.Background(), xhsRequest("js_media_handoff", []publishhandoff.MediaItem{
 		{Kind: publishhandoff.MediaImage, AssetID: "mi1"},
 		{Kind: publishhandoff.MediaImage, AssetID: "mi2"},
@@ -96,7 +98,7 @@ func TestXhsPrepareOrderedImagesKeepsOrder(t *testing.T) {
 
 func TestXhsIssuedPayloadRecorded(t *testing.T) {
 	d := adapterTestDB(t)
-	a := NewXiaohongshuAdapter(d, XhsPublicConfig{AppID: "xhs_app"})
+	a := NewXiaohongshuAdapter(d, XhsPublicConfig{AppID: "xhs_app", Signer: fakeXhsSigner{}})
 	req := xhsRequest("js_media_handoff", []publishhandoff.MediaItem{{Kind: publishhandoff.MediaImage, AssetID: "mi1"}})
 	if _, err := a.Prepare(context.Background(), req); err != nil {
 		t.Fatalf("prepare1: %v", err)
@@ -121,14 +123,14 @@ func TestXhsIssuedPayloadRecorded(t *testing.T) {
 }
 
 func TestXhsMissingMediaRefusedHonestly(t *testing.T) {
-	a := NewXiaohongshuAdapter(adapterTestDB(t), XhsPublicConfig{AppID: "xhs_app"})
+	a := NewXiaohongshuAdapter(adapterTestDB(t), XhsPublicConfig{AppID: "xhs_app", Signer: fakeXhsSigner{}})
 	if _, err := a.Prepare(context.Background(), xhsRequest("js_media_handoff", nil)); err == nil {
 		t.Fatal("no media = honest error, not a fake JS handoff")
 	}
 }
 
 func TestXhsUnsupportedMethods(t *testing.T) {
-	a := NewXiaohongshuAdapter(nil, XhsPublicConfig{AppID: "xhs_app"})
+	a := NewXiaohongshuAdapter(nil, XhsPublicConfig{AppID: "xhs_app", Signer: fakeXhsSigner{}})
 	if _, err := a.Prepare(context.Background(), xhsRequest("manual_material", nil)); !isUnsupported(err) {
 		t.Fatalf("prepare other method err = %v", err)
 	}
@@ -152,4 +154,10 @@ func TestXhsMissingAppIDHonest(t *testing.T) {
 	if _, err := a.Prepare(context.Background(), xhsRequest("js_media_handoff", []publishhandoff.MediaItem{{Kind: publishhandoff.MediaImage, AssetID: "mi1"}})); err == nil {
 		t.Fatal("missing app id must fail honestly")
 	}
+}
+
+type fakeXhsSigner struct{}
+
+func (fakeXhsSigner) Sign(context.Context) (XhsVerifyConfig, error) {
+	return XhsVerifyConfig{AppKey: "xhs_app", Nonce: "fixture-nonce", Timestamp: strconv.FormatInt(time.Now().UnixMilli(), 10), Signature: "fixture-signature"}, nil
 }

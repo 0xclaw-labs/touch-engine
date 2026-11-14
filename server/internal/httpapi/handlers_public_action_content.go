@@ -2,81 +2,114 @@
 //
 // 纪律(票面/裁定书):
 //   - 顾客可触达面走 FEATURE_CONTENT_PACKS(off = 路由不注册 + gate 统一 404);
-//   - GET /api/v1/public/actions/{actionId}/content 按服务器已采用引用返回:
-//     绑定 → 包 → 当前采用指针;无采用/无绑定 = 404 语义(不是空数组伪装
-//     成功);blocked/授权过期 = 409 拒新分发;候选池只含已采用且可分发的
-//     真实候选(「换一个」绝不随机);不暴露授权原文/内部凭据;
+//   - GET /api/v1/public/actions/{actionId}/content 读取已发布的具体版本及冻结候选池;
+//     本人 action_session_id 可继续读取该会话的冻结选择;未发布 = 404;
+//     blocked/授权过期 = 409;不暴露授权原文/内部凭据;
 //   - tenant/store 从数据行解析(受信接缝),action_id 不是后台授权;
 //   - POST /api/v1/public/content/{version}/media-access:purpose 白名单
-//     preview|download|platform_fetch;版本必须已采用且可分发;媒体必须属于
-//     该版本;签发短 TTL 凭据(非一次性,绑定版本+媒体+用途+TTL)并落审计;
+//     preview|download|platform_fetch;预览须已发布或属合法冻结会话；导出另须
+//     本人原已准入媒体交接及同冻结版本,用途不得超出该交接形态；商家沿原scoped授权。
+//     签发短TTL凭据(版本+媒体+用途+来源+TTL)并落审计;
 //     blocked 后拒绝新签发;续签只续同一合法版本;
 //   - GET|HEAD /api/v1/public/content/media/{token}:验签+TTL→版本仍可分发
 //     (fail-closed:缓存 token 也拒)→媒体属于版本→真实文件存在→
 //     http.ServeContent(服务器实测 MIME、ETag=sha、单/多 Range、206/416、
 //     HEAD 零体;download 用途 attachment);绝不以 HTML 冒充媒体;
 //   - 匿名读取与平台抓取不依赖商家 cookie;浏览/换稿/下载零生成零收费;
-//   - 会话引用(action_session_id):中央集成 2026-11-10 起在签发时刻校验
-//     (存在/active/tenant+动作匹配,见 checkMediaAccessSession);兑换时刻不
-//     校验(平台适配器凭已签 claim 取材,不持访客 cookie);引用不是授权源,
-//     会话权威归 HUI-3546,空引用保持可签发。
+//   - source_kind/source_ref由服务端在原交接或scoped商家授权后签入；非预览
+//     兑换沿签名来源重新核当前会话/成员/准入/动作及内容状态,平台不带访客cookie。
+//     旧无可证明来源的非预览票据410要求原入口重签；预览仍可匿名读取实际bytes。
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/bianjiefilm/touch-engine/server/internal/authz"
+	"github.com/bianjiefilm/touch-engine/server/internal/channeladmission"
 	"github.com/bianjiefilm/touch-engine/server/internal/contentpack"
 	"github.com/bianjiefilm/touch-engine/server/internal/participation"
+	"github.com/bianjiefilm/touch-engine/server/internal/publishhandoff"
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
 )
 
 // checkMediaAccessSession validates an action_session reference at issuance
-// time (中央集成 2026-11-10): the session must exist, still be active, belong
-// to the version's tenant, and reference this content — either its action is
-// currently bound to the version's pack (the authoritative binding index) or
-// the session's selected content version IS this version (preview-time 换选
-// to a candidate). Everything else is rejected with the same code style as
+// time: the session must exist, remain active, and authorize this exact version
+// from its frozen publication candidate pool. A current pack binding never
+// grants access to arbitrary versions. Everything else is rejected with the same code style as
 // the session surface: unknown/mismatched = 404 not_found (anti-enumeration),
 // ended = 409 session_ended, drift = 409 action_mismatch.
 func (s *Server) checkMediaAccessSession(w http.ResponseWriter, sessionID, tenantID, packID, versionID string) bool {
-	if s.Participation == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-			"error":   "action_directory_unavailable",
-			"message": "the session authority is not wired on this deployment; refusing to issue (fail-closed)",
-		})
+	if err := s.validateMediaAccessSession(sessionID, tenantID, packID, versionID); err != nil {
+		var denied *mediaExportError
+		if errors.As(err, &denied) {
+			fail(w, denied.status, denied.code, denied.message)
+		} else {
+			fail(w, http.StatusInternalServerError, "internal", "session check failed")
+		}
 		return false
+	}
+	return true
+}
+
+func (s *Server) validateMediaAccessSession(sessionID, tenantID, packID, versionID string) error {
+	if s.Participation == nil {
+		return &mediaExportError{http.StatusServiceUnavailable, "action_directory_unavailable", "the session authority is not wired on this deployment"}
 	}
 	ref, err := s.Participation.LookupSessionRef(sessionID)
 	switch {
 	case errors.Is(err, participation.ErrNotFound):
 		// 未知引用与跨租户引用同形 404:不泄漏存在性。
-		fail(w, http.StatusNotFound, "not_found", "session not found")
-		return false
+		return &mediaExportError{http.StatusNotFound, "not_found", "session not found"}
 	case errors.Is(err, participation.ErrSessionEnded):
-		fail(w, http.StatusConflict, "session_ended", "this session has ended")
-		return false
+		return &mediaExportError{http.StatusConflict, "session_ended", "this session has ended"}
 	case err != nil:
-		fail(w, http.StatusInternalServerError, "internal", "session check failed")
-		return false
+		return &mediaExportError{http.StatusInternalServerError, "internal", "session check failed"}
 	}
 	if ref.TenantID != tenantID {
-		fail(w, http.StatusNotFound, "not_found", "session not found")
-		return false
+		return &mediaExportError{http.StatusNotFound, "not_found", "session not found"}
 	}
-	// 动作匹配:会话的动作当前绑定到本版本所在包;或会话的换选内容正是本版本
-	// (预览期换到候选池另一包时,凭所选版本取材)。两者皆非 = 跨动作引用,
-	// 绝不为这条内容背书。
-	if b, berr := s.St.GetActionContentBinding(ref.TenantID, ref.ActionID); berr == nil && b.PackID == packID {
-		return true
+	// A frozen session authorizes exact publication candidates, never all versions of a pack.
+	if ok, err := s.St.SessionActionAvailable(ref.TenantID, ref.StoreID, ref.ActionID, time.Now()); err != nil || !ok {
+		return &mediaExportError{http.StatusNotFound, "not_found", "action not available"}
 	}
-	if ref.ContentPackVersion == versionID {
-		return true
+	allowed := false
+	if ref.ContentCandidates != nil {
+		for _, id := range ref.ContentCandidates {
+			if id == versionID {
+				allowed = true
+			}
+		}
+	} else if ref.ContentPackVersion == versionID {
+		var err error
+		allowed, err = s.St.VerifyHistoricalSessionContent(ref.TenantID, ref.StoreID, ref.ActionID, versionID, ref.ContentSelectedAt)
+		if err != nil {
+			return &mediaExportError{http.StatusInternalServerError, "internal", "session content check failed"}
+		}
 	}
-	fail(w, http.StatusConflict, "action_mismatch", "this session does not reference this content")
-	return false
+	if allowed {
+		if ref.StorefrontRevision > 0 {
+			action, err := s.St.SessionPublishedAction(ref.TenantID, ref.StoreID, ref.ActionID, ref.StorefrontRevision, ref.ActionRevision, time.Now())
+			if err != nil {
+				return &mediaExportError{http.StatusNotFound, "not_found", "session publication not available"}
+			}
+			if action.Kind == "publish" {
+				compatible := false
+				for _, id := range action.ContentCandidates {
+					compatible = compatible || id == versionID
+				}
+				if !compatible {
+					return &mediaExportError{http.StatusConflict, "action_mismatch", "this content does not match the published action"}
+				}
+			}
+		}
+		return nil
+	}
+
+	return &mediaExportError{http.StatusConflict, "action_mismatch", "this session does not reference this content"}
 }
 
 // actionContentBindingRef renders the拟契约 binding reference: "pack:<id>".
@@ -159,25 +192,64 @@ func (s *Server) handlePublicActionContent(w http.ResponseWriter, r *http.Reques
 		fail(w, http.StatusNotFound, "not_found", "resource not found")
 		return
 	}
-	// 绑定行是 tenant/store 权威:action_id 只是查找键(不是授权)。
-	binding, err := s.St.GetActionContentBindingAnyTenant(actionID)
+	var tenantID, storeID, selected string
+	var pool []string
+	var revision int
+	if sessionID := strings.TrimSpace(r.URL.Query().Get("action_session_id")); sessionID != "" {
+		if s.Participation == nil {
+			fail(w, http.StatusServiceUnavailable, "action_directory_unavailable", "session authority unavailable")
+			return
+		}
+		visitor := requireVisitor404(w, r)
+		if visitor == "" {
+			return
+		}
+		view, err := s.Participation.ActionSessionStatus(r.Context(), sessionID, visitor)
+		if err != nil {
+			writeActionSessionError(w, err)
+			return
+		}
+		sess := view.Session
+		if sess.ActionID != actionID {
+			fail(w, http.StatusNotFound, "not_found", "resource not found")
+			return
+		}
+		if sess.Status != participation.SessionActive {
+			fail(w, http.StatusConflict, "session_ended", "this session has ended")
+			return
+		}
+		tenantID, storeID, selected, pool, revision = sess.TenantID, sess.StoreID, sess.ContentPackVersion, sess.ContentCandidates, sess.ActionRevision
+		if !s.checkMediaAccessSession(w, sessionID, tenantID, "", selected) {
+			return
+		}
+	} else {
+		ref, exists, err := s.ResolveAction(r.Context(), actionID)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "internal", "action lookup failed")
+			return
+		}
+		if !exists {
+			fail(w, http.StatusNotFound, "not_found", "resource not found")
+			return
+		}
+		tenantID, storeID, selected, pool, revision = ref.TenantID, ref.StoreID, ref.ContentPackVersion, ref.ContentCandidates, ref.ActionRevision
+	}
+
+	v, err := s.St.GetStoreContentPackVersion(selected, tenantID)
 	if err != nil {
 		fail(w, http.StatusNotFound, "not_found", "resource not found")
 		return
 	}
-	tenantID, storeID, packID := binding.TenantID, binding.StoreID, binding.PackID
+	packID := v.PackID
 	pack, err := s.St.GetStoreContentPack(packID, tenantID)
 	if err != nil || pack.StoreID != storeID {
 		fail(w, http.StatusNotFound, "not_found", "resource not found")
 		return
 	}
-	// 服务器已采用引用:包的当前采用指针(不是绑定行的滞后引用)。
-	v, err := s.St.GetStoreAdoptedPackVersion(tenantID, packID)
-	if err != nil {
-		// 无采用 = 404 语义(不是空数组伪装成功)。
-		fail(w, http.StatusNotFound, "not_found", "resource not found")
-		return
+	if pool == nil {
+		pool = []string{selected}
 	}
+
 	if err := contentpack.Distributable(v.Status, v.GrantUntil, time.Now()); err != nil {
 		if !invalidPack409(w, err) {
 			fail(w, http.StatusInternalServerError, "internal", "distribution check failed")
@@ -199,36 +271,41 @@ func (s *Server) handlePublicActionContent(w http.ResponseWriter, r *http.Reques
 		})
 	}
 	candidates := make([]map[string]any, 0)
-	adopted, err := s.St.ListStoreAdoptedVersions(tenantID, storeID)
-	if err == nil {
-		now := time.Now()
-		for _, cv := range adopted {
-			if cv.ID == v.ID {
-				continue
-			}
-			if err := contentpack.Distributable(cv.Status, cv.GrantUntil, now); err != nil {
-				continue // blocked/expired 永不进候选池
-			}
-			candidate := map[string]any{
-				"pack_id": cv.PackID, "version_id": cv.ID,
-				"title": cv.Title, "content_kind": cv.ContentKind,
-			}
-			cover := cv.Cover
-			if cover.IsEmpty() && len(cv.ImageText) > 0 {
-				cover = cv.ImageText[0]
-			}
-			if !cover.IsEmpty() {
-				candidate["cover"] = map[string]any{
-					"media_id": cover.MediaID, "sha256": cover.SHA256,
-					"mime_type": cover.MimeType,
-				}
-			}
-			candidates = append(candidates, candidate)
+	now := time.Now()
+	for _, candidateID := range pool {
+		cv, err := s.St.GetStoreContentPackVersion(candidateID, tenantID)
+		if err != nil {
+			continue
 		}
+		cp, err := s.St.GetStoreContentPack(cv.PackID, tenantID)
+		if err != nil || cp.StoreID != storeID {
+			continue
+		}
+		if cv.ID == v.ID {
+			continue
+		}
+		if err := contentpack.Distributable(cv.Status, cv.GrantUntil, now); err != nil {
+			continue // blocked/expired 永不进候选池
+		}
+		candidate := map[string]any{
+			"pack_id": cv.PackID, "version_id": cv.ID,
+			"title": cv.Title, "content_kind": cv.ContentKind,
+		}
+		cover := cv.Cover
+		if cover.IsEmpty() && len(cv.ImageText) > 0 {
+			cover = cv.ImageText[0]
+		}
+		if !cover.IsEmpty() {
+			candidate["cover"] = map[string]any{
+				"media_id": cover.MediaID, "sha256": cover.SHA256,
+				"mime_type": cover.MimeType,
+			}
+		}
+		candidates = append(candidates, candidate)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"action_id":                     actionID,
-		"action_revision":               binding.ActionRevision,
+		"action_revision":               revision,
 		"content_binding_ref":           actionContentBindingRef(packID),
 		"selected_content_pack_version": v.ID,
 		"pack_id":                       packID,
@@ -253,6 +330,7 @@ func (s *Server) handlePublicMediaAccess(w http.ResponseWriter, r *http.Request)
 	}
 	var in struct {
 		ActionSessionID string   `json:"action_session_id"`
+		HandoffID       string   `json:"handoff_id"`
 		MediaIDs        []string `json:"media_ids"`
 		Purpose         string   `json:"purpose"`
 	}
@@ -278,13 +356,64 @@ func (s *Server) handlePublicMediaAccess(w http.ResponseWriter, r *http.Request)
 		}
 		return
 	}
-	// 中央集成接线(2026-11-10, HUI-3553←HUI-3546): action_session_id 非空时在
-	// 签发时刻校验会话(存在/active/tenant 匹配/动作与内容匹配);空引用保持
-	// 现状可签发(平台适配器凭已签 claim 取材不持访客 cookie——校验只在签发
-	// 时刻,兑换时刻不校验会话)。会话权威是 3546 的行,引用不是授权源。
-	if sid := strings.TrimSpace(in.ActionSessionID); sid != "" {
-		if !s.checkMediaAccessSession(w, sid, v.TenantID, v.PackID, v.ID) {
+	// 浏览预览保持已发布/本人冻结候选合同。非预览不能仅凭version或
+	// 任意session升级：必须准确落到本人原media handoff及其当前准入。
+	// 商家素材管理沿原scoped wrapper；兑换凭签名来源查权威,平台无需访客cookie。
+	sourceKind, sourceRef := "", ""
+	if c := callerFrom(r); c != nil && c.Member != nil {
+		// Only the scoped merchant wrapper sets this trusted caller; public JSON
+		// cannot assert a source. Renewals remain tied to the live member row.
+		sourceKind, sourceRef = contentpack.MediaSourceMerchant, c.Member.ID
+		in.ActionSessionID = ""
+	} else {
+		if in.Purpose != contentpack.MediaPurposePreview && strings.TrimSpace(in.ActionSessionID) == "" {
+			fail(w, http.StatusUnprocessableEntity, "media_handoff_required", "请先通过原动作的已准入媒体交接取材")
 			return
+		}
+		if sid := strings.TrimSpace(in.ActionSessionID); sid != "" {
+			visitor := requireVisitor404(w, r)
+			if visitor == "" {
+				return
+			}
+			if _, err := s.Participation.ActionSessionStatus(r.Context(), sid, visitor); err != nil {
+				writeActionSessionError(w, err)
+				return
+			}
+			if !s.checkMediaAccessSession(w, sid, v.TenantID, v.PackID, v.ID) {
+				return
+			}
+		} else {
+			allowed, err := s.St.PublishedContentVersion(v.ID, time.Now())
+			if err != nil {
+				fail(w, http.StatusInternalServerError, "internal", "publication lookup failed")
+				return
+			}
+			if !allowed {
+				fail(w, http.StatusNotFound, "not_found", "resource not found")
+				return
+			}
+		}
+		if in.Purpose != contentpack.MediaPurposePreview {
+			if s.PublishHandoff == nil {
+				fail(w, http.StatusServiceUnavailable, "handoff_unavailable", "handoff authority unavailable")
+				return
+			}
+			sourceRef = strings.TrimSpace(in.HandoffID)
+			if sourceRef == "" {
+				// Compatibility renewal: resolve an exact frozen version, never any
+				// handoff or current selection in the session.
+				_ = s.St.DB.QueryRow(`SELECT id FROM publish_handoffs WHERE tenant_id=? AND action_session_id=? AND content_pack_version_id=? AND payload_kind='media' ORDER BY created_at DESC,id DESC LIMIT 1`, v.TenantID, in.ActionSessionID, v.ID).Scan(&sourceRef)
+			}
+			if sourceRef == "" {
+				fail(w, http.StatusUnprocessableEntity, "media_handoff_required", "请先通过原动作的已准入媒体交接取材")
+				return
+			}
+			h, err := s.PublishHandoff.GetActionForVisitor(r.Context(), sourceRef, mustVisitor(r))
+			if err != nil || h.SessionID != in.ActionSessionID {
+				fail(w, http.StatusNotFound, "not_found", "media handoff not found")
+				return
+			}
+			sourceKind = contentpack.MediaSourceActionHandoff
 		}
 	}
 	known := map[string]versionMedia{}
@@ -301,6 +430,14 @@ func (s *Server) handlePublicMediaAccess(w http.ResponseWriter, r *http.Request)
 		}
 		requested = append(requested, m)
 	}
+	if in.Purpose != contentpack.MediaPurposePreview {
+		for _, m := range requested {
+			claim := contentpack.MediaAccessClaim{VersionID: v.ID, MediaID: m.mediaID, Purpose: in.Purpose, SessionRef: in.ActionSessionID, SourceKind: sourceKind, SourceRef: sourceRef}
+			if !s.checkMediaExportSource(w, r.Context(), v, claim) {
+				return
+			}
+		}
+	}
 	now := time.Now()
 	items := make([]map[string]any, 0, len(requested))
 	for _, m := range requested {
@@ -311,6 +448,7 @@ func (s *Server) handlePublicMediaAccess(w http.ResponseWriter, r *http.Request)
 			}
 			return
 		}
+		claim.SourceKind, claim.SourceRef = sourceKind, sourceRef
 		token, err := contentpack.MintMediaAccess(s.Cfg.InternalToken, claim)
 		if err != nil {
 			if !invalidPack422(w, err) {
@@ -379,6 +517,9 @@ func (s *Server) handlePublicControlledMedia(w http.ResponseWriter, r *http.Requ
 		}
 		return
 	}
+	if claim.Purpose != contentpack.MediaPurposePreview && !s.checkMediaExportSource(w, r.Context(), v, claim) {
+		return
+	}
 	var snap store.StoreMediaSnapshot
 	matched := false
 	for _, m := range collectVersionMedia(v) {
@@ -423,6 +564,125 @@ func (s *Server) handlePublicControlledMedia(w http.ResponseWriter, r *http.Requ
 	http.ServeContent(w, r, filename, time.Time{}, file)
 }
 
+// checkMediaExportSource rechecks server-owned provenance without invoking an
+// adapter or requiring a platform fetcher to carry a visitor/merchant cookie.
+// A signed token is a transport credential; live membership, session, exact
+// frozen handoff, admission and purpose remain independent vetoes.
+type mediaExportError struct {
+	status        int
+	code, message string
+}
+
+func (e *mediaExportError) Error() string { return e.message }
+
+func (s *Server) checkMediaExportSource(w http.ResponseWriter, ctx context.Context, v store.StoreContentPackVersion, claim contentpack.MediaAccessClaim) bool {
+	if err := s.validateMediaExportSource(ctx, v, claim); err != nil {
+		var denied *mediaExportError
+		if errors.As(err, &denied) {
+			fail(w, denied.status, denied.code, denied.message)
+		} else {
+			s.writeActionHandoffError(w, err)
+		}
+		return false
+	}
+	return true
+}
+
+func (s *Server) validateMediaExportSource(ctx context.Context, v store.StoreContentPackVersion, claim contentpack.MediaAccessClaim) error {
+	if claim.SourceKind == "" || claim.SourceRef == "" {
+		return &mediaExportError{http.StatusGone, "media_source_renewal_required", "旧取材链接无法证明签发来源，请从原合法交接或商家素材管理重新取材"}
+	}
+	if claim.SourceKind == contentpack.MediaSourceMerchant {
+		member, err := s.St.GetMember(claim.SourceRef)
+		pack, perr := s.St.GetStoreContentPack(v.PackID, v.TenantID)
+		if err != nil || perr != nil || member.TenantID != v.TenantID || claim.SessionRef != "" {
+			return &mediaExportError{http.StatusNotFound, "not_found", "media source not found"}
+		}
+		d := authz.Authorize(s.authzMember(&caller{Member: &member}), authz.ActionReadList, authz.RecordScope{TenantID: v.TenantID, StoreID: pack.StoreID})
+		if !d.Allowed {
+			return &mediaExportError{http.StatusForbidden, d.Reason, "media source membership no longer permits this store"}
+		}
+		return nil
+	}
+	if s.PublishHandoff == nil {
+		return &mediaExportError{http.StatusServiceUnavailable, "handoff_unavailable", "handoff authority unavailable"}
+	}
+	handoffID := claim.SourceRef
+	if claim.SourceKind == contentpack.MediaSourceActionStart {
+		// Adapter prepare receives URLs before StartAction returns; the immutable
+		// row is already inserted before Prepare can pull these URLs.
+		if err := s.St.DB.QueryRow(`SELECT id FROM publish_handoffs WHERE tenant_id=? AND action_session_id=? AND idempotency_key=? AND content_pack_version_id=? AND payload_kind='media'`, v.TenantID, claim.SessionRef, claim.SourceRef, v.ID).Scan(&handoffID); err != nil {
+			return &mediaExportError{http.StatusNotFound, "not_found", "media handoff not found"}
+		}
+	} else if claim.SourceKind != contentpack.MediaSourceActionHandoff && claim.SourceKind != contentpack.MediaSourceCampaignHandoff {
+		return &mediaExportError{http.StatusGone, "media_source_renewal_required", "unrecognized media source; renew from the original authority"}
+	}
+	h, err := s.PublishHandoff.LoadMediaSource(handoffID)
+	if err != nil || h.TenantID != v.TenantID || h.ContentPackVersionID != v.ID {
+		return &mediaExportError{http.StatusNotFound, "not_found", "media handoff not found"}
+	}
+	if h.Status == publishhandoff.StateCanceled || h.Status == publishhandoff.StateFailed {
+		return &mediaExportError{http.StatusConflict, "invalid_state", "this handoff no longer allows media access"}
+	}
+	text, media, err := s.PublishHandoff.SnapshotOf(ctx, h.ID, h.TenantID)
+	matched := false
+	for _, m := range media {
+		if m.AssetID == claim.MediaID && m.SHA256 == collectSHA(v, claim.MediaID) {
+			matched = true
+		}
+	}
+	if err != nil || !matched {
+		return &mediaExportError{http.StatusNotFound, "not_found", "media not in frozen handoff"}
+	}
+	if claim.SourceKind == contentpack.MediaSourceCampaignHandoff {
+		if h.PayloadKind != "" || claim.SessionRef != "" || claim.Purpose != contentpack.MediaPurposePlatformFetch {
+			return &mediaExportError{http.StatusUnprocessableEntity, "media_purpose_not_allowed", "purpose does not match the original campaign handoff"}
+		}
+		if s.Participation == nil {
+			return &mediaExportError{http.StatusServiceUnavailable, "participation_unavailable", "participation authority unavailable"}
+		}
+		visitor := mustLegacyVisitor(s, h.ID)
+		p, err := s.Participation.GetForVisitor(ctx, h.ParticipationID, visitor)
+		resolved := s.St.ResolveLink(p.LinkCode, time.Now())
+		var frozen string
+		ferr := s.St.DB.QueryRow(`SELECT content_pack_version FROM participation_attempts WHERE id=? AND tenant_id=? AND participation_id=? AND status='handed_off' AND platform=?`, h.AttemptID, h.TenantID, h.ParticipationID, h.Platform).Scan(&frozen)
+		if err != nil || ferr != nil || frozen != v.ID || p.TenantID != h.TenantID || p.StoreID != h.StoreID || resolved.Outcome != store.OutcomeAvailable || resolved.Campaign.ID != p.CampaignID || s.legacyPublishScenario(h.TenantID, p.CampaignID) != h.Scenario {
+			return &mediaExportError{http.StatusNotFound, "not_found", "campaign handoff no longer available"}
+		}
+		if h.Method == "" {
+			rec := s.publishRecordOrUnknown(h.Platform, h.EntryMode, h.Scenario, h.TenantID)
+			plan := publishhandoff.PlanRoute(publishhandoff.PlanInput{TenantID: h.TenantID, Platform: h.Platform, EntryMode: h.EntryMode, Scenario: h.Scenario, Now: time.Now().UTC(), Text: text, DeepLinkBase: s.Cfg.PublishHandoffH5EntryBase, MiniappBase: s.Cfg.PublishHandoffMiniappEntryBase, RewardPlay: rec.Scenario == channeladmission.ActionScenarioRewardTask, MerchantAppRef: s.Cfg.PublishHandoffMerchantAppRef}, rec)
+			if plan.Kind == publishhandoff.PlanRefused || plan.Kind == publishhandoff.PlanPendingExternal {
+				return &publishhandoff.HandoffRefusedError{Reason: plan.Reason, ReasonText: plan.ReasonText}
+			}
+			return nil
+		}
+	} else {
+		if s.Participation == nil || claim.SessionRef == "" || h.SessionID != claim.SessionRef || h.PayloadKind != publishhandoff.PayloadKindMedia {
+			return &mediaExportError{http.StatusNotFound, "not_found", "media handoff not found"}
+		}
+		ref, err := s.Participation.LookupSessionRef(claim.SessionRef)
+		if err != nil || ref.TenantID != h.TenantID || ref.StoreID != h.StoreID || ref.ActionID != h.ActionID || ref.Platform != h.Platform || ref.ActionRevision != h.ActionRevision {
+			return &mediaExportError{http.StatusNotFound, "not_found", "media session no longer available"}
+		}
+		if err := s.validateMediaAccessSession(claim.SessionRef, v.TenantID, v.PackID, v.ID); err != nil {
+			return err
+		}
+		if claim.Purpose != actionMediaPurpose(h.PlanKind) {
+			return &mediaExportError{http.StatusUnprocessableEntity, "media_purpose_not_allowed", "purpose does not match the original handoff route"}
+		}
+	}
+	rec := s.resolveActionCapability(h.TenantID, h.CatalogCode, h.Platform, h.Method, h.Scenario)
+	plan := publishhandoff.JudgeActionPlan(s.actionGateQuery(rec, h.Environment), rec, publishhandoff.ActionPlanInput{Text: text, Media: media})
+	if !plan.Allowed {
+		return &publishhandoff.HandoffRefusedError{Reason: plan.Reason, ReasonText: plan.ReasonText, PendingExternal: plan.PendingExternal}
+	}
+	if h.PayloadKind != "" && claim.Purpose != actionMediaPurpose(plan.Kind) {
+		return &mediaExportError{http.StatusUnprocessableEntity, "media_purpose_not_allowed", "current admission does not authorize this purpose"}
+	}
+	return nil
+}
+
 // collectSHA resolves the frozen sha for one media id (snapshot truth).
 func collectSHA(v store.StoreContentPackVersion, mediaID string) string {
 	for _, m := range collectVersionMedia(v) {
@@ -431,4 +691,22 @@ func collectSHA(v store.StoreContentPackVersion, mediaID string) string {
 		}
 	}
 	return ""
+}
+
+// handleMerchantMediaAccess keeps candidate preview inside the existing scoped content authority.
+func (s *Server) handleMerchantMediaAccess(w http.ResponseWriter, r *http.Request) {
+	c := callerFrom(r)
+	if !s.storeContentPackRead(c, r.PathValue("id"), w) {
+		return
+	}
+	if !s.storePackInTenantStore(w, c.Member.TenantID, r.PathValue("id"), r.PathValue("packId")) {
+		return
+	}
+	v, err := s.St.GetStoreContentPackVersion(r.PathValue("versionId"), c.Member.TenantID)
+	if err != nil || v.PackID != r.PathValue("packId") {
+		fail(w, http.StatusNotFound, "not_found", "resource not found")
+		return
+	}
+	r.SetPathValue("version", v.ID)
+	s.handlePublicMediaAccess(w, r)
 }

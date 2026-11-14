@@ -42,15 +42,18 @@ import {
   type PrivateDomainGuide,
 } from "@/lib/private-domain";
 import { CustomerPublish } from "./customer-publish";
-import { PublishHandoff } from "@/components/publish/PublishHandoff";
+import { CampaignPublishFlow } from "@/components/publish/CampaignPublishFlow";
 import { ActivityIntro } from "@/components/customer/ActivityIntro";
 import { ContentPublish } from "@/components/customer/ContentPublish";
 import { RewardStatus } from "@/components/customer/RewardStatus";
 import {
   cancelParticipation,
+  canContinueReservedParticipation,
+  retryParticipationReservation,
   canSwitchDraft,
   journeyStage,
   lookupParticipation,
+  rewardEntryState,
   startParticipation,
   switchDraft,
   type AttemptRef,
@@ -109,6 +112,8 @@ interface LeadSubmitResult {
 
 interface PublicRewardSummary {
   slots?: { benefit_slot: string; rule_version: number; available_qty: number }[];
+  availability?: {can_start?:boolean;label?:string};
+  promise?: {enabled?:boolean;description?:string;benefit_name?:string;available_qty?:number;allowed_evidence?:string[];stores?:string[];claim_from?:string;claim_until?:string;redeem_from?:string;redeem_until?:string;valid_from?:string;valid_until?:string;dedup_basis?:string;per_order_limit?:boolean};
 }
 
 export function PublicCampaign({ lane = "activity" }: { lane?: "activity" | "contact" }) {
@@ -128,6 +133,7 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
   const inSiteTarget = inSiteTargetFromParams((k) => searchParams.get(k));
 
   const [view, setView] = useState<PublicView | null>(null);
+  const [consulting, setConsulting] = useState(lane === "contact");
   const [leadForm, setLeadForm] = useState<LeadFormView | null>(null);
   const [uiState, setUiState] = useState<PublicUiState>("loading");
   const [reloadTick, setReloadTick] = useState(0);
@@ -300,6 +306,7 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
     }
     setParticipationBusy(true);
     setParticipationNote("");
+    try {
     // HUI-2628: pin the merchant-adopted version at the moment participation
     // starts. Without this the participation row carried "", and the content
     // panel silently fell back to whatever was current later.
@@ -332,10 +339,26 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
       const startMessage = typeof result.message === "string" ? result.message : "";
       setParticipationNote(/[\u4e00-\u9fff]/.test(startMessage) ? startMessage : "参与没有开始成功，请稍后再试");
     } else if (result) {
-      setParticipationNote("网络没有给出明确结果。先当作还没开始；稍后重试即可。");
+      const original = await lookupParticipation(code);
+      if (original && !("error" in original)) setParticipation(original);
+      setParticipationNote("网络没有给出明确结果，请先回查或恢复这次参与；不要先完成有奖励任务。");
     }
-    setParticipationBusy(false);
+    } finally { setParticipationBusy(false); }
   }, [canReadContent, code, participation, participationBusy, refreshDetail, view?.capabilities?.participation]);
+
+  const handleReservationRecovery = useCallback(async () => {
+    if (!participation?.id || participationBusy) return;
+    setParticipationBusy(true);
+    try {
+      const result = await retryParticipationReservation(participation.id);
+      if (!("error" in result)) {
+        setParticipation(result);
+        setParticipationNote(canContinueReservedParticipation(result) ? "原参与名额已确认。" : "本次名额尚未确认，请稍后回查或请门店协助；不要先完成有奖励任务。");
+      } else {
+        setParticipationNote("本次预留结果尚未确认，请继续恢复原参与；不要先完成有奖励任务。");
+      }
+    } finally { setParticipationBusy(false); }
+  }, [participation, participationBusy]);
 
   const handleSwitchVersion = useCallback(async (versionId: string) => {
     if (!participation?.id || participationBusy) return;
@@ -529,9 +552,12 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
   // ---- 三屏派生:阶段与门控 ----
   const stage = journeyStage(participation, {});
   const participationOpen = stage !== "browse";
-  const switchable = canSwitchDraft(participation, attempts);
-  const stockQty = rewardSummary?.slots?.[0]?.available_qty;
-  const evidenceKinds = ["staff_observed_submission", "staff_verified_post", "official_publish_confirmed"];
+  const reservationReady = canContinueReservedParticipation(participation);
+  const switchable = participation?.reservation_required !== true && canSwitchDraft(participation, attempts);
+  const stockQty = rewardSummary?.promise?.available_qty;
+  const rewardEntry = rewardEntryState({ participationEnabled: canParticipate, availability: rewardSummary?.availability, promise: rewardSummary?.promise });
+  const rewardCanStart = rewardEntry.canStart;
+  const evidenceKinds = rewardSummary?.promise?.allowed_evidence ?? [];
 
   const sectionNodes: Record<PublicSection, ReactElement | null> = {
     store: (
@@ -558,16 +584,20 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
         {/* 屏1 结构化面板:权益/动作/核验/限额/条件(基线门店头与说明区承载其余) */}
         <ActivityIntro
           evidenceKinds={evidenceKinds}
+          promise={participationOpen ? undefined : rewardSummary?.promise}
           availableQty={stockQty}
           benefitReservationState={participation?.benefit_reservation_state}
-          canStart={canParticipate && !participationOpen}
-          stockExhausted={canParticipate && stockQty === 0}
+          existingParticipation={participationOpen}
+          reservationReady={reservationReady}
+          conditionsConfirmed={rewardEntry.conditionsConfirmed}
+          canStart={rewardCanStart && !participationOpen}
+          stockExhausted={stockQty === 0}
           closedReason={
-            canParticipate
+            rewardCanStart
               ? participationOpen
                 ? "你已经开始参与。往下看内容与发布。"
                 : undefined
-              : "这家店还没有开放在线参与。可以按门店现场说明参与，或请店员协助。"
+              : rewardEntry.closedReason
           }
           onParticipationStart={handleParticipationStart}
         />
@@ -575,9 +605,12 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
         {participationOpen && (
           <div data-testid="customer-journey" className="tk-gap">
             {/* 屏2:内容与发布(内容包未开通时不请求、不展示死区块) */}
-            {canReadContent ? (
+            {!reservationReady ? (
+              <section className="tk-section" data-testid="reservation-recovery"><h2 className="tk-section-title">先确认本次名额</h2><p className="tk-note">原参与编号 {participation?.id}。名额尚未确认，请先恢复本次预留；确认前不要先完成有奖励任务。</p><button type="button" className="tk-primary" data-testid="reservation-retry" disabled={participationBusy} onClick={handleReservationRecovery}>{participationBusy ? "正在回查原参与…" : "回查并恢复本次名额"}</button></section>
+            ) : canReadContent ? (
               <ContentPublish
                 code={code}
+                participationId={participation?.id}
                 selectedVersion={participation?.content_pack_version}
                 canSwitch={switchable}
                 onSwitchVersion={handleSwitchVersion}
@@ -589,9 +622,9 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
               </section>
             )}
             {/* 1670 交接组件(自足;挂载基线保留) */}
-            {canParticipate ? <PublishHandoff code={code} /> : null}
+            {reservationReady && participation?.id ? <CampaignPublishFlow code={code} participationId={participation.id} versionId={participation.content_pack_version ?? ""} /> : null}
             {/* 屏3:领取或请店员确认 */}
-            <RewardStatus code={code} participation={participation} />
+            <div id="my-activity-benefits"><RewardStatus code={code} participation={participation} benefitsHref={`/c/${encodeURIComponent(code)}/benefits`} /></div>
             {stage !== "awaiting_review" && stage !== "publishing" && (
               <div className="tk-row">
                 <button type="button" className="tk-quiet" disabled={participationBusy} data-testid="participation-cancel" onClick={handleCancelParticipation}>
@@ -602,7 +635,7 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
           </div>
         )}
         {/* PR#15 基线:预览/合规导出(保留挂载) */}
-        <CustomerPublish code={code} defaultCopy={view?.public_content ?? ""} />
+        <details className="tk-gap"><summary>参考文案</summary><CustomerPublish code={code} defaultCopy={view?.public_content ?? ""} /></details>
         {visibleActions.length > 0 && (
           <div className="tk-row tk-gap">
             {visibleActions.map((item) => (
@@ -659,7 +692,9 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
         )}
       </section>
     ) : null,
-    lead: showActivity && !submitted && disclosureReady ? (
+    lead: showActivity && !submitted && disclosureReady && !consulting ? (
+      <button key="lead" type="button" className="tk-quiet" onClick={() => setConsulting(true)} data-testid="consult-open">请门店联系我</button>
+    ) : showActivity && !submitted && disclosureReady ? (
       <section key="lead" data-testid="lead-disclosure" className="tk-gap">
         <h2 className="tk-section-title">把联系方式交给{disclosure.merchant}</h2>
         <p className="tk-note">{disclosure.purpose}</p>
@@ -668,11 +703,11 @@ function PublicCampaignInner({ lane }: { lane: "activity" | "contact" }) {
         </p>
         <p className="tk-note">{leadForm?.notice?.text}</p>
         <label className="tk-label">
-          姓名
+          姓名（选填，只用于称呼）
           <input className="tk-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="怎么称呼你" />
         </label>
         <label className="tk-label">
-          手机号
+          手机号（用于本次联系与核对撤回）
           <input className="tk-input" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="商家用来联系你" inputMode="numeric" />
         </label>
         <label className="tk-label">

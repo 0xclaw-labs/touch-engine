@@ -268,6 +268,7 @@ async function up() {
     GOWORK: "off",
     TOUCH_HTTP_ADDR: `127.0.0.1:${PORTS.go}`,
     TOUCH_DB_PATH: dbPath,
+    TOUCH_MEDIA_DIR: path.join(state.db, "media"),
     TOUCH_INTERNAL_TOKEN: INTERNAL_TOKEN,
     PLATFORM_IDENTITY_BASE_URL: `http://127.0.0.1:${PORTS.identity}`,
     PLATFORM_IDENTITY_TOKEN: "e2e-identity-token",
@@ -313,6 +314,13 @@ async function up() {
 
   execFileSync(go, ["build", "-o", path.join(artDir, "touch-server"), "./cmd/touch-server"], { cwd: serverDir, env: goEnv });
   provision(path.join(artDir, "touch-server"), dbPath, goEnv);
+  // Fixture-only account routing. The real application still resolves payer
+  // permission and uses the same source usage/quote/hold service boundary.
+  goEnv.TOUCH_PRODUCTION_BILLING_ACCOUNTS = JSON.stringify({
+    [state.tenantId]: "account_e2e_primary", [state.tenantBId]: "account_e2e_secondary",
+  });
+  goEnv.TOUCH_PRODUCTION_PRICING_VERSION = "e2e-content-v1";
+  goEnv.TOUCH_PRODUCTION_DELIVERABLES = "工程夹具：一条视频与封面，制作结果须预览后明确采用；不代表真实生产交付";
   spawnProc("go", path.join(artDir, "touch-server"), [], { env: goEnv });
   await waitReady(`${GO_URL}/healthz`, "go server");
 
@@ -324,7 +332,9 @@ async function up() {
   const webFeatureEnv = Object.fromEntries(
     Object.entries(goEnv).filter(([k]) => k.startsWith("FEATURE_")),
   );
-  spawnProc("web", process.execPath, [path.join(webDir, "node_modules", "next", "dist", "bin", "next"), "start", "-p", String(PORTS.web)], {
+  // Keep the isolated harness on loopback. An explicit hostname also avoids
+  // enumerating network interfaces in managed execution environments.
+  spawnProc("web", process.execPath, [path.join(webDir, "node_modules", "next", "dist", "bin", "next"), "start", "-H", "127.0.0.1", "-p", String(PORTS.web)], {
     cwd: webDir,
     env: { ...process.env, ...webFeatureEnv, TOUCH_SERVER_URL: GO_URL, TOUCH_INTERNAL_TOKEN: INTERNAL_TOKEN },
   });
@@ -364,6 +374,7 @@ async function down() {
   killPort("identity", PORTS.identity);
   killPort("go", PORTS.go);
   killPort("web", PORTS.web);
+  killPort("seams", PORTS.seams);
   // 给内核一点时间释放 TIME_WAIT，下一轮 bind 才不会 EADDRINUSE
   await new Promise((r) => setTimeout(r, 1500));
   if (state.db) {
@@ -376,9 +387,22 @@ async function down() {
 }
 
 const cmd = process.argv[2] || "";
-if (cmd === "up") {
+if (cmd === "up" || cmd === "serve") {
   up()
-    .then(() => process.exit(0))
+    .then(() => {
+      if (cmd === "up") process.exit(0);
+      // Interactive walkthroughs keep the harness parent alive so managed
+      // executors do not reclaim its child services between browser actions.
+      let stopping = false;
+      const stop = () => {
+        if (stopping) return;
+        stopping = true;
+        down().finally(() => process.exit(0));
+      };
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
+      console.log("[env] serving until interrupted");
+    })
     .catch((err) => {
       console.error(String(err));
       down().finally(() => process.exit(1));
@@ -386,6 +410,6 @@ if (cmd === "up") {
 } else if (cmd === "down") {
   down().finally(() => process.exit(0));
 } else {
-  console.error("usage: node env.mjs up|down");
+  console.error("usage: node env.mjs up|serve|down");
   process.exit(2);
 }

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { AppSwitchResult } from "./use-app-switch";
+import { currentTenantOp } from "@/lib/workspace-tenant";
 import { agentWorkBanner, commitTenantSwitch, payerLabel } from "@/lib/eco-nav/touch-shell";
 import {
   billingBadgeText,
@@ -141,6 +142,7 @@ export function EcoTopNav({
   );
 
   async function switchTo(appId: string, targetId: string) {
+    const epoch = currentTenantOp();
     if (!onSwitchApp) {
       setLaunchError("应用切换没有接通，没有跳转。");
       return;
@@ -150,15 +152,16 @@ export function EcoTopNav({
     setLaunchError("");
     try {
       const result = await onSwitchApp(appId, targetId);
+      if (currentTenantOp() !== epoch) return;
       if (!result.ok) {
         setLaunchError(result.message);
         return;
       }
       window.location.assign(result.launchUrl);
     } catch {
-      setLaunchError("应用切换没有完成，也没有跳转。");
+      if (currentTenantOp() === epoch) setLaunchError("应用切换没有完成，也没有跳转。");
     } finally {
-      setLaunching((current) => ({ ...current, [appId]: false }));
+      if (currentTenantOp() === epoch) setLaunching((current) => ({ ...current, [appId]: false }));
     }
   }
 

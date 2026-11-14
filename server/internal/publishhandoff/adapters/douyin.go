@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -95,8 +96,8 @@ type DouyinConfig struct {
 // deployment actually provides ClientKey; otherwise the 1670 fallback face
 // stays honest ("自动交接通道未接入").
 func NewDouyinAdapter(database *sql.DB, cfg DouyinConfig) *DouyinAdapter {
-	if cfg.ShareTTL <= 0 {
-		cfg.ShareTTL = 2 * time.Hour
+	if cfg.ShareTTL <= 0 || cfg.ShareTTL > time.Hour {
+		cfg.ShareTTL = time.Hour
 	}
 	if cfg.Now == nil {
 		cfg.Now = func() time.Time { return time.Now().UTC() }
@@ -120,7 +121,7 @@ func (a *DouyinAdapter) Prepare(ctx context.Context, req publishhandoff.PrepareR
 	case "h5_share":
 		return a.prepareH5Share(ctx, req)
 	case "miniapp":
-		return a.prepareMiniappTask(req)
+		return a.prepareMiniappTask(ctx, req)
 	default:
 		// 抖音其余方法(含 manual_material=not_admitted)不由本 adapter 承接。
 		return publishhandoff.PrepareResult{}, fmt.Errorf("%w: douyin method %q is not served by this adapter", publishhandoff.ErrUnsupported, req.Handoff.Method)
@@ -131,8 +132,11 @@ func (a *DouyinAdapter) Prepare(ctx context.Context, req publishhandoff.PrepareR
 // 获准支持才传入——capability 三态之外的通用 media/title/body query 一律不拼
 // (票面红线)。
 func (a *DouyinAdapter) prepareH5Share(ctx context.Context, req publishhandoff.PrepareRequest) (publishhandoff.PrepareResult, error) {
+	if a.signer == nil {
+		return publishhandoff.PrepareResult{}, fmt.Errorf("adapters: douyin official signer not configured")
+	}
 	now := a.now()
-	shareID, err := a.shareIDFor(req, now)
+	shareID, err := a.shareIDFor(ctx, req, now)
 	if err != nil {
 		return publishhandoff.PrepareResult{}, err
 	}
@@ -140,32 +144,48 @@ func (a *DouyinAdapter) prepareH5Share(ctx context.Context, req publishhandoff.P
 	if mediaURL == "" {
 		mediaURL = firstRefFor(req, publishhandoff.MediaImage)
 	}
+	var expiresAt string
+	if err := a.db.QueryRow(`SELECT expires_at FROM douyin_share_ids WHERE handoff_id=? AND tenant_id=? AND share_id=? AND revoked_at=''`, req.Handoff.ID, req.Handoff.TenantID, shareID).Scan(&expiresAt); err != nil {
+		return publishhandoff.PrepareResult{}, err
+	}
 	params := map[string]string{
 		"sdk":              "douyin_h5",
 		"client_key":       a.clientKey,
 		"share_id":         shareID,
 		"state":            "user_invoke", // 用户主动唤起;系统绝不代点
-		"share_expires_at": now.Add(a.shareTTL).UTC().Format(time.RFC3339),
+		"share_expires_at": expiresAt,
 	}
 	unsupported := append([]string(nil), req.Plan.UnsupportedFields...)
-	if a.signer == nil {
-		// 官方签名机制未接入:绝不伪造签名字段;诚实说明缺项(交接仍按 1670
-		// 契约交付类型化参数,签名缺失在 UnsupportedFields 逐项解释)。
-		unsupported = append(unsupported, "官方签名：抖音 H5 官方签名机制尚未接入（不自造签名协议），签名接入前此参数缺失，平台可能拒绝唤起。")
-	} else {
-		signed, serr := a.signer.SignShare(ctx, DouyinShareSignInput{
-			ClientKey: a.clientKey, ShareID: shareID,
-			ContentVer:   req.Handoff.ContentVersion,
-			MediaURL:     mediaURL,
-			TimestampSec: fmt.Sprintf("%d", now.Unix()),
-		})
-		if serr != nil {
-			return publishhandoff.PrepareResult{}, fmt.Errorf("adapters: douyin share sign: %w", serr)
-		}
-		for k, v := range signed {
-			params[k] = v
-		}
+	signed, serr := a.signer.SignShare(ctx, DouyinShareSignInput{
+		ClientKey: a.clientKey, ShareID: shareID, ContentVer: req.Handoff.ContentVersion, MediaURL: mediaURL, TimestampSec: fmt.Sprintf("%d", now.Unix()),
+	})
+	if serr != nil {
+		return publishhandoff.PrepareResult{}, fmt.Errorf("adapters: douyin share sign: %w", serr)
 	}
+	for _, k := range []string{"nonce_str", "timestamp", "signature"} {
+		if strings.TrimSpace(signed[k]) == "" {
+			return publishhandoff.PrepareResult{}, fmt.Errorf("adapters: douyin signature incomplete")
+		}
+		params[k] = signed[k]
+	}
+	params["state"] = shareID
+	mediaKey := "video_path"
+	if firstRefFor(req, publishhandoff.MediaVideo) == "" {
+		mediaKey = "image_path"
+	}
+	u, e := url.Parse(mediaURL)
+	if e != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+		return publishhandoff.PrepareResult{}, fmt.Errorf("adapters: douyin https media required")
+	}
+	params[mediaKey] = u.String()
+	if req.FieldSupport["title"] == "supported" {
+		params["title"] = req.Text.Title
+	}
+	if req.FieldSupport["topic"] == "supported" {
+		tags, _ := json.Marshal(req.Text.Topics)
+		params["hashtag_list"] = string(tags)
+	}
+
 	if mediaURL != "" {
 		params["media_url"] = mediaURL
 	}
@@ -186,12 +206,12 @@ func (a *DouyinAdapter) prepareH5Share(ctx context.Context, req publishhandoff.P
 // 资格由 3535 记录裁决(当前 unknown→pending_external,本函数到不了);这里
 // 只实现协议形状:打开任务小程序路由并携带 share_id 关联;success 必须读
 // 平台 result——tt.* 回调的 result 语义在 Query/回执侧核对,不在客户端假设。
-func (a *DouyinAdapter) prepareMiniappTask(req publishhandoff.PrepareRequest) (publishhandoff.PrepareResult, error) {
+func (a *DouyinAdapter) prepareMiniappTask(ctx context.Context, req publishhandoff.PrepareRequest) (publishhandoff.PrepareResult, error) {
 	miniappPath := strings.TrimSpace(a.miniappPath)
 	if miniappPath == "" {
 		return publishhandoff.PrepareResult{}, fmt.Errorf("adapters: douyin miniapp route path missing: 专项任务小程序路由未配置")
 	}
-	shareID, err := a.shareIDFor(req, a.now())
+	shareID, err := a.shareIDFor(ctx, req, a.now())
 	if err != nil {
 		return publishhandoff.PrepareResult{}, err
 	}
@@ -209,16 +229,19 @@ func (a *DouyinAdapter) prepareMiniappTask(req publishhandoff.PrepareRequest) (p
 
 // shareIDFor mints (or replays) the server-side share_id mapping (0119).
 // 同一交接幂等复用同一 share_id;过期/换内容作废旧行重铸。
-func (a *DouyinAdapter) shareIDFor(req publishhandoff.PrepareRequest, now time.Time) (string, error) {
-	var shareID, contentVer, revokedAt, expiresAt string
-	err := a.db.QueryRow(`SELECT share_id, content_version, revoked_at, expires_at
-		FROM douyin_share_ids WHERE handoff_id=?`, req.Handoff.ID).
-		Scan(&shareID, &contentVer, &revokedAt, &expiresAt)
+func (a *DouyinAdapter) shareIDFor(ctx context.Context, req publishhandoff.PrepareRequest, now time.Time) (string, error) {
+	var shareID, contentVer, revokedAt, expiresAt, actionID, sessionID, appRef string
+	err := a.db.QueryRow(`SELECT share_id, content_version, revoked_at, expires_at, action_id,action_session_id,app_ref
+		FROM douyin_share_ids WHERE handoff_id=? AND tenant_id=? AND revoked_at='' ORDER BY created_at DESC LIMIT 1`, req.Handoff.ID, req.Handoff.TenantID).
+		Scan(&shareID, &contentVer, &revokedAt, &expiresAt, &actionID, &sessionID, &appRef)
 	switch {
 	case err == nil:
+		if actionID != req.Handoff.ActionID || sessionID != req.Handoff.SessionID || appRef != a.appRef {
+			return "", fmt.Errorf("adapters: douyin share context mismatch")
+		}
 		expired, perr := time.Parse(time.RFC3339Nano, expiresAt)
 		stale := contentVer != "" && req.Handoff.ContentVersion != "" && contentVer != req.Handoff.ContentVersion
-		if revokedAt != "" || stale || (perr == nil && !now.Before(expired)) {
+		if revokedAt != "" || stale || perr != nil || !now.Before(expired) {
 			// 作废旧映射,下面重铸(旧行保留审计)。
 			if _, uerr := a.db.Exec(`UPDATE douyin_share_ids SET revoked_at=? WHERE handoff_id=? AND revoked_at=''`,
 				rfc3339Adapter(now), req.Handoff.ID); uerr != nil {
@@ -232,7 +255,20 @@ func (a *DouyinAdapter) shareIDFor(req publishhandoff.PrepareRequest, now time.T
 		return "", fmt.Errorf("adapters: douyin share lookup: %w", err)
 	}
 	id := newAdapterID("phdsi_")
-	shareID = newAdapterID("dshare_")
+	source, ok := a.signer.(interface {
+		NewShareID(context.Context) (string, error)
+	})
+	if !ok {
+		return "", fmt.Errorf("adapters: douyin official share_id source not configured")
+	}
+	shareID, err = source.NewShareID(ctx)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(shareID) == "" {
+		return "", fmt.Errorf("adapters: douyin empty official share_id")
+	}
+
 	expires := now.Add(a.shareTTL)
 	if _, err := a.db.Exec(`INSERT INTO douyin_share_ids
 		(id, tenant_id, handoff_id, share_id, content_version, action_id,
@@ -258,6 +294,11 @@ func (a *DouyinAdapter) Submit(ctx context.Context, h publishhandoff.Handoff, p 
 func (a *DouyinAdapter) Query(ctx context.Context, h publishhandoff.Handoff) (publishhandoff.QueryOutcome, error) {
 	now := a.now()
 	shareID, itemID := a.lookupRefs(h.ID)
+	var valid int
+	_ = a.db.QueryRow(`SELECT COUNT(*) FROM douyin_share_ids WHERE tenant_id=? AND handoff_id=? AND share_id=? AND revoked_at='' AND expires_at>? AND content_version=? AND app_ref=?`, h.TenantID, h.ID, shareID, rfc3339Adapter(now), h.ContentVersion, a.appRef).Scan(&valid)
+	if valid != 1 {
+		return publishhandoff.QueryOutcome{State: "unknown", Detail: map[string]string{"reason": "share_id 绑定缺失或过期"}}, nil
+	}
 	if a.query == nil || strings.TrimSpace(shareID) == "" {
 		return publishhandoff.QueryOutcome{State: "unknown",
 			Detail: map[string]string{"reason": "无官方查询来源或 share_id 映射缺失"}}, nil

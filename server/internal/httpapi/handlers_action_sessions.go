@@ -17,8 +17,10 @@ package httpapi
 
 import (
 	"errors"
+	"github.com/bianjiefilm/touch-engine/server/internal/contentpack"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/bianjiefilm/touch-engine/server/internal/participation"
 )
@@ -64,6 +66,15 @@ func actionSessionView(sess participation.ActionSession, resumeAvailable bool) m
 // writeActionSessionError maps session-domain sentinels onto status codes.
 // Unknown and not-found collapse into 404 so probing learns nothing.
 func writeActionSessionError(w http.ResponseWriter, err error) {
+	var refused *participation.StartRefusedError
+	if errors.As(err, &refused) {
+		fail(w, refused.Status, refused.Reason, refused.Message)
+		return
+	}
+	if errors.Is(err, participation.ErrReservationUnconfirmed) {
+		fail(w, 409, "reservation_unconfirmed", "名额尚未确认，请先恢复本次预留")
+		return
+	}
 	switch {
 	case err == nil:
 		return
@@ -127,6 +138,26 @@ func (s *Server) handleActionSessionStart(w http.ResponseWriter, r *http.Request
 		fail(w, http.StatusInternalServerError, "internal", "visitor key unavailable")
 		return
 	}
+	if selected := strings.TrimSpace(body.ContentPackVersion); selected != "" {
+		ref, exists, err := s.ResolveAction(r.Context(), r.PathValue("actionId"))
+		if err != nil || !exists {
+			fail(w, http.StatusNotFound, "not_found", "action not found")
+			return
+		}
+		allowed := ref.ContentPackVersion == selected
+		for _, id := range ref.ContentCandidates {
+			if id == selected {
+				allowed = true
+			}
+		}
+		if !allowed {
+			fail(w, http.StatusConflict, "action_mismatch", "content is outside this publication")
+			return
+		}
+		if !s.validateSessionContentVersion(w, ref.TenantID, ref.StoreID, selected) {
+			return
+		}
+	}
 	started, err := s.Participation.StartActionSession(r.Context(), participation.SessionStartInput{
 		ActionID:                   r.PathValue("actionId"),
 		Source:                     participation.Source(strings.TrimSpace(body.Source)),
@@ -167,10 +198,16 @@ func (s *Server) handleActionSessionStatus(w http.ResponseWriter, r *http.Reques
 	out := actionSessionView(view.Session, view.ResumeAvailable)
 	out["action_available"] = view.ActionAvailable
 	if view.Participation != nil {
+		p, err := s.Participation.GetForVisitor(r.Context(), view.Participation.ID, visitor)
+		if err != nil {
+			writeActionSessionError(w, err)
+			return
+		}
 		out["participation"] = map[string]any{
 			"id":                        view.Participation.ID,
 			"status":                    view.Participation.Status,
 			"benefit_reservation_state": view.Participation.BenefitReservationState,
+			"reservation_required":      s.participationReservationRequired(p),
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -191,6 +228,16 @@ func (s *Server) handleActionSessionContent(w http.ResponseWriter, r *http.Reque
 	}
 	if !decodeParticipationBody(w, r, &body) {
 		return
+	}
+	if selected := strings.TrimSpace(body.ContentPackVersion); selected != "" {
+		view, err := s.Participation.ActionSessionStatus(r.Context(), r.PathValue("sessionId"), visitor)
+		if err != nil {
+			writeActionSessionError(w, err)
+			return
+		}
+		if !s.validateSessionContentVersion(w, view.Session.TenantID, view.Session.StoreID, selected) {
+			return
+		}
 	}
 	sess, err := s.Participation.UpdateActionSessionContent(r.Context(),
 		r.PathValue("sessionId"), visitor, strings.TrimSpace(body.ContentPackVersion))
@@ -230,7 +277,7 @@ func (s *Server) handleActionSessionAttach(w http.ResponseWriter, r *http.Reques
 		status = http.StatusCreated
 	}
 	out := actionSessionView(res.Session, true)
-	out["participation"] = newParticipationView(res.Participation)
+	out["participation"] = s.publicParticipationView(res.Participation)
 	writeJSON(w, status, out)
 }
 
@@ -327,4 +374,25 @@ func (s *Server) handleResumeExchange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, actionSessionView(res.Session, true))
+}
+
+// The session owns the frozen choice set; the content authority owns live stop/expiry vetoes.
+func (s *Server) validateSessionContentVersion(w http.ResponseWriter, tenantID, storeID, versionID string) bool {
+	v, err := s.St.GetStoreContentPackVersion(versionID, tenantID)
+	if err != nil {
+		fail(w, http.StatusNotFound, "not_found", "content not found")
+		return false
+	}
+	pack, err := s.St.GetStoreContentPack(v.PackID, tenantID)
+	if err != nil || pack.StoreID != storeID {
+		fail(w, http.StatusNotFound, "not_found", "content not found")
+		return false
+	}
+	if err := contentpack.Distributable(v.Status, v.GrantUntil, time.Now()); err != nil {
+		if !invalidPack409(w, err) {
+			fail(w, http.StatusInternalServerError, "internal", "content check failed")
+		}
+		return false
+	}
+	return true
 }

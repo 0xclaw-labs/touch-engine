@@ -57,8 +57,8 @@ describe("交接组件不触碰奖励面", () => {
 
 describe("挂载是窄补丁且基线保留", () => {
   it("public-campaign.tsx 挂载 PublishHandoff 且改动 ≤10 行", () => {
-    expect(publicCampaign.includes('import { PublishHandoff } from "@/components/publish/PublishHandoff";')).toBe(true);
-    expect(publicCampaign.includes("<PublishHandoff code={code} />")).toBe(true);
+    expect(publicCampaign.includes('import { CampaignPublishFlow } from "@/components/publish/CampaignPublishFlow";')).toBe(true);
+    expect(publicCampaign.includes('<CampaignPublishFlow code={code} participationId={participation.id} versionId={participation.content_pack_version ?? ""} />')).toBe(true);
     // 窄补丁:PublishHandoff 相关行数 ≤10(import 1 + 挂载 1)。
     const lines = publicCampaign.split("\n").filter((l) => l.includes("PublishHandoff"));
     expect(lines.length).toBeLessThanOrEqual(10);

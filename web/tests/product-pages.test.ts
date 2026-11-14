@@ -61,10 +61,9 @@ describe("根页不是工程说明", () => {
     expect(desk).not.toContain('session.tenantName || "门店"');
     expect(read("components/work/work-frame.tsx")).toContain('tenantName || "当前组织"');
     expect(desk).toContain('href="/work/stores"');
-    expect(desk).toContain('href="/work/campaigns"');
-    expect(desk).toContain('href="/work/materials"');
-    expect(desk).toContain('href="/work/rewards"');
-    expect(desk).toContain('href="/work/analytics"');
+    const frame = read("components/work/work-frame.tsx");
+    expect(desk).toContain("<WorkFrame");
+    for (const route of ["/work/campaigns", "/work/materials", "/work/rewards", "/work/analytics"]) expect(frame).toContain(`href: "${route}"`);
   });
 });
 

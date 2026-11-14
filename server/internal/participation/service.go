@@ -97,16 +97,17 @@ type StaffView struct {
 // StartInput is an explicit customer start. The httpapi layer resolves the
 // link first (browse stays read-only) and passes the campaign-aligned window.
 type StartInput struct {
-	TenantID           string
-	StoreID            string
-	CampaignID         string
-	LinkCode           string
-	Source             Source
-	RuleVersion        int
-	ContentPackVersion string
-	VisitorID          string
-	IdempotencyKey     string
-	Window             Window
+	TenantID              string
+	StoreID               string
+	CampaignID            string
+	LinkCode              string
+	Source                Source
+	RuleVersion           int
+	ExpectedRewardVersion int // optional client expectation, never the action rules authority
+	ContentPackVersion    string
+	VisitorID             string
+	IdempotencyKey        string
+	Window                Window
 }
 
 // Started reports whether a new row was created (true → 201) or an earlier
@@ -136,12 +137,24 @@ func (s *Service) Start(ctx context.Context, in StartInput) (Started, error) {
 	} else if ok {
 		// 同键重放回原记录——但只回给同一个 visitor:换浏览器重放同键
 		// 属冲突,不向陌生 visitor 泄漏原参与。
-		if existing.VisitorID != in.VisitorID {
+		if existing.VisitorID != in.VisitorID || existing.StoreID != in.StoreID || (in.LinkCode != "" && existing.LinkCode != in.LinkCode) {
 			return Started{}, ErrIdempotencyConflict
+		}
+		existing = s.projectReservation(ctx, existing)
+		if existing.ReservationState == ReservationPending || existing.ReservationState == ReservationFailed {
+			p, err := s.RetryReservation(ctx, existing.ID, in.VisitorID)
+			return Started{Participation: p}, err
 		}
 		return Started{Participation: existing}, nil
 	}
 
+	if resolver, ok := s.reserver.(StartResolver); ok {
+		var err error
+		in, err = resolver.ResolveStart(ctx, in)
+		if err != nil {
+			return Started{}, err
+		}
+	}
 	now := rfc3339(s.now())
 	p := Participation{
 		ID: newID("pt_"), TenantID: in.TenantID, StoreID: in.StoreID, CampaignID: in.CampaignID,
@@ -166,7 +179,10 @@ func (s *Service) Start(ctx context.Context, in StartInput) (Started, error) {
 	if err != nil {
 		// 并发同键:唯一索引兜底,回查原行。
 		if existing, ok, _ := s.getByIdempotencyKey(in.TenantID, in.CampaignID, in.IdempotencyKey); ok {
-			return Started{Participation: existing}, nil
+			if existing.VisitorID != in.VisitorID || existing.StoreID != in.StoreID {
+				return Started{}, ErrIdempotencyConflict
+			}
+			return Started{Participation: s.projectReservation(ctx, existing)}, nil
 		}
 		return Started{}, fmt.Errorf("participation: insert: %w", err)
 	}
@@ -199,11 +215,14 @@ func (s *Service) reserve(ctx context.Context, p *Participation) {
 	res, err := s.reserver.Reserve(cctx, ParticipationRef{
 		ParticipationID: p.ID, TenantID: p.TenantID, StoreID: p.StoreID,
 		CampaignID: p.CampaignID, BenefitSlot: p.BenefitSlot,
-		RuleVersion: p.RuleVersion, ContentPackVersion: p.ContentPackVersion,
+		RuleVersion: p.RuleVersion, ContentPackVersion: p.ContentPackVersion, CreatedAt: p.CreatedAt, ExpiresAt: p.Window.ExpiresAt,
 	})
 	switch {
 	case err != nil:
 		p.ReservationState = ReservationPending
+		p.ReservationRef = ""
+	case res.NotRequested:
+		p.ReservationState = ReservationNotRequested
 		p.ReservationRef = ""
 	case res.Reserved && res.ReservationRef != "":
 		p.ReservationState = ReservationConfirmed
@@ -240,7 +259,7 @@ func (s *Service) LookupByVisitor(ctx context.Context, tenantID, linkCode, visit
 	if err != nil {
 		return Participation{}, false, fmt.Errorf("participation: lookup: %w", err)
 	}
-	return p, true, nil
+	return s.projectReservation(ctx, p), true, nil
 }
 
 // GetForVisitor reads a participation bound to the caller's own visitor key.
@@ -248,7 +267,7 @@ func (s *Service) LookupByVisitor(ctx context.Context, tenantID, linkCode, visit
 // bound at birth; the visitor binding is the access secret). Any mismatch —
 // id or visitor — answers ErrNotFound so sequential or guessed ids have no
 // probe surface.
-func (s *Service) GetForVisitor(_ context.Context, id, visitorID string) (Participation, error) {
+func (s *Service) GetForVisitor(ctx context.Context, id, visitorID string) (Participation, error) {
 	if visitorID == "" {
 		return Participation{}, ErrNotFound
 	}
@@ -256,6 +275,9 @@ func (s *Service) GetForVisitor(_ context.Context, id, visitorID string) (Partic
 	p, err := scanParticipation(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Participation{}, ErrNotFound
+	}
+	if err == nil {
+		p = s.projectReservation(ctx, p)
 	}
 	return p, err
 }
@@ -378,8 +400,8 @@ type AttemptInput struct {
 
 // CreateAttempt records a prepared attempt. Versions freeze at BeginHandoff,
 // not here — that is the exact difference between previewing and handing off.
-func (s *Service) CreateAttempt(_ context.Context, in AttemptInput) (Attempt, error) {
-	p, err := s.GetForVisitor(context.Background(), in.ParticipationID, in.VisitorID)
+func (s *Service) CreateAttempt(ctx context.Context, in AttemptInput) (Attempt, error) {
+	p, err := s.GetForVisitor(ctx, in.ParticipationID, in.VisitorID)
 	if err != nil {
 		return Attempt{}, err
 	}
@@ -487,7 +509,7 @@ type HandoffToken struct {
 // handed_off, moves the participation in_progress, and mints the credential.
 // benefit_slot is never duplicated: retries reuse the participation's slot.
 func (s *Service) BeginHandoff(ctx context.Context, in HandoffInput) (HandoffToken, error) {
-	p, err := s.GetForVisitor(context.Background(), in.ParticipationID, in.VisitorID)
+	p, err := s.GetForVisitor(ctx, in.ParticipationID, in.VisitorID)
 	if err != nil {
 		return HandoffToken{}, err
 	}
@@ -516,6 +538,15 @@ func (s *Service) BeginHandoff(ctx context.Context, in HandoffInput) (HandoffTok
 		return HandoffToken{}, ErrInvalidTransition // 交接必须冻结一个 attempt
 	}
 
+	if s.reserver != nil {
+		p, err = s.RetryReservation(ctx, p.ID, in.VisitorID)
+		if err != nil {
+			return HandoffToken{}, err
+		}
+		if p.ReservationState != ReservationConfirmed && p.ReservationState != ReservationNotRequested {
+			return HandoffToken{}, ErrReservationUnconfirmed
+		}
+	}
 	freeze := strings.TrimSpace(in.AttemptID)
 	if freeze != "" {
 		res, err := s.db.Exec(`UPDATE participation_attempts
@@ -536,12 +567,6 @@ func (s *Service) BeginHandoff(ctx context.Context, in HandoffInput) (HandoffTok
 			return HandoffToken{}, fmt.Errorf("participation: mark in_progress: %w", err)
 		}
 		p.Status = StatusInProgress
-	}
-
-	// 受信预留:未确认时按同槽重试(幂等,不重复占库存)。
-	s.reserve(ctx, &p)
-	if err := s.saveReservationState(p); err != nil {
-		return HandoffToken{}, err
 	}
 
 	target := in.TargetScope
@@ -831,4 +856,86 @@ func (s *Service) Cleanup(ctx context.Context, now time.Time, retention time.Dur
 	}
 	anonymized, _ = res.RowsAffected()
 	return anonymized, deleted, nil
+}
+
+// SetBenefitReserver is a startup wiring seam; it is installed before serving.
+func (s *Service) SetBenefitReserver(res BenefitReserver) { s.reserver = res }
+
+var ErrReservationUnconfirmed = errors.New("participation: reward reservation not confirmed")
+
+func reservationRef(p Participation) ParticipationRef {
+	return ParticipationRef{ParticipationID: p.ID, TenantID: p.TenantID, StoreID: p.StoreID, CampaignID: p.CampaignID, BenefitSlot: p.BenefitSlot, RuleVersion: p.RuleVersion, ContentPackVersion: p.ContentPackVersion, CreatedAt: p.CreatedAt, ExpiresAt: p.Window.ExpiresAt}
+}
+
+func applyReservationResult(p *Participation, result ReserveResult, err error) {
+	if err != nil {
+		p.ReservationState = ReservationPending
+		p.ReservationRef = ""
+		return
+	}
+	if result.NotRequested {
+		p.ReservationState = ReservationNotRequested
+		p.ReservationRef = ""
+		return
+	}
+	if result.Reserved && result.ReservationRef != "" {
+		p.ReservationState = ReservationConfirmed
+		p.ReservationRef = result.ReservationRef
+		return
+	}
+	p.ReservationState = ReservationFailed
+	p.ReservationRef = ""
+}
+
+func (s *Service) projectReservation(ctx context.Context, p Participation) Participation {
+	if reader, ok := s.reserver.(ReservationReader); ok {
+		result, err := reader.ReadReservation(ctx, reservationRef(p))
+		// An absent/expired hold is not new transport uncertainty after the
+		// ledger already refused this same participation's recovery. A later
+		// real allocation still supersedes the failure through the reader.
+		if errors.Is(err, ErrReservationUnconfirmed) && p.ReservationState == ReservationFailed {
+			return p
+		}
+		applyReservationResult(&p, result, err)
+	}
+	return p
+}
+
+// RetryReservation never creates a participation, changes its rule/content or
+// borrows today's free stock preflight. The original reward ledger decides.
+func (s *Service) RetryReservation(ctx context.Context, id, visitor string) (Participation, error) {
+	p, err := s.GetForVisitor(ctx, id, visitor)
+	if err != nil {
+		return Participation{}, err
+	}
+	if p.Status == StatusCanceled {
+		return p, ErrFrozen
+	}
+	if s.reserver == nil {
+		return p, nil
+	}
+	cctx, cancel := context.WithTimeout(ctx, reserveTimeout)
+	defer cancel()
+	result, err := s.reserver.Reserve(cctx, reservationRef(p))
+	applyReservationResult(&p, result, err)
+	if err := s.saveReservationState(p); err != nil {
+		return Participation{}, err
+	}
+	return p, nil
+}
+
+// FindStartByLink recognizes only the caller's original start before any new
+// availability preflight. A link/key never recovers another visitor's row.
+func (s *Service) FindStartByLink(ctx context.Context, link, visitor, key string) (Participation, bool, error) {
+	if visitor == "" || key == "" {
+		return Participation{}, false, nil
+	}
+	p, err := scanParticipation(s.db.QueryRowContext(ctx, `SELECT `+participationCols+` FROM participations WHERE link_code=? AND visitor_id=? AND idempotency_key=?`, link, visitor, key))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Participation{}, false, nil
+	}
+	if err != nil {
+		return Participation{}, false, err
+	}
+	return s.projectReservation(ctx, p), true, nil
 }

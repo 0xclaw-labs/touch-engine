@@ -61,7 +61,7 @@ export function probeShareSupport(nav?: {
   let filesOk = false;
   try {
     filesOk = typeof n.canShare === "function"
-      ? n.canShare({ files: [new File([""], "probe", { type: "image/jpeg" })] })
+      ? n.canShare({ files: [new File(["probe"], "probe.jpg", { type: "image/jpeg" })] })
       : false;
   } catch {
     filesOk = false;
@@ -73,15 +73,15 @@ export function probeShareSupport(nav?: {
 export function shareFailureCopy(reason: "aborted" | "permission" | "unsupported" | "network" | "unknown"): string {
   switch (reason) {
     case "aborted":
-      return "你取消了分享；素材与文案都还在，可随时重试或改用保存/复制。";
+      return "分享未继续（已取消或没有可用分享目标）；素材与文案都还在，可重试或保存/复制。";
     case "permission":
       return "分享所需权限未授予；请检查系统权限后重试，或改用保存素材+手动发布。";
     case "unsupported":
-      return "当前环境不支持直接调起分享面板；请保存素材到相册后到目标 App 内发布。";
+      return "当前环境不支持直接调起分享面板；请逐个保存素材，再到目标 App 内选择文件继续。";
     case "network":
-      return "网络异常，分享没有完成；素材未发出，可稍后重试。";
+      return "网络异常，本页未获得分享完成结果；可回到原交接核对后重试。";
     default:
-      return "分享没有完成；素材未发出，可重试或改用保存/复制。";
+      return "本页未获得分享完成结果；可核对目标应用后重试或保存素材。";
   }
 }
 

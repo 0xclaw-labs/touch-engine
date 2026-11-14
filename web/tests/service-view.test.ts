@@ -85,6 +85,12 @@ const SERVICES_FIXTURE: ServicesPayload = {
 };
 
 describe("parseServices(4589 草案契约)", () => {
+  it("读取已发布服务真源的 services/service_id 与嵌套 Wi-Fi 字段", () => {
+    const services = parseServices({ schema_version: "store-services.v1", services: [{ service_id: "ssv_wifi", kind: "wifi", label: "店内网络", wifi: { ssid: "Review-Guest", password: "review-pass" } }] });
+    expect(services?.get("ssv_wifi")?.title).toBe("店内网络");
+    expect(services?.get("ssv_wifi")?.field("ssid")).toBe("Review-Guest");
+    expect(services?.get("ssv_wifi")?.entry?.wifi?.password).toBe("review-pass");
+  });
   it("按 action_id 解析 Wi-Fi/微信/社群字段", () => {
     const services = parseServices(SERVICES_FIXTURE);
     expect(services).not.toBeNull();

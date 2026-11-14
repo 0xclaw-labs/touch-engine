@@ -105,9 +105,9 @@ func newStoreContentFixture(t *testing.T) *storeContentFixture {
 		t.Fatalf("seed manager: %v", err)
 	}
 	idsrv := fakeIdentity(t, map[string]identitySession{
-		"sess-owner-a":  {"usr_owner_a", "owner@example.com"},
-		"sess-staff-a":  {"usr_staff_a", "staff@example.com"},
-		"sess-owner-b":  {"usr_owner_b", "ownerb@example.com"},
+		"sess-owner-a":   {"usr_owner_a", "owner@example.com"},
+		"sess-staff-a":   {"usr_staff_a", "staff@example.com"},
+		"sess-owner-b":   {"usr_owner_b", "ownerb@example.com"},
 		"sess-manager-a": {"usr_manager_a", "manager@example.com"},
 	})
 	idc := &identity.Client{BaseURL: idsrv.URL, Token: "identity-token", AppID: "touch-engine", HTTP: idsrv.Client()}
@@ -243,6 +243,55 @@ func TestStoreMediaUploadVerifiesRealBytes(t *testing.T) {
 	}
 	if out["mime_type"] != "image/jpeg" || out["kind"] != "image" {
 		t.Fatalf("server must sniff real bytes: %v/%v, want image/jpeg", out["mime_type"], out["kind"])
+	}
+}
+
+func TestGeneralStoreImageTextNeedsNoVideoOrInventedOffer(t *testing.T) {
+	f := newStoreContentFixture(t)
+	status, media := f.uploadFile(t, "sess-owner-a", f.tenA, f.storeA, "pixel.png", "门店环境.png")
+	if status != http.StatusCreated {
+		t.Fatalf("upload: %d %+v", status, media)
+	}
+	root := "/api/v1/stores/" + f.storeA + "/content-packs"
+	status, pack := f.owner(t, "POST", root, `{"title":"门店环境介绍"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("pack: %d %+v", status, pack)
+	}
+	path := root + "/" + pack["id"].(string) + "/versions"
+	body := fmt.Sprintf(`{"content_kind":"imagetext","image_text_media_ids":[%q],"title":"门店环境介绍","body":"展示门店入口与店内环境。","store_name":"旗舰一店","platform_versions":[{"platform":"xiaohongshu","source_version":"门店环境介绍"}],"source":"merchant_upload","status":"candidate"}`, media["id"])
+	status, version := f.owner(t, "POST", path, body)
+	if status != http.StatusCreated || version["content_kind"] != "imagetext" {
+		t.Fatalf("general image candidate: %d %+v", status, version)
+	}
+	if version["price_note"] != "" || version["valid_note"] != "" {
+		t.Fatalf("offer terms invented: %+v", version)
+	}
+	images, ok := version["image_text"].([]any)
+	if !ok || len(images) != 1 || images[0].(map[string]any)["media_id"] != media["id"] {
+		t.Fatalf("real media snapshot lost: %+v", version)
+	}
+	status, adoption := f.owner(t, "POST", path+"/"+version["id"].(string)+"/adopt", `{"platform":"xiaohongshu"}`)
+	if status != http.StatusOK {
+		t.Fatalf("adopt: %d %+v", status, adoption)
+	}
+}
+
+func TestScopedManagerCanReadOwnStoreProductionWithoutPayerEscalation(t *testing.T) {
+	f := newStoreContentFixture(t)
+	root := "/api/v1/stores/" + f.storeA + "/content-production-handoffs"
+	for _, suffix := range []string{"", "/capabilities"} {
+		code, out := f.do(t, "GET", root+suffix, "sess-manager-a", f.tenA, "")
+		if code != http.StatusOK {
+			t.Fatalf("own store production read %s: %d %+v", suffix, code, out)
+		}
+		code, out = f.do(t, "GET", "/api/v1/stores/"+f.storeA2+"/content-production-handoffs"+suffix, "sess-manager-a", f.tenA, "")
+		if code != http.StatusForbidden {
+			t.Fatalf("out-of-scope production read %s: %d %+v", suffix, code, out)
+		}
+	}
+	code, out := f.do(t, "POST", root+"/quote", "sess-manager-a", f.tenA, `{}`)
+	if code != http.StatusForbidden || out["error"] != "payment_authorization_required" {
+		t.Fatalf("content rights must not grant payment: %d %+v", code, out)
 	}
 }
 

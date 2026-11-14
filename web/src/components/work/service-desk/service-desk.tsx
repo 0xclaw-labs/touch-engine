@@ -16,8 +16,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { failureText, useSession } from "@/components/work/merchant-session";
 import { benefitStatusText, canConfirmRewards, evidenceText, maskCode } from "@/lib/reward-ops";
 import {
-  extractHandoffToken,
-  looksLikeHandoffToken,
+  resolveServiceCredential,
+  serviceReturnPath,
+  stableServiceOperation,
+  serviceMutationNeedsRecovery,
   networkUnknownCopy,
   ownStoreBenefits,
   outcomeNotice,
@@ -97,11 +99,16 @@ export function ServiceDesk() {
   const [benefits, setBenefits] = useState<BenefitItem[]>([]);
 
   const [scanText, setScanText] = useState("");
-  const [couponText, setCouponText] = useState("");
+  const [tab, setTab] = useState<"serve" | "records" | "history">("serve");
+  const [stores, setStores] = useState<Array<{ id: string; name?: string }>>([]);
+  const [historyStoreId, setHistoryStoreId] = useState("");
+  const [returnPath, setReturnPath] = useState<string | null>(null);
   const [scanNote, setScanNote] = useState("");
   // HUI-3562 S2:本店处理历史(台账投影,只读;交班统计=当日按操作者聚合)。
   const [history, setHistory] = useState<ServiceHistoryRow[]>([]);
   const [historyLoadedAt, setHistoryLoadedAt] = useState("");
+  const [historyState, setHistoryState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const historyRequest = useRef(0);
   const [actionNote, setActionNote] = useState("");
   const [cameraMode, setCameraMode] = useState<"idle" | "camera" | "manual">("idle");
 
@@ -110,10 +117,15 @@ export function ServiceDesk() {
   const [campaignTitle, setCampaignTitle] = useState("");
   const [redemption, setRedemption] = useState<BenefitItem | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pendingConfirmation, setPendingConfirmation] = useState<Record<string, unknown> | null>(null);
+  const [historyError, setHistoryError] = useState("");
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const scanningRef = useRef(false);
+  const busyRef = useRef(false);
+  const operationBodies = useRef(new Map<string, Record<string, unknown>>());
+  const setOperationBusy = (value: boolean) => { busyRef.current = value; setBusy(value); };
 
   const stopCamera = useCallback(() => {
     scanningRef.current = false;
@@ -123,6 +135,10 @@ export function ServiceDesk() {
 
   useEffect(() => stopCamera, [stopCamera]);
 
+  useEffect(() => {
+    if (tab !== "serve") { stopCamera(); setCameraMode("idle"); }
+  }, [tab, stopCamera]);
+
   const loadRecords = useCallback(
     async (cid: string): Promise<BenefitItem[]> => {
       if (!cid) return [];
@@ -130,6 +146,7 @@ export function ServiceDesk() {
         session.api("GET", `campaigns/${cid}/reward-review-requests`),
         session.api("GET", `campaigns/${cid}/reward-benefits`),
       ]);
+      if (!benRes.ok) throw new Error(failureText(benRes.status, benRes.data));
       const freshBenefits = benRes.ok && Array.isArray(benRes.data.items) ? (benRes.data.items as BenefitItem[]) : [];
       setReviewQueue(revRes.ok && Array.isArray(revRes.data.items) ? (revRes.data.items as ReviewRequestItem[]) : []);
       setBenefits(freshBenefits);
@@ -142,9 +159,10 @@ export function ServiceDesk() {
   useEffect(() => {
     let alive = true;
     void (async () => {
-      const [whoRes, campRes] = await Promise.all([
+      const [whoRes, campRes, storesRes] = await Promise.all([
         session.api("GET", "whoami"),
         session.api("GET", "campaigns"),
+        session.api("GET", "stores"),
       ]);
       if (!alive) return;
       if (!campRes.ok) {
@@ -153,12 +171,28 @@ export function ServiceDesk() {
         return;
       }
       if (whoRes.ok) {
-        setStoreScope(typeof whoRes.data.store_scope === "string" ? whoRes.data.store_scope : "");
+        const scope = typeof whoRes.data.store_scope === "string" ? whoRes.data.store_scope : "";
+        setStoreScope(scope);
+        setHistoryStoreId(scope);
         setRole(typeof whoRes.data.role === "string" ? whoRes.data.role : session.role);
       }
       const items = Array.isArray(campRes.data.items) ? (campRes.data.items as CampaignItem[]) : [];
       setCampaigns(items);
-      setCampaignId(items[0]?.id ?? "");
+      const query = new URLSearchParams(window.location.search);
+      const requestedCampaign = query.get("campaign") ?? "";
+      setReturnPath(serviceReturnPath(query.get("return")));
+      setStores(storesRes.ok ? ((storesRes.data.stores ?? storesRes.data.items ?? []) as Array<{ id: string; name?: string }>) : []);
+      if (requestedCampaign && query.get("benefit")) {
+        // M9 交接只读原有授权列表。URL 中的引用从不充当授权，也不触发办理。
+        const records = await loadRecords(requestedCampaign);
+        if (!alive) return;
+        const original = records.find((b) => b.id === query.get("benefit"));
+        if (original) {
+          setRedemption(original);
+          setCampaignId(requestedCampaign);
+          setScanNote("已打开原权益记录。请核对顾客凭证后明确操作；打开本页不会发放或核销。");
+        } else setScanNote("没有读到此权益，或当前账号无权访问。请核对顾客出示的凭证。");
+      }
       setPhase("ready");
     })().catch(() => {
       if (alive) setPhase("error");
@@ -166,7 +200,7 @@ export function ServiceDesk() {
     return () => {
       alive = false;
     };
-  }, [session, attempt]);
+  }, [session, attempt, loadRecords]);
 
   useEffect(() => {
     if (!campaignId) return;
@@ -184,26 +218,24 @@ export function ServiceDesk() {
   }, [campaignId, loadRecords]);
 
   const loadHistory = useCallback(async () => {
-    // owner(全门店,store_scope 空)回退：取门店列表第一家有权门店（与顶部
-    // campaign 选择的服务门店一致语义）；仍取不到才如实空态。
-    let scope = storeScope;
-    if (!scope) {
-      const storesRes = await session.api("GET", "stores").catch(() => null);
-      if (storesRes && storesRes.ok) {
-        const list = (storesRes.data.stores ?? storesRes.data.items ?? []) as { id: string }[];
-        scope = list[0]?.id ?? "";
-      }
-    }
-    if (!scope) return;
+    const request = ++historyRequest.current;
+    const scope = storeScope || historyStoreId;
+    setHistory([]); setHistoryLoadedAt(""); setHistoryError("");
+    if (!scope) { setHistoryState("idle"); return; }
+    setHistoryState("loading");
     const res = await session.api("GET", `stores/${scope}/service-history?limit=200`).catch(() => null);
+    if (request !== historyRequest.current) return;
     if (res && res.ok && Array.isArray(res.data.items)) {
+      setHistoryError("");
       setHistory(res.data.items as ServiceHistoryRow[]);
       setHistoryLoadedAt(new Date().toLocaleTimeString("zh-CN", { hour12: false }));
-    }
-  }, [session, storeScope]);
+      setHistoryState("ready");
+    } else { setHistoryError("处理历史暂未读到。请重查，未读到不能当作没有处理。"); setHistoryState("error"); }
+  }, [session, storeScope, historyStoreId]);
 
   useEffect(() => {
     void loadHistory().catch(() => {});
+    return () => { historyRequest.current++; };
   }, [loadHistory]);
 
   const reloadCardContext = useCallback(
@@ -213,9 +245,10 @@ export function ServiceDesk() {
         session.api("GET", `campaigns/${cid}/reward-benefits`),
         session.api("GET", `campaigns/${cid}`),
       ]);
+      if (!invRes.ok || !benRes.ok || !campRes.ok) throw new Error("参与上下文没有完整读到，请重试。");
       setCardBatches(invRes.ok && Array.isArray(invRes.data.items) ? (invRes.data.items as ServiceBatch[]) : []);
       setBenefits(benRes.ok && Array.isArray(benRes.data.items) ? (benRes.data.items as BenefitItem[]) : []);
-      if (campRes.ok && typeof campRes.data.title === "string") setCampaignTitle(campRes.data.title);
+      if (typeof campRes.data.title === "string") setCampaignTitle(campRes.data.title);
     },
     [session],
   );
@@ -224,24 +257,64 @@ export function ServiceDesk() {
     ? benefits.find((b) => b.participation_id === card.id)
     : undefined;
 
+  // 顾客核验凭据、短时展示码和旧券码共用入口；解析只读。
+  const openCredential = useCallback(async (raw: string) => {
+    if (busyRef.current) return;
+    setOperationBusy(true);
+    setCard(null);
+    setRedemption(null);
+    setActionNote("");
+    setPendingConfirmation(null);
+    try {
+      const { kind, response: res } = await resolveServiceCredential(session.api, raw);
+      if (kind === "invalid") {
+        setScanNote("没有识别出顾客凭证。请输入完整核验凭据、展示码或券码，不需要内部编号。");
+      } else if (res.ok && typeof res.data.id === "string") {
+        if (kind === "participation") {
+          const opened = res.data as unknown as Card;
+          await reloadCardContext(opened.campaign_id);
+          setCard(opened);
+          setPendingConfirmation(operationBodies.current.get(`confirm:${opened.id}`) ?? null);
+          setCampaignId(opened.campaign_id);
+          setScanNote("已识别本次参与。请核对冻结条件后明确确认；扫描本身不会发放。");
+        } else {
+          const benefit = res.data as unknown as BenefitItem;
+          setRedemption(benefit);
+          if (benefit.campaign_id) { setCampaignId(benefit.campaign_id); await loadRecords(benefit.campaign_id); }
+          setScanNote("已识别原权益。核销需要下面明确确认，扫描本身不会核销。");
+        }
+      } else if (res.status === 410 && kind === "participation") {
+        setScanNote("参与核验凭据已到期，请顾客回原参与页重新出示核验凭据；仍办理原参与。");
+      } else if (res.status === 404) {
+        setScanNote("没有读到这个顾客凭证：可能无效、已到期或不在你的门店权限范围。请核对完整凭证，或请顾客回原权益页刷新展示码，仍处理同一张券。");
+      } else if (res.status === 403) {
+        setScanNote("当前账号无权办理这个凭证。请核对所属门店，或由该门店已授权的店员处理。");
+      } else {
+        setScanNote(rateLimitText(res.status, res.data));
+      }
+    } catch {
+      setScanNote("没有连上服务，尚未打开凭证。请检查网络后重试。");
+    } finally { setOperationBusy(false); }
+  }, [session, reloadCardContext, loadRecords]);
+
   const startCamera = useCallback(async () => {
     const ctor = barcodeDetectorCtor();
     if (!ctor) {
       setCameraMode("manual");
-      setScanNote("此浏览器不支持扫码，请手输参与凭据。");
+      setScanNote("此浏览器不支持扫码，请手输顾客凭证。");
       return;
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
       streamRef.current = stream;
       setCameraMode("camera");
-      setScanNote("对准顾客出示的参与二维码。");
+      setScanNote("对准顾客出示的核验凭据或券码。");
       scanningRef.current = true;
       const waitVideo = () =>
         new Promise<HTMLVideoElement | null>((resolve) => {
           let tries = 0;
           const probe = () => {
-            if (videoRef.current && videoRef.current.readyState >= 2) return resolve(videoRef.current);
+            if (videoRef.current) return resolve(videoRef.current);
             if (tries++ > 100) return resolve(null);
             window.requestAnimationFrame(probe);
           };
@@ -251,7 +324,7 @@ export function ServiceDesk() {
       if (!video) {
         stopCamera();
         setCameraMode("manual");
-        setScanNote("相机画面没有就绪，请手输参与凭据。");
+        setScanNote("相机画面没有就绪，请手输顾客凭证。");
         return;
       }
       video.srcObject = stream;
@@ -267,7 +340,7 @@ export function ServiceDesk() {
               stopCamera();
               setCameraMode("idle");
               setScanText(codes[0].rawValue);
-              setScanNote("已读到参与码。");
+              void openCredential(codes[0].rawValue);
             } else if (scanningRef.current) {
               window.requestAnimationFrame(tick);
             }
@@ -280,99 +353,51 @@ export function ServiceDesk() {
     } catch {
       stopCamera();
       setCameraMode("manual");
-      setScanNote("相机不可用或权限被拒绝，请手输参与凭据。");
+      setScanNote("相机不可用或权限被拒绝，请手输顾客凭证。");
     }
-  }, [stopCamera]);
-
-  // 扫参与码 → 参与卡。peek 不消费凭据:重复扫码幂等回同一张卡。
-  const openParticipation = useCallback(
-    async (raw: string) => {
-      const token = extractHandoffToken(raw);
-      if (!token || !looksLikeHandoffToken(token)) {
-        setScanNote("没有识别出参与凭据。请扫顾客出示的参与二维码，或让顾客报出完整凭据后核对。");
-        return;
-      }
-      setBusy(true);
-      try {
-        const res = await session.api("POST", "participations/staff/peek", { token });
-        if (res.ok && typeof res.data.id === "string") {
-          const opened = res.data as unknown as Card;
-          setCard(opened);
-          setRedemption(null);
-          setScanNote("参与卡已打开。重复扫码会回到同一张卡。");
-          await reloadCardContext(opened.campaign_id);
-        } else {
-          setScanNote(rateLimitText(res.status, res.data));
-        }
-      } catch {
-        setScanNote("没有连上服务。没有打开任何参与卡，请检查网络后重试。");
-      } finally {
-        setBusy(false);
-      }
-    },
-    [session, reloadCardContext],
-  );
-
-  // 扫券码 → 核销卡。核销动作必须打回券所属活动(campaign_id 来自权益行)。
-  const openCoupon = useCallback(
-    async (raw: string) => {
-      const code = raw.trim();
-      if (!code) {
-        setScanNote("请输入或扫描券码。");
-        return;
-      }
-      setBusy(true);
-      try {
-        const res = await session.api("GET", `reward-benefits/by-code?code=${encodeURIComponent(code)}`);
-        if (res.ok && typeof res.data.id === "string") {
-          const benefit = res.data as unknown as BenefitItem;
-          setRedemption(benefit);
-          setCard(null);
-          setScanNote("核销卡已打开。");
-          if (benefit.campaign_id) await loadRecords(benefit.campaign_id);
-        } else {
-          setScanNote(rateLimitText(res.status, res.data));
-        }
-      } catch {
-        setScanNote("没有连上服务。没有打开核销卡，请检查网络后重试。");
-      } finally {
-        setBusy(false);
-      }
-    },
-    [session, loadRecords],
-  );
+  }, [stopCamera, openCredential]);
 
   // 主动作:确认并发奖 / 确认并现场兑现。网络未知先回查(回查用回读到的
   // 新列表判断,不用渲染闭包里的旧列表),不提示顾客重领。
   const confirmCard = useCallback(
     async (body: Record<string, unknown>, _evidence: string) => {
-      if (!card) return;
+      if (!card || busyRef.current) return;
       const cid = card.campaign_id;
       const participationId = card.id;
-      setBusy(true);
+      setOperationBusy(true);
       try {
-        const res = await session.api("POST", `campaigns/${cid}/reward-confirm`, body);
+        const originalBody = stableServiceOperation(operationBodies.current, `confirm:${participationId}`, () => body);
+        setPendingConfirmation(originalBody);
+        const res = await session.api("POST", `campaigns/${cid}/reward-confirm`, originalBody);
+        if (serviceMutationNeedsRecovery(res)) throw new Error("confirmation result unknown");
+        setPendingConfirmation(null);
         if (res.ok) {
           const notice = outcomeNotice(String(res.data.outcome ?? ""), Boolean(res.data.applied), Boolean(res.data.replay));
           setActionNote(notice.text);
+          operationBodies.current.delete(`confirm:${participationId}`);
         } else {
           setActionNote(rateLimitText(res.status, res.data));
+          // 明确拒绝不留未知操作：下一次核对可以使用修正后的证据。
+          operationBodies.current.delete(`confirm:${participationId}`);
         }
         await reloadCardContext(cid);
+        void loadHistory();
       } catch {
         let found = false;
         try {
           const fresh = await loadRecords(cid);
-          found = fresh.some((b) => b.participation_id === participationId);
+          found = fresh.some((b) => b.participation_id === participationId && ["issued", "redeemed", "reversed"].includes(b.status));
+          if (found) setPendingConfirmation(null);
         } catch {
-          found = false;
+          setActionNote("刚才操作结果未知，回查也未完成。请保留本次记录，恢复网络后用同一次操作重试查询。");
+          return;
         }
-        setActionNote(networkUnknownCopy(found));
+        setActionNote(found ? networkUnknownCopy(true) : "已回查原参与，尚未读到发放事实。请使用下方同一次确认重试；预留不算发放。");
       } finally {
-        setBusy(false);
+        setOperationBusy(false);
       }
     },
-    [card, session, reloadCardContext, loadRecords],
+    [card, session, reloadCardContext, loadRecords, loadHistory],
   );
 
   const notFit = useCallback(
@@ -387,11 +412,13 @@ export function ServiceDesk() {
   // campaign_id(扫券码进来的卡可能不属于当前选中的活动)。
   const redeemBenefit = useCallback(
     async (benefit: RedemptionBenefit, storeId: string) => {
-      const cid = benefit.campaign_id || campaignId;
+      const cid = benefit.campaign_id;
       if (!cid) return;
-      setBusy(true);
+      if (busyRef.current) return;
+      setOperationBusy(true);
       try {
-        const res = await session.api("POST", `campaigns/${cid}/reward-benefits/${benefit.id}/redeem`, redeemRequestBody(storeId || storeScope));
+        const res = await session.api("POST", `campaigns/${cid}/reward-benefits/${benefit.id}/redeem`, stableServiceOperation(operationBodies.current, `redeem:${benefit.id}`, () => redeemRequestBody(storeId)));
+        if (serviceMutationNeedsRecovery(res)) throw new Error("redemption result unknown");
         if (res.ok) {
           const outcome = String(res.data.outcome ?? "");
           setActionNote(
@@ -400,33 +427,40 @@ export function ServiceDesk() {
               : "这个权益已核销过：回读已处理结果，没有第二份。",
           );
           if (res.data.benefit) setRedemption(res.data.benefit as BenefitItem);
+          operationBodies.current.delete(`redeem:${benefit.id}`);
         } else {
           setActionNote(rateLimitText(res.status, res.data));
         }
         await loadRecords(cid);
+        void loadHistory();
       } catch {
         let found = false;
         try {
           const fresh = await loadRecords(cid);
-          found = fresh.some((b) => b.id === benefit.id && b.status === "redeemed");
+          const original = fresh.find((b) => b.id === benefit.id);
+          found = original?.status === "redeemed";
+          if (original) setRedemption(original);
         } catch {
-          found = false;
+          setActionNote("刚才操作结果未知，回查也未完成。请保留本次记录，恢复网络后用同一次操作重试查询。");
+          return;
         }
         setActionNote(networkUnknownCopy(found));
       } finally {
-        setBusy(false);
+        setOperationBusy(false);
       }
     },
-    [campaignId, session, storeScope, loadRecords],
+    [session, loadRecords, loadHistory],
   );
 
   const reverseBenefit = useCallback(
     async (benefit: RedemptionBenefit, reason: string) => {
-      const cid = benefit.campaign_id || campaignId;
+      const cid = benefit.campaign_id;
       if (!cid) return;
-      setBusy(true);
+      if (busyRef.current) return;
+      setOperationBusy(true);
       try {
-        const res = await session.api("POST", `campaigns/${cid}/reward-benefits/${benefit.id}/reverse`, reverseRequestBody(reason));
+        const res = await session.api("POST", `campaigns/${cid}/reward-benefits/${benefit.id}/reverse`, stableServiceOperation(operationBodies.current, `reverse:${benefit.id}`, () => reverseRequestBody(reason)));
+        if (serviceMutationNeedsRecovery(res)) throw new Error("reversal result unknown");
         if (res.ok) {
           setActionNote("已更正撤销（追加更正记录，原发放事实保留）。");
           if (res.data.benefit) setRedemption(res.data.benefit as BenefitItem);
@@ -434,13 +468,18 @@ export function ServiceDesk() {
           setActionNote(rateLimitText(res.status, res.data));
         }
         await loadRecords(cid);
+        void loadHistory();
       } catch {
-        setActionNote("撤销没有完成。没有事实不写成功，可以再试一次。");
+        try {
+          const original = (await loadRecords(cid)).find((b) => b.id === benefit.id);
+          if (original) setRedemption(original);
+          setActionNote(original?.status === "reversed" ? "回查原权益：已更正撤销，原发放与核销事实保留。" : "更正结果尚待确认。请保留同一记录，使用同一次操作回查重试。");
+        } catch { setActionNote("更正结果未知，回查未完成。请恢复网络后回到同一记录继续查询。"); }
       } finally {
-        setBusy(false);
+        setOperationBusy(false);
       }
     },
-    [campaignId, session, loadRecords],
+    [session, loadRecords, loadHistory],
   );
 
   const visibleBenefits = ownStoreBenefits(benefits, storeScope);
@@ -452,7 +491,7 @@ export function ServiceDesk() {
       <h1 className="tk-title">确认与核销</h1>
       <p className="tk-lead">
         {storeScope ? "你正在为本店服务。" : "你正在为全门店服务。"}
-        扫顾客出示的参与码核对后确认；扫券码核销。确认与核销都记进奖励账本。
+        扫描或输入顾客凭证，自动识别本店参与与权益；核对后明确办理，发放与核销分别留有记录。
       </p>
 
       {phase === "loading" ? <p className="tk-state" data-state="loading">正在读取…</p> : null}
@@ -465,18 +504,16 @@ export function ServiceDesk() {
 
       {phase === "ready" ? (
         <>
-          <section aria-label="扫参与码" data-section="scan">
-            <h2 className="tk-subtitle">扫参与码</h2>
-            {campaigns.length > 1 ? (
-              <label className="tk-label">
-                活动
-                <select className="tk-select" data-field="campaign-select" value={campaignId} onChange={(event) => setCampaignId(event.target.value)}>
-                  {campaigns.map((item) => (
-                    <option key={item.id} value={item.id}>{item.title || item.id}</option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
+          {returnPath ? <p><a className="tk-quiet" href={returnPath}>返回原权益记录</a></p> : null}
+          <nav className="tk-gap" aria-label="服务台页签">
+            <button className="tk-quiet" type="button" aria-current={tab === "serve" ? "page" : undefined} onClick={() => setTab("serve")}>办理</button>
+            <button className="tk-quiet" type="button" aria-current={tab === "records" ? "page" : undefined} onClick={() => setTab("records")}>待确认与权益记录</button>
+            <button className="tk-quiet" type="button" aria-current={tab === "history" ? "page" : undefined} onClick={() => setTab("history")}>历史与交班</button>
+          </nav>
+          <div hidden={tab !== "serve"}>
+          <section aria-label="扫描顾客凭证" data-section="scan">
+            <h2 className="tk-subtitle">扫描顾客凭证</h2>
+            <p className="tk-note">无需预选活动。参与核验凭据、权益展示码和旧券码都在这里办理；识别后不会自动发放或核销。</p>
             {cameraMode === "camera" ? (
               <div data-field="camera-view">
                 <video ref={videoRef} playsInline muted data-field="scan-video" className="tk-video" />
@@ -494,24 +531,24 @@ export function ServiceDesk() {
               </div>
             ) : (
               <button className="tk-button" type="button" data-action="start-camera" disabled={busy} onClick={() => void startCamera()}>
-                扫参与二维码
+                扫描顾客二维码
               </button>
             )}
             <div data-field="manual-entry">
               <label className="tk-label">
-                手输参与凭据（相机不可用时）
+                手输顾客凭证（相机不可用时）
                 <input
                   className="tk-input"
                   data-field="scan-input"
                   value={scanText}
                   onChange={(event) => setScanText(event.target.value)}
-                  placeholder="ptx_… 或 https://…/p/ptx_…"
+                  placeholder="核验凭据、展示码或券码"
                   autoComplete="off"
                   inputMode="text"
                 />
               </label>
-              <button className="tk-quiet" type="button" data-action="open-participation" disabled={busy} onClick={() => void openParticipation(scanText)}>
-                打开参与卡
+              <button className="tk-quiet" type="button" data-action="open-credential" disabled={busy} onClick={() => void openCredential(scanText)}>
+                识别并打开凭证
               </button>
             </div>
             {scanNote ? <p className="tk-note" data-field="scan-note">{scanNote}</p> : null}
@@ -519,37 +556,23 @@ export function ServiceDesk() {
 
           {card ? (
             <ParticipationCardView
+              key={card.id}
               card={card}
               campaignTitle={campaignTitle || "活动"}
               batches={cardBatches}
               benefit={cardBenefit}
-              canConfirm={confirmAllowed}
+              canConfirm={confirmAllowed && card.confirmation_allowed === true}
               busy={busy}
+              pendingConfirmation={pendingConfirmation?.participation_id === card.id ? pendingConfirmation : null}
               onConfirm={(body, evidence) => void confirmCard(body, evidence)}
               onNotFit={notFit}
               onClose={() => setCard(null)}
             />
           ) : null}
 
-          <section aria-label="扫券码核销" data-section="coupon">
-            <h2 className="tk-subtitle">扫券码核销</h2>
-            <label className="tk-label">
-              券码
-              <input
-                className="tk-input"
-                data-field="coupon-input"
-                value={couponText}
-                onChange={(event) => setCouponText(event.target.value)}
-                autoComplete="off"
-              />
-            </label>
-            <button className="tk-quiet" type="button" data-action="open-coupon" disabled={busy} onClick={() => void openCoupon(couponText)}>
-              打开核销卡
-            </button>
-          </section>
-
           {redemption ? (
             <RedemptionCardView
+              key={redemption.id}
               benefit={redemption}
               reverseAllowed={reverseAllowed}
               busy={busy}
@@ -559,6 +582,14 @@ export function ServiceDesk() {
             />
           ) : null}
 
+          </div>
+          <div hidden={tab !== "records"}>
+          <label className="tk-label">查看活动的待确认与权益记录
+            <select className="tk-select" value={campaignId} onChange={(event) => setCampaignId(event.target.value)}>
+              <option value="">请选择要查看的活动</option>
+              {campaigns.map((item) => <option key={item.id} value={item.id}>{item.title || "未命名活动"}</option>)}
+            </select>
+          </label>
           <section aria-label="待确认" data-section="review">
             <h2 className="tk-subtitle">待确认（顾客自报）</h2>
             {reviewQueue.length === 0 ? (
@@ -596,6 +627,7 @@ export function ServiceDesk() {
                       onClick={() => {
                         setRedemption(ben);
                         setCard(null);
+                        setTab("serve");
                       }}
                     >
                       打开核销卡
@@ -609,16 +641,28 @@ export function ServiceDesk() {
             ) : null}
           </section>
 
+          </div>
+          <div hidden={tab !== "history"}>
+          {!storeScope ? <label className="tk-label">交班门店
+            <select className="tk-select" value={historyStoreId} onChange={(event) => { historyRequest.current++; setHistoryStoreId(event.target.value); setHistory([]); setHistoryLoadedAt(""); setHistoryState("idle"); setHistoryError(""); }}>
+              <option value="">请选择有权查看的门店</option>
+              {stores.map((store) => <option key={store.id} value={store.id}>{store.name || "未命名门店"}</option>)}
+            </select>
+          </label> : null}
           <section className="tk-section" data-field="service-history" aria-label="处理历史">
             <h2 className="tk-subtitle">处理历史(本店台账,只读)</h2>
             <p className="tk-note">
               交班参考:以下为本店最近处理记录与当日按操作者聚合(仅本地事实,不含平台证实)。
               {historyLoadedAt ? ` 拉取于 ${historyLoadedAt}。` : ""}
             </p>
-            <button className="tk-quiet" type="button" data-action="refresh-history" onClick={() => void loadHistory()}>
+            {historyError ? <p className="tk-note tk-danger" role="status">{historyError}</p> : null}
+            {!storeScope && !historyStoreId ? <p className="tk-note">请先选择交班门店，再读取原处理记录。</p> : null}
+            {historyState === "loading" ? <p className="tk-note">正在读取所选门店的处理记录…</p> : null}
+            <button className="tk-quiet" type="button" data-action="refresh-history" disabled={!storeScope && !historyStoreId || historyState === "loading"} onClick={() => void loadHistory()}>
               重查处理历史
             </button>
             {(() => {
+              if (historyState !== "ready") return null;
               const today = new Date().toISOString().slice(0, 10);
               const perActor = new Map<string, number>();
               for (const row of history) {
@@ -635,7 +679,7 @@ export function ServiceDesk() {
                 </ul>
               );
             })()}
-            {history.length === 0 ? (
+            {historyState !== "ready" ? null : history.length === 0 ? (
               <p className="tk-note" data-field="history-empty">还没有处理记录。</p>
             ) : (
               <ul className="tk-list" data-field="history-list">
@@ -649,8 +693,9 @@ export function ServiceDesk() {
             )}
           </section>
 
+          </div>
           {actionNote ? (
-            <p className="tk-note" data-field="action-note" data-state={actionNote.includes("完成") || actionNote.includes("已处理") ? "ok" : "warn"}>
+            <p className="tk-note" data-field="action-note" role="status" data-state={!/未知|没有|未完成|未读到|尚未|待确认/.test(actionNote) && /完成|已处理|已更正/.test(actionNote) ? "ok" : "warn"}>
               {actionNote}
             </p>
           ) : null}

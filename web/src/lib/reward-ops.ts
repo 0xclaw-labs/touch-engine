@@ -15,6 +15,7 @@ export interface RewardInventoryView {
   available_qty: number;
   face_value_minor: number;
   cost_minor: number;
+  cost_recorded?: boolean;
   currency?: string;
   store_id?: string;
   valid_from?: string;
@@ -34,6 +35,7 @@ export interface RewardBenefitView {
   store_id?: string;
   face_value_minor: number;
   cost_minor: number;
+  cost_recorded?: boolean;
   currency?: string;
   reserved_until?: string;
   issued_at?: string;
@@ -49,6 +51,7 @@ export interface RewardSummaryView {
   pending_review?: number;
   committed_face_minor?: number;
   committed_cost_minor?: number;
+  committed_cost_unrecorded?: number;
   pending_face_minor?: number;
   pending_cost_minor?: number;
 }
@@ -110,21 +113,38 @@ export function slotText(slot: string): string {
 }
 
 // 面额是营销口径,成本是实际口径,两个数永远分开披露。
-export function faceAndCostText(faceMinor: number, costMinor: number, currency?: string): string {
-  const unit = (currency ?? "").trim() || "分";
-  return `面额 ${faceMinor} ${unit}（不是成本），成本 ${costMinor} ${unit}。`;
+export function formatMoney(minor: number, currency = "CNY"): string {
+ return `${(minor / 100).toFixed(2)} ${currency === "CNY" || currency === "FEN" || !currency ? "元" : currency}`;
+}
+export function faceAndCostText(faceMinor: number, costMinor: number, currency?: string, recorded = costMinor > 0): string {
+ return `面额 ${formatMoney(faceMinor,currency)}（不是成本），实际成本 ${recorded ? formatMoney(costMinor,currency) : "未知（尚未录入）"}。`;
+}
+export function moneyInputMinor(value: string): number | undefined | null {
+ if (!value.trim()) return undefined;
+ if (!/^\d+(?:\.\d{1,2})?$/.test(value.trim())) return null;
+ const [yuan,fen=""] = value.trim().split(".");
+ const amount=Number(yuan)*100+Number(fen.padEnd(2,"0"));
+ return Number.isSafeInteger(amount) ? amount : null;
+}
+export function inventoryPreparationBody(draft: {requestKey:string;name:string;quantity:string;codes:string;face:string;cost:string}): Record<string,unknown> | null {
+ const face=moneyInputMinor(draft.face),cost=moneyInputMinor(draft.cost);
+ const codes=draft.codes.split(/[\n,]/).map(s=>s.trim()).filter(Boolean);
+ const quantity=codes.length || Number(draft.quantity);
+ if (!draft.name.trim() || face===null || cost===null || !Number.isSafeInteger(quantity) || quantity<1) return null;
+ return {request_key:draft.requestKey,name:draft.name.trim(),quantity,codes,face_value_minor:face??0,...(cost===undefined?{}:{cost_minor:cost})};
 }
 
 export function inventoryLine(inv: RewardInventoryView): string {
   const parts = [
     inv.name,
     `${inventoryKindText(inv.kind)}`,
-    `slot ${slotText(inv.benefit_slot)}（规则 v${inv.rule_version}）`,
+    `第 ${inv.rule_version} 版活动承诺`,
     `余量 ${inv.available_qty}/${inv.total_qty}`,
-    `状态 ${inv.status}`,
+    `状态 ${inv.status === "active" && inv.valid_from && Date.parse(inv.valid_from)>Date.now() ? "尚未到使用期，暂不可参与领取" : inv.status === "active" && inv.valid_until && Date.parse(inv.valid_until)<Date.now() ? "已过使用期" : {active:"可使用",paused:"已暂停",retired:"已停用"}[inv.status] ?? "待确认"}`,
   ];
-  if (inv.store_id) parts.push(`适用门店 ${inv.store_id}`);
-  if (inv.valid_until) parts.push(`有效期至 ${inv.valid_until}`);
+
+  if(inv.valid_from) parts.push(`使用期从 ${new Date(inv.valid_from).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"})}（北京时间）`);
+  if (inv.valid_until) parts.push(`使用期至 ${new Date(inv.valid_until).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"})}（北京时间）`);
   return parts.join(" · ");
 }
 

@@ -9,6 +9,7 @@ function read(rel: string): string {
 }
 
 const page = read("app/work/rewards/page.tsx");
+const prepare=read("components/work/campaign-inventory-prepare.tsx");
 
 describe("/work/rewards 真实管理页", () => {
   it("挂上真实账本端口,不再只是只读说明页", () => {
@@ -17,15 +18,15 @@ describe("/work/rewards 真实管理页", () => {
       "reward-benefits",
       "reward-summary",
       "reward-review-requests",
-      "reward-confirm",
     ]) {
       expect(page).toContain(port);
     }
-    expect(page).toContain("data-action=\"confirm-reward\"");
+    expect(page).toContain("/work/service?campaign=");
+    expect(page).not.toContain("confirm-participation");
     expect(page).toContain("data-action=\"redeem\"");
     expect(page).toContain("data-action=\"reverse\"");
     expect(page).toContain("data-action=\"pause-batch\"");
-    expect(page).toContain("data-action=\"create-batch\"");
+    expect(prepare).toContain("data-action=\"create-batch\"");
   });
 
   it("敏感券码默认掩码,点开才显示;错误文案不回显券码", () => {
@@ -52,13 +53,13 @@ describe("/work/rewards 真实管理页", () => {
   });
 
   it("确认表单只提供批次允许的证据;官方回执不靠手填", () => {
-    expect(page).toContain("selected?.allowed_evidence");
-    expect(page).toContain("官方证据需要服务端已有的官方事实引用");
+    expect(page).not.toContain("confirm-evidence");
+    expect(page).toContain("到店员台按活动承诺核对证据");
   });
 
   it("导入券码池建批次时给码;码不进任何日志字段", () => {
-    expect(page).toContain("batch-codes");
-    expect(page).toContain("imported_code");
+    expect(prepare).toContain("batch-codes");
+    expect(prepare).toContain("imported_code");
   });
 });
 

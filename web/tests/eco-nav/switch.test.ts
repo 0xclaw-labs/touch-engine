@@ -108,6 +108,21 @@ describe("POST /api/eco-nav/switch (mint)", () => {
 });
 
 describe("POST /api/eco-nav/switch/redeem", () => {
+  it("releases the registered Leads URL with its original one-time code and opaque handle", async () => {
+    process.env.TOUCH_SERVER_URL = "http://127.0.0.1:18240";
+    process.env.TOUCH_INTERNAL_TOKEN = "internal";
+    const launchUrl = "https://leads.modelxing.com/?code=original-code&h=hnd_0123456789abcdef0123456789abcdef";
+    global.fetch = vi.fn(async () => new Response(JSON.stringify({
+      launch_url: launchUrl,
+      app_id: "leads-engine",
+      launch_target_id: "ti-leads-engine-web",
+    }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
+
+    const res = await REDEEM_POST(request(redeemUrl, { jump_token: "jtg_followup.once" }));
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ launch_url: launchUrl });
+  });
+
   it("forwards only jump_token and releases the validated launch_url once", async () => {
     process.env.TOUCH_SERVER_URL = "http://127.0.0.1:18240";
     process.env.TOUCH_INTERNAL_TOKEN = "internal";

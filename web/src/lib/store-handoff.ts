@@ -91,7 +91,7 @@ export function planCopy(kind: PlanKind): string {
     case "oauth_publish":
       return "需要你先授权平台,之后由服务端投稿。授权可以取消,发布结果以平台为准。";
     case "manual_only":
-      return "这个平台暂时没有在线发布路线。可以保存素材后手动发布,或请店员协助确认。";
+      return "本次获准方式为手动素材交接。可保存或分享真实素材，是否发布由你在目标平台确认。";
     case "refused":
       return "这一步在当前渠道未放行。可以先看门店内容,发布方式请听门店现场安排。";
     default:
@@ -131,6 +131,14 @@ export function parseHandoffStatus(payload: unknown): HandoffStatusView | null {
  */
 export function statusFace(status: string): string {
   switch ((status ?? "").trim()) {
+    case "handoff_ready":
+      return "本次素材已准备好，尚未确认平台发布。请继续当前显示的交接步骤。";
+    case "editor_opened":
+      return "已收到编辑器打开证明，仍需在平台完成发布。";
+    case "submitting":
+      return "平台正在处理本次投稿，请查询原投稿结果，不要重复提交。";
+    case "unknown":
+      return "本次投稿结果未知。请先查询原投稿，不要重复发布。";
     case "pending":
     case "pending_external":
       return "发布结果等待平台确认。可以先返回门店页,稍后回来查看,或请店员协助。";

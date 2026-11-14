@@ -24,6 +24,17 @@ afterEach(() => {
 });
 
 describe("startOrResumeSession:进门幂等恢复", () => {
+  it("普通页面入口按服务端合法manual来源创建，来源无效不冒充网络异常", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      return body.touchpoint_source === "manual"
+        ? ok({ action_session_id: "as_manual", status: "active" }, 201)
+        : ok({ error: "invalid_state" }, 422);
+    }));
+    expect(await startOrResumeSession("sa_plain_browser")).toEqual({ session: { action_session_id: "as_manual", status: "active" } });
+    vi.stubGlobal("fetch", vi.fn(async () => ok({ error: "invalid_state" }, 422)));
+    expect(await startOrResumeSession("sa_invalid_state")).toEqual({ error: "invalid_state" });
+  });
   it("POST /api/public/actions/{id}/sessions 带 source 与幂等键", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       expect(String(input)).toBe("/api/public/actions/sa_a1/sessions");

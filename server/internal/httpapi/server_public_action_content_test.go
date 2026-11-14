@@ -294,23 +294,24 @@ func TestPublicActionContentRequiresAdoption(t *testing.T) {
 
 func TestPublicActionContentServesAdoptedVersion(t *testing.T) {
 	f := newPublicContentFixture(t, true)
-	packID, versionID, videoID, coverID := f.seedAdoptedContent(t, f.tenA, f.storeA, "act_9", "开业视频包", true)
+	actionID := f.seedActions(t, "act_wechat")[0]
+	packID, versionID, videoID, coverID := f.seedAdoptedContent(t, f.tenA, f.storeA, actionID, "开业视频包", true)
 
 	// 绑定是内部调用(采用后建立绑定);4584 的 actions PUT 合流后对接。
 	pack, err := f.s.St.GetStoreContentPack(packID, f.tenA)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.s.St.BindActionContent(f.tenA, f.storeA, "act_9", packID, versionID, 2, "usr_owner_a", timeNowUTC()); err != nil {
+	if _, err := f.s.St.BindActionContent(f.tenA, f.storeA, actionID, packID, versionID, 2, "usr_owner_a", timeNowUTC()); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	_ = pack
 
-	status, out := f.publicJSON(t, "GET", "/api/v1/public/actions/act_9/content", "")
+	status, out := f.publicJSON(t, "GET", "/api/v1/public/actions/"+actionID+"/content", "")
 	if status != http.StatusOK {
 		t.Fatalf("content = %d: %v", status, out)
 	}
-	if out["action_id"] != "act_9" || out["content_binding_ref"] == nil || out["selected_content_pack_version"] != versionID {
+	if out["action_id"] != actionID || out["content_binding_ref"] == nil || out["selected_content_pack_version"] != versionID {
 		t.Fatalf("content head = %v", out)
 	}
 	if out["content_kind"] != "video" || out["title"] != "开业视频包" {
@@ -341,7 +342,7 @@ func TestPublicActionContentServesAdoptedVersion(t *testing.T) {
 	}
 
 	// 两次读取逐字段一致(采用版不静默变化)。
-	_, out2 := f.publicJSON(t, "GET", "/api/v1/public/actions/act_9/content", "")
+	_, out2 := f.publicJSON(t, "GET", "/api/v1/public/actions/"+actionID+"/content", "")
 	raw1, _ := json.Marshal(out)
 	raw2, _ := json.Marshal(out2)
 	if !bytes.Equal(raw1, raw2) {
@@ -351,15 +352,16 @@ func TestPublicActionContentServesAdoptedVersion(t *testing.T) {
 
 func TestPublicActionContentBlockedAndExpired(t *testing.T) {
 	f := newPublicContentFixture(t, true)
-	packID, versionID, _, _ := f.seedAdoptedContent(t, f.tenA, f.storeA, "act_blk", "被撤权包", true)
-	if _, err := f.s.St.BindActionContent(f.tenA, f.storeA, "act_blk", packID, versionID, 1, "usr_owner_a", timeNowUTC()); err != nil {
+	actionID := f.seedActions(t, "act_wechat")[0]
+	packID, versionID, _, _ := f.seedAdoptedContent(t, f.tenA, f.storeA, actionID, "被撤权包", true)
+	if _, err := f.s.St.BindActionContent(f.tenA, f.storeA, actionID, packID, versionID, 1, "usr_owner_a", timeNowUTC()); err != nil {
 		t.Fatal(err)
 	}
 	// 撤权(block)后:公开读面 409,拒新分发;media-access 拒新签发。
 	if _, err := f.s.St.BlockStoreContentPackVersion(f.tenA, packID, versionID, "版权方撤回授权", "usr_owner_a", timeNowUTC()); err != nil {
 		t.Fatal(err)
 	}
-	status, out := f.publicJSON(t, "GET", "/api/v1/public/actions/act_blk/content", "")
+	status, out := f.publicJSON(t, "GET", "/api/v1/public/actions/"+actionID+"/content", "")
 	if status != http.StatusConflict {
 		t.Fatalf("blocked content = %d %v, want 409", status, out)
 	}
@@ -374,9 +376,10 @@ func TestPublicActionContentBlockedAndExpired(t *testing.T) {
 
 func TestPublicActionContentCandidatesPool(t *testing.T) {
 	f := newPublicContentFixture(t, true)
+	actionID := f.seedActions(t, "act_wechat")[0]
 	// 主题一(当前采用)。
-	packA, verA, _, _ := f.seedAdoptedContent(t, f.tenA, f.storeA, "act_c", "主题一", true)
-	if _, err := f.s.St.BindActionContent(f.tenA, f.storeA, "act_c", packA, verA, 1, "usr_owner_a", timeNowUTC()); err != nil {
+	packA, verA, _, _ := f.seedAdoptedContent(t, f.tenA, f.storeA, actionID, "主题一", true)
+	if _, err := f.s.St.BindActionContent(f.tenA, f.storeA, actionID, packA, verA, 1, "usr_owner_a", timeNowUTC()); err != nil {
 		t.Fatal(err)
 	}
 	// 主题二:另一包,也采用 → 候选池成员。
@@ -385,7 +388,7 @@ func TestPublicActionContentCandidatesPool(t *testing.T) {
 	// 未采用的第三包不出现在候选池。
 	f.seedAdoptedContent(t, f.tenA, f.storeA, "", "未采用三", false)
 
-	status, out := f.publicJSON(t, "GET", "/api/v1/public/actions/act_c/content", "")
+	status, out := f.publicJSON(t, "GET", "/api/v1/public/actions/"+actionID+"/content", "")
 	if status != http.StatusOK {
 		t.Fatalf("content = %d: %v", status, out)
 	}
@@ -404,16 +407,15 @@ func TestPublicActionContentCandidatesPool(t *testing.T) {
 
 func TestMediaAccessIssuesControlledURLs(t *testing.T) {
 	f := newPublicContentFixture(t, true)
-	packID, versionID, videoID, coverID := f.seedAdoptedContent(t, f.tenA, f.storeA, "act_m", "取材包", true)
-	if _, err := f.s.St.BindActionContent(f.tenA, f.storeA, "act_m", packID, versionID, 1, "usr_owner_a", timeNowUTC()); err != nil {
+	actionID := f.seedActions(t, "act_wechat")[0]
+	packID, versionID, videoID, coverID := f.seedAdoptedContent(t, f.tenA, f.storeA, actionID, "取材包", true)
+	if _, err := f.s.St.BindActionContent(f.tenA, f.storeA, actionID, packID, versionID, 1, "usr_owner_a", timeNowUTC()); err != nil {
 		t.Fatal(err)
 	}
 
-	// 正例:平台抓取用途,两个媒体一起取(平台适配器凭已签 claim 取材,不持
-	// 访客 cookie——会话引用留空;带引用的签发校验由 server_media_access_
-	// session_test.go 单独覆盖)。
+	// 无会话公开面只保留预览；导出/平台取材须沿原合法交接，见 export gate tests。
 	status, out := f.publicJSON(t, "POST", "/api/v1/public/content/"+versionID+"/media-access",
-		fmt.Sprintf(`{"media_ids":[%q,%q],"purpose":"platform_fetch"}`, videoID, coverID))
+		fmt.Sprintf(`{"media_ids":[%q,%q],"purpose":"preview"}`, videoID, coverID))
 	if status != http.StatusOK {
 		t.Fatalf("media-access = %d: %v", status, out)
 	}
@@ -462,8 +464,9 @@ func TestMediaAccessIssuesControlledURLs(t *testing.T) {
 
 func TestControlledMediaServesRangeHeadAndMIME(t *testing.T) {
 	f := newPublicContentFixture(t, true)
-	packID, versionID, videoID, _ := f.seedAdoptedContent(t, f.tenA, f.storeA, "act_g", "播放包", true)
-	if _, err := f.s.St.BindActionContent(f.tenA, f.storeA, "act_g", packID, versionID, 1, "usr_owner_a", timeNowUTC()); err != nil {
+	actionID := f.seedActions(t, "act_wechat")[0]
+	packID, versionID, videoID, _ := f.seedAdoptedContent(t, f.tenA, f.storeA, actionID, "播放包", true)
+	if _, err := f.s.St.BindActionContent(f.tenA, f.storeA, actionID, packID, versionID, 1, "usr_owner_a", timeNowUTC()); err != nil {
 		t.Fatal(err)
 	}
 	status, out := f.publicJSON(t, "POST", "/api/v1/public/content/"+versionID+"/media-access",
@@ -540,8 +543,7 @@ func TestControlledMediaServesRangeHeadAndMIME(t *testing.T) {
 	}
 
 	// 下载用途:Content-Disposition attachment(中文文件名保真)。
-	status, out = f.publicJSON(t, "POST", "/api/v1/public/content/"+versionID+"/media-access",
-		fmt.Sprintf(`{"media_ids":[%q],"purpose":"download"}`, videoID))
+	status, out = merchantMediaGrant(t, f, versionID, videoID, "download")
 	if status != http.StatusOK {
 		t.Fatalf("download access = %d: %v", status, out)
 	}
@@ -574,8 +576,9 @@ func TestControlledMediaServesRangeHeadAndMIME(t *testing.T) {
 
 func TestControlledMediaRefusesBlockedVersionCachedToken(t *testing.T) {
 	f := newPublicContentFixture(t, true)
-	packID, versionID, videoID, _ := f.seedAdoptedContent(t, f.tenA, f.storeA, "act_rev", "撤权包", true)
-	if _, err := f.s.St.BindActionContent(f.tenA, f.storeA, "act_rev", packID, versionID, 1, "usr_owner_a", timeNowUTC()); err != nil {
+	actionID := f.seedActions(t, "act_wechat")[0]
+	packID, versionID, videoID, _ := f.seedAdoptedContent(t, f.tenA, f.storeA, actionID, "撤权包", true)
+	if _, err := f.s.St.BindActionContent(f.tenA, f.storeA, actionID, packID, versionID, 1, "usr_owner_a", timeNowUTC()); err != nil {
 		t.Fatal(err)
 	}
 	status, out := f.publicJSON(t, "POST", "/api/v1/public/content/"+versionID+"/media-access",

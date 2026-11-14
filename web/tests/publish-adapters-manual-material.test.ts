@@ -97,10 +97,12 @@ describe("system share capability (实机三态降级)", () => {
   });
 
   it("maps concrete failures to recoverable copy (无假成功)", () => {
-    expect(shareFailureCopy("aborted")).toContain("可随时重试");
+    expect(shareFailureCopy("aborted")).toContain("重试");
+    expect(shareFailureCopy("aborted")).toContain("没有可用分享目标");
     expect(shareFailureCopy("unsupported")).toContain("保存素材");
     expect(shareFailureCopy("permission")).toContain("权限");
-    expect(shareFailureCopy("network")).toContain("没有完成");
-    expect(shareFailureCopy("unknown")).toContain("没有完成");
+    expect(shareFailureCopy("network")).toContain("未获得分享完成结果");
+    expect(shareFailureCopy("network")).not.toContain("未发出");
+    expect(shareFailureCopy("unknown")).toContain("未获得分享完成结果");
   });
 });

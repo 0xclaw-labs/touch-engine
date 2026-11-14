@@ -34,7 +34,7 @@ func (f *fakeKsPlatform) ExchangeToken(ctx context.Context, code, redirectURI st
 		return KsToken{}, f.exchangeErr
 	}
 	return KsToken{OpenID: "open_1", AccessToken: "at_1", RefreshToken: "rt_1",
-		ExpiresAt: time.Now().Add(time.Hour), Scope: "user_video_publish"}, nil
+		ExpiresAt: time.Now().Add(time.Hour), Scope: "user_video_publish,user_video_info"}, nil
 }
 
 func (f *fakeKsPlatform) UploadMedia(ctx context.Context, token KsToken, filename, contentType string, b []byte) (string, error) {
@@ -125,7 +125,7 @@ func TestKsPrepareBuildsControlledAuthorizeURL(t *testing.T) {
 	if !strings.HasPrefix(act.URL, "https://open.kuaishou.com/oauth2/authorize?") {
 		t.Fatalf("authorize url = %q", act.URL)
 	}
-	if !strings.Contains(act.URL, "client_id=cid_1") || !strings.Contains(act.URL, "state=") {
+	if !strings.Contains(act.URL, "app_id=cid_1") || !strings.Contains(act.URL, "state=") {
 		t.Fatalf("authorize url missing official params: %q", act.URL)
 	}
 	if strings.Contains(act.URL, "sec_1") || strings.Contains(act.URL, "client_secret") {
@@ -188,7 +188,7 @@ func TestKsFinishOAuthPersistsServerSideToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("finish: %v", err)
 	}
-	if !strings.HasPrefix(returnTo, "https://pub.example.com/handoff/pha_test_ks?") {
+	if !strings.HasPrefix(returnTo, "https://pub.example.com/s/fixture-store/content/sa_1?") {
 		t.Fatalf("returnTo = %q", returnTo)
 	}
 	if !strings.Contains(returnTo, "handoff_id=pha_test_ks") || !strings.Contains(returnTo, "oauth=ok") {
@@ -394,5 +394,42 @@ func TestKsSubmitPreconditionErrorsAreCustomerRecoverable(t *testing.T) {
 	err = a.Submit(context.Background(), h, publishhandoff.PrepareResult{})
 	if !errors.Is(err, ErrCustomerActionRequired) {
 		t.Fatalf("creating-stage resubmit must wrap ErrCustomerActionRequired, got %v", err)
+	}
+}
+
+func TestKsLegacyReturnUsesOriginalCampaignAndAttempt(t *testing.T) {
+	d := adapterTestDB(t)
+	for _, query := range []string{
+		`INSERT INTO campaigns(id,tenant_id,store_id,title,status,created_at,updated_at) VALUES('cmp_legacy','tnt_1','st_1','test','active','2026-11-14','2026-11-14')`,
+		`INSERT INTO participations(id,tenant_id,store_id,campaign_id,link_code,touchpoint_source,visitor_id,status,idempotency_key,rule_version,starts_at,expires_at,created_at,updated_at) VALUES('p_legacy','tnt_1','st_1','cmp_legacy','originalCode','qr','visitor','in_progress','legacy-key',1,'','','2026-11-14','2026-11-14')`,
+		`INSERT INTO participation_attempts(id,tenant_id,participation_id,platform,handoff_method,rule_version,status,created_at,updated_at) VALUES('a_legacy','tnt_1','p_legacy','kuaishou','h5',1,'handed_off','2026-11-14','2026-11-14')`,
+		`INSERT INTO publish_handoffs(id,tenant_id,store_id,campaign_id,link_code,participation_id,attempt_id,platform,entry_mode,scenario,idempotency_key,status,evidence_source,created_at,updated_at) VALUES('pha_test_ks','tnt_1','st_1','cmp_legacy','originalCode','p_legacy','a_legacy','kuaishou','h5','store_promo','legacy-handoff','handoff_ready','customer_action','2026-11-14','2026-11-14')`,
+	} {
+		if _, err := d.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := NewKuaishouAdapter(d, ksConfig(&fakeKsPlatform{}))
+	req := ksRequest("oauth_server_push", true)
+	req.Handoff.ActionID = ""
+	req.Handoff.SessionID = ""
+	req.Handoff.PayloadKind = ""
+	req.Handoff.ParticipationID = "p_legacy"
+	req.Handoff.AttemptID = "a_legacy"
+	target, err := a.returnToFor(req)
+	if err != nil || target != "https://pub.example.com/c/originalCode" {
+		t.Fatalf("return %q %v", target, err)
+	}
+	prepared, err := a.Prepare(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	returned, err := a.FinishOAuth(context.Background(), "official-code", prepared.ClientAction.Params["state"])
+	if err != nil || !strings.Contains(returned, "/c/originalCode?handoff_id=pha_test_ks&oauth=ok") {
+		t.Fatalf("original OAuth return %q %v", returned, err)
+	}
+	req.Handoff.AttemptID = "wrong-attempt"
+	if _, err := a.returnToFor(req); err == nil {
+		t.Fatal("wrong attempt must not inherit original return")
 	}
 }

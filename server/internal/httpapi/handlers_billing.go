@@ -11,6 +11,7 @@
 package httpapi
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -26,6 +27,7 @@ import (
 func (s *Server) registerBillingRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/v1/billing/subscription", s.requireSession(s.handleBillingSubscription))
 	mux.Handle("GET /api/v1/billing/price-catalog", s.requireSession(s.handleBillingCatalog))
+	mux.Handle("POST /api/v1/billing/subscription-quote", s.requireSession(s.handleBillingSubscriptionQuote))
 	mux.Handle("POST /api/v1/billing/subscription-orders", s.requireSession(s.handleBillingSubscriptionOrder))
 	mux.Handle("POST /api/v1/billing/hardware-orders", s.requireSession(s.handleBillingHardwareOrder))
 	mux.Handle("GET /api/v1/billing/orders", s.requireSession(s.handleBillingOrdersList))
@@ -95,10 +97,28 @@ func (s *Server) payerDecisionFor(c *caller) billing.PayerDecision {
 // 显示;URL 由生态 shell launch 铸造,本服务从不自造跳转地址)。
 func (s *Server) cashierCheckout() map[string]any {
 	app := strings.TrimSpace(s.Cfg.CashierAppID)
-	if app == "" {
+	target := strings.TrimSpace(s.Cfg.CashierTargetID)
+	if !validEcoNavAppID(app) || !ecoNavTargetID.MatchString(target) || app == s.Cfg.AppID {
 		return map[string]any{"available": false, "app_id": "", "launch_target_id": ""}
 	}
-	return map[string]any{"available": true, "app_id": app, "launch_target_id": strings.TrimSpace(s.Cfg.CashierTargetID)}
+	return map[string]any{"available": true, "app_id": app, "launch_target_id": target}
+}
+
+// Continuing an unpaid order is a read, not another purchase. Recheck the live
+// payer against the original immutable payer; never transfer or reprice it.
+func (s *Server) originalOrderCheckout(c *caller, order store.BillingOrderRow) map[string]any {
+	denied := map[string]any{"available": false, "app_id": "", "launch_target_id": ""}
+	if order.Status != billing.OrderProcessing || order.PaymentRef != "" {
+		denied["reason"] = "not_awaiting_payment"
+		return denied
+	}
+	payer := s.payerDecisionFor(c)
+	if !s.callerHasPayerGrant(c) || !payer.Authorized || payer.PayerPrincipal != order.PayerPrincipal ||
+		payer.PayerGrantRef != order.PayerGrantRef || payer.RelationRef != order.AgencyRelationRef {
+		denied["reason"] = "original_payer_required"
+		return denied
+	}
+	return s.cashierCheckout()
 }
 
 // subscriptionView is the GET /billing/subscription payload.
@@ -180,6 +200,56 @@ type billingSubscriptionOrderBody struct {
 	IdempotencyKey   string `json:"idempotency_key"`
 }
 
+// subscriptionReplayInput compares the original customer intent and live
+// server-resolved payer with the immutable original price snapshot. It never
+// consults today's catalog or recomputes the old order's amount.
+func subscriptionReplayInput(order store.BillingOrderRow, body billingSubscriptionOrderBody, payer billing.PayerDecision, c *caller) (store.NewBillingOrder, error) {
+	if order.Kind != billing.KindSubscription || order.Action != body.Action || order.PlanCode != body.PlanCode {
+		return store.NewBillingOrder{}, store.ErrBillingIdempotencyConflict
+	}
+	var snapshot struct {
+		CreationRequest  *billingSubscriptionOrderBody `json:"creation_request"`
+		AdditionalStores int                           `json:"additional_stores"`
+		Reason           string                        `json:"reason"`
+	}
+	if json.Unmarshal([]byte(order.PriceSnapshot), &snapshot) != nil {
+		return store.NewBillingOrder{}, store.ErrBillingIdempotencyConflict
+	}
+	if snapshot.CreationRequest != nil {
+		if *snapshot.CreationRequest != body {
+			return store.NewBillingOrder{}, store.ErrBillingIdempotencyConflict
+		}
+	} else {
+		// Historical rows predate request capture. Only their recorded business
+		// fields can establish equality; an omitted price_ref accepts the frozen ref.
+		if body.AdditionalStores != snapshot.AdditionalStores || body.Reason != snapshot.Reason || (body.PriceRef != "" && body.PriceRef != order.PriceRef) {
+			return store.NewBillingOrder{}, store.ErrBillingIdempotencyConflict
+		}
+	}
+
+	return store.NewBillingOrder{TenantID: order.TenantID, Kind: order.Kind, Action: order.Action, PlanCode: order.PlanCode, PriceRef: order.PriceRef, PriceSnapshot: order.PriceSnapshot, AmountMinor: order.AmountMinor, Currency: order.Currency, IdempotencyKey: body.IdempotencyKey, PayerGrantRef: payer.PayerGrantRef, AgencyRelationRef: payer.RelationRef, PayerPrincipal: payer.PayerPrincipal, ActorPrincipal: c.Member.PrincipalRef, ActorRole: c.Member.Role}, nil
+}
+
+func (s *Server) writeBillingOrder(w http.ResponseWriter, order store.BillingOrderRow, replayed bool) {
+	status := http.StatusCreated
+	if replayed {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, map[string]any{"order": order, "replayed": replayed, "checkout": s.cashierCheckout()})
+}
+
+func billingCreateFail(w http.ResponseWriter, err error) {
+	if errors.Is(err, store.ErrBillingIdempotencyConflict) {
+		fail(w, http.StatusConflict, "idempotency_conflict", "this order key belongs to a different request or payer authorization")
+		return
+	}
+	if errors.Is(err, store.ErrBillingBadInput) {
+		fail(w, http.StatusBadRequest, "bad_request", "order input is invalid")
+		return
+	}
+	fail(w, http.StatusInternalServerError, "internal", "order was not recorded")
+}
+
 func (s *Server) handleBillingSubscriptionOrder(w http.ResponseWriter, r *http.Request) {
 	c := callerFrom(r)
 	// 付款主体管理资格(下单资格):org_owner 恒有;agent 需 renewal+payer grant。
@@ -208,6 +278,40 @@ func (s *Server) handleBillingSubscriptionOrder(w http.ResponseWriter, r *http.R
 		fail(w, http.StatusBadRequest, "bad_plan", "plan_code must be store.plan.month or store.plan.year")
 		return
 	}
+	body.Action, body.PlanCode = action, plan
+	body.PriceRef, body.Reason = strings.TrimSpace(body.PriceRef), strings.TrimSpace(body.Reason)
+	payer := s.payerDecisionFor(c)
+	if !payer.Authorized {
+		fail(w, http.StatusForbidden, payer.Reason, "no live payer authorization for this principal")
+		return
+	}
+	// A second check is also used at catalog/create failures: another retry
+	// may have committed this same intent after our first read.
+	recoverOriginal := func() bool {
+		original, lookup := s.St.GetBillingOrderByKey(c.Member.TenantID, body.IdempotencyKey)
+		if errors.Is(lookup, sql.ErrNoRows) {
+			return false
+		}
+		if lookup != nil {
+			billingCreateFail(w, lookup)
+			return true
+		}
+		in, err := subscriptionReplayInput(original, body, payer, c)
+		if err != nil {
+			billingCreateFail(w, err)
+			return true
+		}
+		order, replayed, err := s.St.CreateBillingOrder(in, nowRFC3339())
+		if err != nil {
+			billingCreateFail(w, err)
+			return true
+		}
+		s.writeBillingOrder(w, order, replayed)
+		return true
+	}
+	if recoverOriginal() {
+		return
+	}
 	// 目录解析(零价格常量):订单引用此刻生效行并整行快照。
 	entries, err := s.St.ListBillingCatalog(c.Member.TenantID)
 	if err != nil {
@@ -216,11 +320,17 @@ func (s *Server) handleBillingSubscriptionOrder(w http.ResponseWriter, r *http.R
 	}
 	entry, err := billing.ResolveCatalog(entries, c.Member.TenantID, plan, nowRFC3339())
 	if err != nil {
+		if recoverOriginal() {
+			return
+		}
 		// 目录无生效行:诚实拒绝(不发明价格)。
 		fail(w, http.StatusConflict, "catalog_unavailable", "no effective catalog row for this plan; the price authority has not published one")
 		return
 	}
 	if strings.TrimSpace(body.PriceRef) != "" && body.PriceRef != entry.PriceRef {
+		if recoverOriginal() {
+			return
+		}
 		fail(w, http.StatusConflict, "catalog_changed", "price_ref does not match the current effective catalog row; refetch the catalog")
 		return
 	}
@@ -239,18 +349,13 @@ func (s *Server) handleBillingSubscriptionOrder(w http.ResponseWriter, r *http.R
 			return
 		}
 	}
-	// 付款授权(4593 真值):org_owner=本人;agent=激活关系快照(payer_grant_ref)。
-	payer := s.payerDecisionFor(c)
-	if !payer.Authorized {
-		fail(w, http.StatusForbidden, payer.Reason, "no live payer authorization for this principal")
-		return
-	}
 	snapshot, _ := json.Marshal(map[string]any{
 		"price_ref": entry.PriceRef, "currency": entry.Currency, "price_minor": entry.PriceMinor,
 		"service_days": entry.ServiceDays, "included_store_count": entry.IncludedStoreCount,
 		"extra_store_price_minor": entry.ExtraStorePriceMinor, "tier_json": entry.TierJSON,
 		"grace_days": entry.GraceDays, "pricing_version": entry.PricingVersion,
 		"action": action, "additional_stores": expandExtra, "reason": strings.TrimSpace(body.Reason),
+		"creation_request": body,
 	})
 	order, replayed, err := s.St.CreateBillingOrder(store.NewBillingOrder{
 		TenantID: c.Member.TenantID, Kind: billing.KindSubscription, Action: action,
@@ -260,23 +365,14 @@ func (s *Server) handleBillingSubscriptionOrder(w http.ResponseWriter, r *http.R
 		PayerPrincipal: payer.PayerPrincipal, ActorPrincipal: c.Member.PrincipalRef,
 		ActorRole: c.Member.Role,
 	}, nowRFC3339())
-	if err != nil {
-		if errors.Is(err, store.ErrBillingBadInput) {
-			fail(w, http.StatusBadRequest, "bad_request", "order input is invalid")
-			return
-		}
-		fail(w, http.StatusInternalServerError, "internal", "order was not recorded")
+	if errors.Is(err, store.ErrBillingIdempotencyConflict) && recoverOriginal() {
 		return
 	}
-	status := http.StatusCreated
-	if replayed {
-		status = http.StatusOK
+	if err != nil {
+		billingCreateFail(w, err)
+		return
 	}
-	writeJSON(w, status, map[string]any{
-		"order":    order,
-		"replayed": replayed,
-		"checkout": s.cashierCheckout(), // 收银台跳转参数(生态 shell launch 铸造 URL)
-	})
+	s.writeBillingOrder(w, order, replayed)
 }
 
 // ---- POST /api/v1/billing/hardware-orders -----------------------------------------
@@ -343,18 +439,10 @@ func (s *Server) handleBillingHardwareOrder(w http.ResponseWriter, r *http.Reque
 		ActorRole: c.Member.Role,
 	}, items, nowRFC3339())
 	if err != nil {
-		if errors.Is(err, store.ErrBillingBadInput) {
-			fail(w, http.StatusBadRequest, "bad_request", "hardware order input is invalid")
-			return
-		}
-		fail(w, http.StatusInternalServerError, "internal", "hardware order was not recorded")
+		billingCreateFail(w, err)
 		return
 	}
-	status := http.StatusCreated
-	if replayed {
-		status = http.StatusOK
-	}
-	writeJSON(w, status, map[string]any{"order": order, "replayed": replayed, "checkout": s.cashierCheckout()})
+	s.writeBillingOrder(w, order, replayed)
 }
 
 // ---- orders read surface(状态回查=诚实投影读) --------------------------------------
@@ -388,7 +476,7 @@ func (s *Server) handleBillingOrderGet(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, "not_found", "order not found in this tenant scope")
 		return
 	}
-	out := map[string]any{"order": order}
+	out := map[string]any{"order": order, "checkout": s.originalOrderCheckout(c, order)}
 	if order.Kind == billing.KindHardware {
 		items, err := s.St.ListHardwareItems(c.Member.TenantID, order.ID)
 		if err != nil {

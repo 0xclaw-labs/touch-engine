@@ -13,6 +13,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math"
+	"sort"
 	"strings"
 
 	"github.com/bianjiefilm/touch-engine/server/internal/billing"
@@ -82,35 +84,82 @@ amount_minor,currency,status,order_ref,payment_ref,idempotency_key,
 payer_grant_ref,agency_relation_ref,payer_principal,actor_principal,actor_role,
 fail_reason,created_at,updated_at`
 
-// CreateBillingOrder inserts one processing order, or replays the row that the
-// idempotency key already owns (replayed=true). Never creates a second order
-// for the same key.
-func (s *Store) CreateBillingOrder(in NewBillingOrder, at string) (BillingOrderRow, bool, error) {
+// canonicalBillingJSON ignores object field order and whitespace in stored snapshots.
+func canonicalBillingJSON(raw string) string {
+	if raw == "" {
+		return "{}"
+	}
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.UseNumber()
+	var value any
+	if dec.Decode(&value) != nil {
+		return raw
+	}
+	result, err := json.Marshal(value)
+	if err != nil {
+		return raw
+	}
+	return string(result)
+}
+
+func sameBillingOrderIntent(row BillingOrderRow, in NewBillingOrder) bool {
+	return row.TenantID == in.TenantID && row.Kind == in.Kind && row.Action == in.Action &&
+		row.PlanCode == in.PlanCode && row.PriceRef == in.PriceRef && row.AmountMinor == in.AmountMinor && row.Currency == in.Currency &&
+		row.ActorPrincipal == in.ActorPrincipal && row.ActorRole == in.ActorRole && row.PayerPrincipal == in.PayerPrincipal &&
+		row.PayerGrantRef == in.PayerGrantRef && row.AgencyRelationRef == in.AgencyRelationRef &&
+		canonicalBillingJSON(row.PriceSnapshot) == canonicalBillingJSON(in.PriceSnapshot)
+}
+
+func createBillingOrderTx(tx *sql.Tx, in NewBillingOrder, at string) (BillingOrderRow, bool, error) {
 	if strings.TrimSpace(in.IdempotencyKey) == "" || strings.TrimSpace(in.TenantID) == "" {
 		return BillingOrderRow{}, false, ErrBillingBadInput
 	}
-	var existing BillingOrderRow
-	existing, err := scanBillingOrder(s.DB.QueryRow(
-		`SELECT `+billingOrderCols+` FROM billing_orders WHERE tenant_id=? AND idempotency_key=?`,
-		in.TenantID, in.IdempotencyKey))
-	if err == nil {
-		return existing, true, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return BillingOrderRow{}, false, err
-	}
+	// Insert first obtains the write lock before reading: competing requests read
+	// the winning committed row rather than passing a separate check/insert gap.
 	id := newID("bo_")
-	_, err = s.DB.Exec(`INSERT INTO billing_orders(`+billingOrderCols+`)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		id, in.TenantID, in.Kind, in.Action, in.PlanCode, in.PriceRef, in.PriceSnapshot,
-		in.AmountMinor, in.Currency, billing.OrderProcessing, "", "", in.IdempotencyKey,
-		in.PayerGrantRef, in.AgencyRelationRef, in.PayerPrincipal,
-		in.ActorPrincipal, in.ActorRole, "", at, at)
+	result, err := tx.Exec(`INSERT INTO billing_orders(`+billingOrderCols+`)
+ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(tenant_id,idempotency_key) DO NOTHING`,
+		id, in.TenantID, in.Kind, in.Action, in.PlanCode, in.PriceRef, in.PriceSnapshot, in.AmountMinor, in.Currency, billing.OrderProcessing, "", "", in.IdempotencyKey,
+		in.PayerGrantRef, in.AgencyRelationRef, in.PayerPrincipal, in.ActorPrincipal, in.ActorRole, "", at, at)
 	if err != nil {
 		return BillingOrderRow{}, false, err
 	}
-	row, err := s.GetBillingOrder(in.TenantID, id)
-	return row, false, err
+	n, err := result.RowsAffected()
+	if err != nil {
+		return BillingOrderRow{}, false, err
+	}
+	row, err := scanBillingOrder(tx.QueryRow(`SELECT `+billingOrderCols+` FROM billing_orders WHERE tenant_id=? AND idempotency_key=?`, in.TenantID, in.IdempotencyKey))
+	if err != nil {
+		return BillingOrderRow{}, false, err
+	}
+	if n == 0 && !sameBillingOrderIntent(row, in) {
+		return BillingOrderRow{}, false, ErrBillingIdempotencyConflict
+	}
+	return row, n == 0, nil
+}
+
+// CreateBillingOrder inserts one processing order, or reads the original only
+// when all immutable business and payer/actor fields match the same intent.
+func (s *Store) CreateBillingOrder(in NewBillingOrder, at string) (BillingOrderRow, bool, error) {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return BillingOrderRow{}, false, err
+	}
+	defer tx.Rollback()
+	row, replayed, err := createBillingOrderTx(tx, in, at)
+	if err != nil {
+		return BillingOrderRow{}, false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return BillingOrderRow{}, false, err
+	}
+	return row, replayed, nil
+}
+
+// GetBillingOrderByKey reads only the tenant's original order; callers must
+// check live payer authorization before using this recovery path.
+func (s *Store) GetBillingOrderByKey(tenantID, key string) (BillingOrderRow, error) {
+	return scanBillingOrder(s.DB.QueryRow(`SELECT `+billingOrderCols+` FROM billing_orders WHERE tenant_id=? AND idempotency_key=?`, tenantID, key))
 }
 
 // GetBillingOrder fetches one order inside the tenant scope only.
@@ -488,28 +537,80 @@ type BillingHardwareItem struct {
 	UnitAmountMinor int64  `json:"unit_amount_minor"`
 }
 
-// CreateHardwareOrder inserts the order and its item lines atomically.
+// canonicalHardwareItems preserves full line multiplicity while ignoring
+// generated internal IDs and display order.
+func canonicalHardwareItems(items []BillingHardwareItem) string {
+	lines := make([]string, 0, len(items))
+	for _, it := range items {
+		b, _ := json.Marshal(struct {
+			SKU, Name, Kind string
+			Qty             int
+			UnitAmountMinor int64
+		}{strings.TrimSpace(it.SKU), strings.TrimSpace(it.Name), it.Kind, it.Qty, it.UnitAmountMinor})
+		lines = append(lines, string(b))
+	}
+	sort.Strings(lines)
+	b, _ := json.Marshal(lines)
+	return string(b)
+}
+
+// CreateHardwareOrder inserts the order and all item lines in one transaction.
 func (s *Store) CreateHardwareOrder(in NewBillingOrder, items []BillingHardwareItem, at string) (BillingOrderRow, bool, error) {
 	if in.Kind != billing.KindHardware || len(items) == 0 {
 		return BillingOrderRow{}, false, ErrBillingBadInput
 	}
-	for _, it := range items {
+	normalized := append([]BillingHardwareItem(nil), items...)
+	var total int64
+	for i := range normalized {
+		it := &normalized[i]
+		it.SKU, it.Name = strings.TrimSpace(it.SKU), strings.TrimSpace(it.Name)
 		if it.Name == "" || it.Qty <= 0 || it.UnitAmountMinor < 0 || (it.Kind != "goods" && it.Kind != "service") {
 			return BillingOrderRow{}, false, ErrBillingBadInput
 		}
+		if it.UnitAmountMinor > math.MaxInt64/int64(it.Qty) {
+			return BillingOrderRow{}, false, ErrBillingBadInput
+		}
+		line := int64(it.Qty) * it.UnitAmountMinor
+		if total > math.MaxInt64-line {
+			return BillingOrderRow{}, false, ErrBillingBadInput
+		}
+		total += line
 	}
-	row, replayed, err := s.CreateBillingOrder(in, at)
-	if err != nil || replayed {
-		return row, replayed, err
+	if in.AmountMinor != total {
+		return BillingOrderRow{}, false, ErrBillingBadInput
 	}
-	for _, it := range items {
-		if _, err := s.DB.Exec(`INSERT INTO billing_hardware_items(id,tenant_id,order_id,sku,name,kind,qty,unit_amount_minor,created_at)
-			VALUES(?,?,?,?,?,?,?,?,?)`,
-			firstNonEmptyStr(it.ID, newID("bhi_")), in.TenantID, row.ID, it.SKU, it.Name, it.Kind, it.Qty, it.UnitAmountMinor, at); err != nil {
-			return row, false, err
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return BillingOrderRow{}, false, err
+	}
+	defer tx.Rollback()
+	row, replayed, err := createBillingOrderTx(tx, in, at)
+	if err != nil {
+		return BillingOrderRow{}, false, err
+	}
+	if replayed {
+		rows, e := tx.Query(`SELECT id,order_id,sku,name,kind,qty,unit_amount_minor FROM billing_hardware_items WHERE tenant_id=? AND order_id=? ORDER BY id`, in.TenantID, row.ID)
+		if e != nil {
+			return BillingOrderRow{}, false, e
+		}
+		original, e := scanHardwareItems(rows)
+		if e != nil {
+			return BillingOrderRow{}, false, e
+		}
+		if canonicalHardwareItems(original) != canonicalHardwareItems(normalized) {
+			return BillingOrderRow{}, false, ErrBillingIdempotencyConflict
+		}
+	} else {
+		for _, it := range normalized {
+			if _, err = tx.Exec(`INSERT INTO billing_hardware_items(id,tenant_id,order_id,sku,name,kind,qty,unit_amount_minor,created_at) VALUES(?,?,?,?,?,?,?,?,?)`, firstNonEmptyStr(it.ID, newID("bhi_")), in.TenantID, row.ID, it.SKU, it.Name, it.Kind, it.Qty, it.UnitAmountMinor, at); err != nil {
+				return BillingOrderRow{}, false, err
+			}
 		}
 	}
-	return row, false, nil
+	if err = tx.Commit(); err != nil {
+		return BillingOrderRow{}, false, err
+	}
+	return row, replayed, nil
 }
 
 // ListHardwareItems lists one order's lines.
@@ -519,6 +620,10 @@ func (s *Store) ListHardwareItems(tenantID, orderID string) ([]BillingHardwareIt
 	if err != nil {
 		return nil, err
 	}
+	return scanHardwareItems(rows)
+}
+
+func scanHardwareItems(rows *sql.Rows) ([]BillingHardwareItem, error) {
 	defer rows.Close()
 	out := []BillingHardwareItem{}
 	for rows.Next() {

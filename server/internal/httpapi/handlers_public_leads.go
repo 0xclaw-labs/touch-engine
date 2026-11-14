@@ -86,8 +86,8 @@ func (s *Server) handlePublicLeadForm(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled":                 true,
-		"fields":                  []string{"name", "phone", "wechat(optional)"},
-		"required_fields":         []string{"name", "phone"},
+		"fields":                  []string{"name(optional)", "phone", "wechat(optional)"},
+		"required_fields":         []string{"phone"},
 		"purpose":                 "本次活动的服务与咨询。不留下联系方式也可以继续看活动。",
 		"recipient":               map[string]any{"name": merchant},
 		"notice":                  notice,
@@ -141,8 +141,8 @@ func (s *Server) handlePublicLeadSubmit(w http.ResponseWriter, r *http.Request) 
 		fail(w, http.StatusBadRequest, "bad_phone", "phone must be a valid mainland mobile number")
 		return
 	}
-	if strings.TrimSpace(in.Name) == "" {
-		fail(w, http.StatusBadRequest, "bad_request", "name is required")
+	if len([]rune(strings.TrimSpace(in.Name))) > 100 {
+		fail(w, http.StatusBadRequest, "bad_request", "name is too long")
 		return
 	}
 	form, err := s.St.GetLeadFormByCampaign(res.Campaign.ID)
@@ -315,6 +315,9 @@ func publicLeadProgress(lead store.LeadSubmission) map[string]any {
 		"submission_ref":           lead.SubmissionRef,
 		"state":                    state,
 		"crm_received":             lead.SyncState == leads.StateCRMReceived,
+		"receiver_state":           lead.ReceiverState,
+		"revocation_pending":       lead.SyncState == leads.StateRevoked && lead.ReceiverState != store.ReceiverStateRevoked,
+		"notice_version":           lead.ConsentNoticeVersion,
 		"sales_received":           "unknown",
 		"owner_followed_up":        "unknown",
 		"creates_platform_account": false,
@@ -392,10 +395,7 @@ func (s *Server) handlePublicLeadRevoke(w http.ResponseWriter, r *http.Request) 
 	}
 	_ = s.St.AppendLeadAudit(lead.TenantID, lead.SubmissionRef, "revoke",
 		`{"prior_state":"`+lead.SyncState+`","revoke_event":`+boolJSON(updated.SyncState == leads.StateRevoked)+`}`, "consumer")
-	writeJSON(w, http.StatusOK, map[string]any{
-		"submission_ref": updated.SubmissionRef,
-		"state":          updated.SyncState,
-	})
+	writeJSON(w, http.StatusOK, publicLeadProgress(updated))
 }
 
 // POST /api/v1/public/links/{code}/view-events — anonymous browse beacon.
@@ -486,8 +486,8 @@ func (s *Server) handlePublicStoreLeadForm(w http.ResponseWriter, r *http.Reques
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled":                 true,
-		"fields":                  []string{"name", "phone", "wechat(optional)"},
-		"required_fields":         []string{"name", "phone"},
+		"fields":                  []string{"name(optional)", "phone", "wechat(optional)"},
+		"required_fields":         []string{"phone"},
 		"purpose":                 "本次到店服务与咨询。不留下联系方式也可以继续浏览门店。",
 		"recipient":               map[string]any{"name": pub.StoreName},
 		"notice":                  notice,
@@ -536,8 +536,8 @@ func (s *Server) handlePublicStoreLeadSubmit(w http.ResponseWriter, r *http.Requ
 		fail(w, http.StatusBadRequest, "bad_phone", "phone must be a valid mainland mobile number")
 		return
 	}
-	if strings.TrimSpace(in.Name) == "" {
-		fail(w, http.StatusBadRequest, "bad_request", "name is required")
+	if len([]rune(strings.TrimSpace(in.Name))) > 100 {
+		fail(w, http.StatusBadRequest, "bad_request", "name is too long")
 		return
 	}
 	form, err := s.St.GetLeadFormByStore(pub.StoreID)
@@ -685,10 +685,7 @@ func (s *Server) handlePublicStoreLeadRevoke(w http.ResponseWriter, r *http.Requ
 		fail(w, http.StatusInternalServerError, "internal", "revocation failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"submission_ref": updated.SubmissionRef,
-		"state":          updated.SyncState,
-	})
+	writeJSON(w, http.StatusOK, publicLeadProgress(updated))
 }
 
 // revokeVerifiedStoreLead performs the revoke enqueue for an already-verified

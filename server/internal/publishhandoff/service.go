@@ -24,6 +24,10 @@ import (
 
 // Options configures the service. Now is injectable for tests.
 type Options struct {
+	// MediaMint optionally resolves controlled real-media refs for a frozen legacy handoff.
+	// handled=false retains the original asset handoff protocol.
+	MediaMint func(Handoff, []MediaItem) ([]MediaRef, bool, error)
+
 	Now      func() time.Time
 	MediaTTL time.Duration // 受控媒体 URL 有效期(contentpack 上限 1h)
 	// MediaSecret / MediaBaseURL feed contentpack.MintHandoff;未配置密钥时
@@ -39,6 +43,8 @@ type Options struct {
 	// OpenVerifier proves editor_opened. nil = 没有可证实来源,一律拒绝
 	// (窗口失焦/自报永远不够)。
 	OpenVerifier OpenVerifier
+	// ActionPrepare resolves fresh controlled media and current field authority for the frozen handoff.
+	ActionPrepare func(context.Context, ActionHandoff, PrepareRequest) (PrepareRequest, error)
 	// H5EntryBase / MiniappEntryBase are the admitted-route entry bases.
 	H5EntryBase      string
 	MiniappEntryBase string
@@ -320,6 +326,12 @@ func (s *Service) Start(_ context.Context, in StartInput, rec channeladmission.R
 	if existing, ok, err := s.byKey(in.TenantID, in.IdempotencyKey); err != nil {
 		return StartResult{}, err
 	} else if ok {
+		if existing.ParticipationID != in.ParticipationID || existing.Platform != in.Platform {
+			return StartResult{}, ErrNotFound
+		}
+		if _, err := s.GetForVisitor(context.Background(), existing.ID, in.VisitorID); err != nil {
+			return StartResult{}, err
+		}
 		media, merr := s.mintMedia(existing)
 		if merr != nil {
 			return StartResult{}, merr
@@ -559,6 +571,11 @@ func (s *Service) mintMedia(h Handoff) ([]MediaRef, error) {
 }
 
 func (s *Service) mintFromItems(h Handoff, items []MediaItem) ([]MediaRef, error) {
+	if s.opt.MediaMint != nil {
+		if refs, handled, err := s.opt.MediaMint(h, items); handled || err != nil {
+			return refs, err
+		}
+	}
 	if strings.TrimSpace(s.opt.MediaSecret) == "" || strings.TrimSpace(s.opt.MediaBaseURL) == "" {
 		return nil, errors.New("media handoff signing is not configured")
 	}
@@ -860,4 +877,9 @@ func (s *Service) Resume(_ context.Context, tenantID, handoffID string) (Handoff
 		return h, err
 	}
 	return next, nil
+}
+
+// SetMediaMintResolver wires real-media issuance while preserving legacy assets.
+func (s *Service) SetMediaMintResolver(resolve func(Handoff, []MediaItem) ([]MediaRef, bool, error)) {
+	s.opt.MediaMint = resolve
 }

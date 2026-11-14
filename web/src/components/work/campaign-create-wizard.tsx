@@ -4,7 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { failureText, useSession } from "@/components/work/merchant-session";
 import { LoadErrorState } from "@/components/work/load-error-state";
-import { ContentPackPanel } from "@/components/work/content-pack-panel";
+import { ContentEditor } from "@/components/work/store-content-drawer";
+import { CampaignConfigPanel } from "@/components/work/campaign-config-panel";
 import {
   EMPTY_DRAFT,
   draftErrors,
@@ -60,6 +61,7 @@ export function CampaignCreateWizard() {
   const [campaign, setCampaign] = useState<CampaignRec | null>(null);
   const [links, setLinks] = useState<ShareLink[]>([]);
   const [linksPhase, setLinksPhase] = useState<"loading" | "error" | "ready">("loading");
+  const [adoptedVersion,setAdoptedVersion]=useState("");
   const [origin, setOrigin] = useState("");
   const hydrated = useRef(false);
 
@@ -74,20 +76,23 @@ export function CampaignCreateWizard() {
     const items = Array.isArray(res.data.items) ? (res.data.items as StoreRec[]) : [];
     const active = items.filter((item) => item.status !== "disabled");
     setStores(active);
+    if(active.length===1)setDraft(current=>current.store_id?current:{...current,store_id:active[0].id});
     setStoresPhase(active.length === 0 ? "empty" : "ready");
   }, [session]);
 
   useEffect(() => {
     setOrigin(window.location.origin);
     const saved = parseDraft(window.localStorage.getItem(draftStorageKey(session.tenantId)));
+    const queryStore=new URLSearchParams(window.location.search).get("store");
+    if(queryStore)setDraft(current=>({...current,store_id:queryStore}));
     if (saved) {
-      setDraft(saved);
+      setDraft({...saved,store_id:queryStore||saved.store_id});
       setRestored(true);
     }
     const savedCampaign = window.localStorage.getItem(campaignStorageKey(session.tenantId)) ?? "";
     if (savedCampaign) {
       setCampaignId(savedCampaign);
-      setStep(2);
+      setStep(saved?.goal === "promotion" ? 2 : 3);
     }
     void loadStores().catch(() => {
       setError("没有连上服务，门店没有读到。");
@@ -164,8 +169,8 @@ export function CampaignCreateWizard() {
       setCampaignId(id);
       window.localStorage.setItem(campaignStorageKey(session.tenantId), id);
       setCampaign(res.data as unknown as CampaignRec);
-      setNotice(campaignId ? "活动资料已更新。" : "草稿已保存。下一步选内容；这一步还没有发布。");
-      setStep(2);
+      setNotice(campaignId ? "活动资料已更新。" : "草稿已保存。继续配置本次目标需要的内容或链接；这一步还没有发布。");
+      setStep(draft.goal === "promotion" ? 2 : 3);
     } finally {
       setBusy(false);
     }
@@ -194,6 +199,10 @@ export function CampaignCreateWizard() {
     setBusy(true);
     setError("");
     try {
+      if(draft.goal === "promotion") {
+        const check=await session.api("GET",`campaigns/${campaignId}/publish-config`);
+        if(!check.ok || check.data.status!=="enabled"){setError("先保存顾客承诺、准备关联库存并通过启用检查，再发布活动。");return;}
+      }
       let enabled = pickShareLink(links);
       if (!enabled) {
         const linkRes = await session.api("POST", `campaigns/${campaignId}/links`, {});
@@ -230,7 +239,7 @@ export function CampaignCreateWizard() {
     <main data-pattern="creation" data-step={step}>
       <p className="tk-kicker"><a href="/work/campaigns">全部活动</a></p>
       <h1 className="tk-title">新建活动</h1>
-      <p className="tk-lead">先保存草稿，再补内容和链接。每一步只做一件事；草稿不会因为换页或刷新丢掉。</p>
+      <p className="tk-lead">先决定顾客要办什么。普通门店服务直接进入门店工作区；只有本次优惠、咨询或推广才需要活动。草稿支持刷新恢复。</p>
 
       <ol className="tk-steps" aria-label="创建步骤">
         {[1, 2, 3].map((item) => (
@@ -272,6 +281,11 @@ export function CampaignCreateWizard() {
               {errors.store_id ? <span className="tk-danger">{errors.store_id}</span> : null}
             </label>
           ) : null}
+          <fieldset className="tk-fieldset"><legend>本次希望顾客做什么</legend>
+            <p>{draft.store_id?<a href={`/work/stores/${draft.store_id}?tab=entrances`}>只提供普通门店服务，去门店工作区</a>:<a href="/work/stores">只提供普通门店服务，先选择门店</a>}</p>
+            <label className="tk-label"><input type="radio" name="goal" checked={draft.goal!=="promotion"} onChange={()=>setDraft({...draft,goal:"consultation"})}/>主动咨询：说明本次服务与期限，不配置推广奖励</label>
+            <label className="tk-label"><input type="radio" name="goal" checked={draft.goal==="promotion"} onChange={()=>setDraft({...draft,goal:"promotion"})}/>内容推广与优惠：准备内容、核验条件和可承担的库存</label>
+          </fieldset>
           <label className="tk-label">
             活动标题
             <input className="tk-input" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="例如：周末到店五折" required />
@@ -283,12 +297,12 @@ export function CampaignCreateWizard() {
             {errors.public_content ? <span className="tk-danger">{errors.public_content}</span> : null}
           </label>
           <label className="tk-label">
-            开始时间（本地时间）
+            开始时间（北京时间 UTC+8）
             <input className="tk-input" type="datetime-local" value={draft.starts_at_local} onChange={(event) => setDraft({ ...draft, starts_at_local: event.target.value })} />
             {errors.starts_at ? <span className="tk-danger">{errors.starts_at}</span> : null}
           </label>
           <label className="tk-label">
-            结束时间（本地时间）
+            结束时间（北京时间 UTC+8）
             <input className="tk-input" type="datetime-local" value={draft.ends_at_local} onChange={(event) => setDraft({ ...draft, ends_at_local: event.target.value })} />
             {errors.ends_at ? <span className="tk-danger">{errors.ends_at}</span> : null}
           </label>
@@ -302,24 +316,22 @@ export function CampaignCreateWizard() {
       {step === 2 ? (
         <section className="tk-section" data-pattern-region="primary_action">
           <h2 className="tk-section-title">② 内容与素材</h2>
-          <p className="tk-note">内容包来自门店授权的素材。先预览，再点「采用这一版」；采用后顾客看到的就是这一版。含 AI 合成的内容会明确标出。</p>
-          {campaignId ? <ContentPackPanel campaignId={campaignId} /> : null}
-          <p className="tk-note">
-            需要上传成片或从素材库挑选，去<a href={`/work/materials?campaign=${encodeURIComponent(campaignId)}`}>素材页</a>。素材库没开通时，这里会说明原因，不会伪造素材。
-          </p>
+          <p className="tk-note">上传、选材或制作都在这里完成。采用只更新候选内容，尚未发布活动。</p>
+          {campaignId && draft.store_id ? <ContentEditor storeId={draft.store_id} storeName={stores.find(s=>s.id===draft.store_id)?.name} campaignId={campaignId} purpose="活动推广内容" initialTitle={draft.title} initialBody={draft.public_content} returnHref="/work/campaigns/new" onAdopted={result=>{setAdoptedVersion(result.versionId);setNotice("内容已采用为候选，下一步配置顾客承诺。");}}/>:null}
           <div className="tk-row">
             <button type="button" className="tk-quiet" onClick={() => setStep(1)}>返回上一步</button>
             <button type="button" className="tk-primary" data-primary-action="true" onClick={() => { setError(""); setStep(3); }}>
               继续：链接与发布
             </button>
           </div>
-          <p className="tk-note">没有采用内容也可以先建链接，但顾客页会显示“还没有准备好在线内容”。</p>
+          <p className="tk-note">内容推广启用前，服务端将检查采用版本、渠道准入与真实库存。</p>
         </section>
       ) : null}
 
       {step === 3 ? (
         <section className="tk-section" data-pattern-region="primary_action">
           <h2 className="tk-section-title">③ 链接与发布</h2>
+          {draft.goal === "promotion" ? <CampaignConfigPanel campaignId={campaignId} campaignTitle={draft.title} campaignBody={draft.public_content} campaignStoreId={draft.store_id} adoptedVersionId={adoptedVersion}/> : <p className="tk-note">咨询活动只展示本次服务说明，不承诺推广奖励。</p>}
           <p className="tk-note">发布后顾客可以打开链接参与。活动仍是草稿时，打开链接会显示“活动未发布”。</p>
           {linksPhase === "loading" ? <p className="tk-state" data-state="loading">{surfaceLabel("loading")}</p> : null}
           {linksPhase === "error" ? <LoadErrorState message={error || "短码没有读到。这不是还没有短码。"} onRetry={() => void loadLinks()} /> : null}
@@ -337,7 +349,7 @@ export function CampaignCreateWizard() {
             <p className="tk-note" data-state="empty">还没有启用的短码。点下面的主行动会先生成短码，再发布活动。</p>
           ) : null}
           <div className="tk-row">
-            <button type="button" className="tk-quiet" onClick={() => setStep(2)}>返回上一步</button>
+            <button type="button" className="tk-quiet" onClick={() => setStep(draft.goal === "promotion" ? 2 : 1)}>返回上一步</button>
             <button type="button" className="tk-primary" data-primary-action="true" onClick={() => void publish()} disabled={busy}>
               {busy ? "正在发布…" : "生成链接并发布"}
             </button>

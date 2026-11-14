@@ -66,23 +66,25 @@ func (e *StorefrontBlockedError) Error() string {
 // StorefrontVersion is one version row (latest = mutable draft; published =
 // immutable history).
 type StorefrontVersion struct {
-	ID                 string                             `json:"id"`
-	TenantID           string                             `json:"-"`
-	StoreID            string                             `json:"store_id"`
-	StoreCode          string                             `json:"store_code"`
-	Revision           int                                `json:"revision"`
-	Status             string                             `json:"status"`
-	Sections           []storefrontversion.Section        `json:"sections"`
-	Actions            []storefrontversion.ActionSnapshot `json:"actions"`
-	ActionRefs         map[string]int                     `json:"action_revision_refs"`
-	OfferRefs          []string                           `json:"offer_refs"`
-	CampaignRefs       []string                           `json:"campaign_refs"`
-	BrandRef           string                             `json:"brand_ref"`
-	SummaryFingerprint string                             `json:"summary_fingerprint"`
-	CreatedBy          string                             `json:"created_by"`
-	CreatedAt          string                             `json:"created_at"`
-	UpdatedAt          string                             `json:"updated_at"`
-	PublishedAt        string                             `json:"published_at"`
+	Services           []storefrontversion.ServiceSnapshot `json:"services"`
+	ServicesRevision   int                                 `json:"services_revision"`
+	ID                 string                              `json:"id"`
+	TenantID           string                              `json:"-"`
+	StoreID            string                              `json:"store_id"`
+	StoreCode          string                              `json:"store_code"`
+	Revision           int                                 `json:"revision"`
+	Status             string                              `json:"status"`
+	Sections           []storefrontversion.Section         `json:"sections"`
+	Actions            []storefrontversion.ActionSnapshot  `json:"actions"`
+	ActionRefs         map[string]int                      `json:"action_revision_refs"`
+	OfferRefs          []string                            `json:"offer_refs"`
+	CampaignRefs       []string                            `json:"campaign_refs"`
+	BrandRef           string                              `json:"brand_ref"`
+	SummaryFingerprint string                              `json:"summary_fingerprint"`
+	CreatedBy          string                              `json:"created_by"`
+	CreatedAt          string                              `json:"created_at"`
+	UpdatedAt          string                              `json:"updated_at"`
+	PublishedAt        string                              `json:"published_at"`
 }
 
 // StorefrontPublishEvent is one append-only publish/rollback audit row.
@@ -108,16 +110,20 @@ type StorefrontPublishResult struct {
 }
 
 const storefrontVersionCols = `id,tenant_id,store_id,store_code,revision,status,sections,actions,` +
-	`action_revision_refs,offer_refs,campaign_refs,brand_ref,summary_fingerprint,created_by,created_at,updated_at,published_at`
+	`action_revision_refs,offer_refs,campaign_refs,brand_ref,summary_fingerprint,created_by,created_at,updated_at,published_at,services,services_revision`
 
 func scanStorefrontVersion(sc interface{ Scan(...any) error }) (StorefrontVersion, error) {
 	var v StorefrontVersion
 	var sections, actions, refs, offers, campaigns string
+	var services sql.NullString
 	err := sc.Scan(&v.ID, &v.TenantID, &v.StoreID, &v.StoreCode, &v.Revision, &v.Status,
 		&sections, &actions, &refs, &offers, &campaigns, &v.BrandRef, &v.SummaryFingerprint,
-		&v.CreatedBy, &v.CreatedAt, &v.UpdatedAt, &v.PublishedAt)
+		&v.CreatedBy, &v.CreatedAt, &v.UpdatedAt, &v.PublishedAt, &services, &v.ServicesRevision)
 	if err != nil {
 		return StorefrontVersion{}, err
+	}
+	if services.Valid {
+		_ = json.Unmarshal([]byte(services.String), &v.Services)
 	}
 	_ = json.Unmarshal([]byte(sections), &v.Sections)
 	_ = json.Unmarshal([]byte(actions), &v.Actions)
@@ -148,12 +154,14 @@ func scanStorefrontVersion(sc interface{ Scan(...any) error }) (StorefrontVersio
 func (v StorefrontVersion) DraftDocument() storefrontversion.Document {
 	return storefrontversion.Document{
 		Sections: v.Sections, Actions: v.Actions, ActionRefs: v.ActionRefs,
+		Services: v.Services, ServicesRevision: v.ServicesRevision,
 		OfferRefs: v.OfferRefs, CampaignRefs: v.CampaignRefs, BrandRef: v.BrandRef,
 	}
 }
 
 func draftFingerprint(doc storefrontversion.Document) string {
-	return storefrontversion.Fingerprint(storefrontversion.ChangeSummary(storefrontversion.Document{}, doc))
+	raw, _ := json.Marshal(doc)
+	return storefrontversion.Fingerprint([]string{string(raw)})
 }
 
 // latestStorefrontVersion returns the highest-revision row; ErrNotFound when
@@ -220,6 +228,7 @@ func (s *Store) SaveStorefrontDraft(tenantID, storeID string, expectedRevision i
 	for _, row := range live {
 		liveLeaf = append(liveLeaf, storefrontversion.LiveAction{
 			ID: row.ID, CatalogCode: row.CatalogCode, Platform: row.Platform, Kind: row.Kind,
+			TargetRef: row.TargetRef, ContentBindingRef: row.ContentBindingRef,
 			Variant: row.Variant, Label: row.Label, CapabilityRef: row.CapabilityRef, Revision: row.Revision,
 		})
 	}
@@ -227,6 +236,11 @@ func (s *Store) SaveStorefrontDraft(tenantID, storeID string, expectedRevision i
 	if err != nil {
 		// 段落引用了不存在的动作:保存级 400(跨店/伪造引用进不了库)。
 		return StorefrontVersion{}, fmt.Errorf("%w: %v", ErrUnknownActionID, err)
+	}
+	for i := range snaps {
+		if err := s.FreezeActionContent(tenantID, storeID, &snaps[i]); err != nil {
+			return StorefrontVersion{}, err
+		}
 	}
 	for _, ref := range doc.OfferRefs {
 		if _, err := s.GetDealOffer(strings.TrimSpace(ref), tenantID); err != nil {
@@ -239,6 +253,12 @@ func (s *Store) SaveStorefrontDraft(tenantID, storeID string, expectedRevision i
 		}
 	}
 
+	services, serviceRevision, err := s.ListStoreServices(tenantID, storeID)
+	if err != nil {
+		return StorefrontVersion{}, err
+	}
+	doc.Services = serviceSnapshots(services)
+	doc.ServicesRevision = serviceRevision
 	latest, err := s.latestStorefrontVersion(tenantID, storeID)
 	hasLatest := !errors.Is(err, ErrNotFound)
 	if err != nil && !errors.Is(err, ErrNotFound) {
@@ -253,12 +273,13 @@ func (s *Store) SaveStorefrontDraft(tenantID, storeID string, expectedRevision i
 
 	desired := StorefrontVersion{
 		TenantID: tenantID, StoreID: storeID, StoreCode: sf.StoreCode,
-		Sections: doc.Sections, Actions: snaps, ActionRefs: refs,
+		Sections: append([]storefrontversion.Section{}, doc.Sections...), Actions: snaps, ActionRefs: refs,
+		Services: doc.Services, ServicesRevision: serviceRevision,
 		OfferRefs: normalizeStringList(doc.OfferRefs), CampaignRefs: normalizeStringList(doc.CampaignRefs),
 		BrandRef: strings.TrimSpace(doc.BrandRef), CreatedBy: actor,
 	}
 	if hasLatest && latest.Status == StorefrontStatusDraft {
-		if draftFingerprint(doc) == draftFingerprint(latest.DraftDocument()) {
+		if draftFingerprint(desired.DraftDocument()) == draftFingerprint(latest.DraftDocument()) {
 			return latest, nil // 幂等重放:不推修订、不触 epoch
 		}
 		desired.ID = latest.ID
@@ -288,13 +309,14 @@ func (s *Store) SaveStorefrontDraft(tenantID, storeID string, expectedRevision i
 	refsJSON, _ := json.Marshal(desired.ActionRefs)
 	offers, _ := json.Marshal(desired.OfferRefs)
 	campaigns, _ := json.Marshal(desired.CampaignRefs)
+	servicesJSON, _ := json.Marshal(desired.Services)
 	if _, err := s.DB.Exec(`INSERT INTO storefront_versions(
 			id,tenant_id,store_id,store_code,revision,status,sections,actions,action_revision_refs,
-			offer_refs,campaign_refs,brand_ref,summary_fingerprint,created_by,created_at,updated_at,published_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			offer_refs,campaign_refs,brand_ref,summary_fingerprint,created_by,created_at,updated_at,published_at,services,services_revision)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		desired.ID, tenantID, storeID, desired.StoreCode, desired.Revision, desired.Status,
 		string(sections), string(actions), string(refsJSON), string(offers), string(campaigns),
-		desired.BrandRef, "", actor, desired.CreatedAt, desired.CreatedAt, ""); err != nil {
+		desired.BrandRef, "", actor, desired.CreatedAt, desired.CreatedAt, "", string(servicesJSON), serviceRevision); err != nil {
 		return StorefrontVersion{}, err
 	}
 	s.bumpEpoch()
@@ -308,18 +330,19 @@ func (s *Store) updateStorefrontVersionRow(v StorefrontVersion) error {
 	refsJSON, _ := json.Marshal(v.ActionRefs)
 	offers, _ := json.Marshal(v.OfferRefs)
 	campaigns, _ := json.Marshal(v.CampaignRefs)
+	servicesJSON, _ := json.Marshal(v.Services)
 	res, err := s.DB.Exec(`UPDATE storefront_versions SET
 			store_code=?,revision=?,status=?,sections=?,actions=?,action_revision_refs=?,
-			offer_refs=?,campaign_refs=?,brand_ref=?,summary_fingerprint=?,updated_at=?,published_at=?
-		WHERE id=? AND tenant_id=? AND store_id=?`,
+			offer_refs=?,campaign_refs=?,brand_ref=?,summary_fingerprint=?,updated_at=?,published_at=?,services=?,services_revision=?
+		WHERE id=? AND tenant_id=? AND store_id=? AND revision=? AND status='draft'`,
 		v.StoreCode, v.Revision, v.Status, string(sections), string(actions), string(refsJSON),
 		string(offers), string(campaigns), v.BrandRef, v.SummaryFingerprint, v.UpdatedAt, v.PublishedAt,
-		v.ID, v.TenantID, v.StoreID)
+		string(servicesJSON), v.ServicesRevision, v.ID, v.TenantID, v.StoreID, v.Revision-1)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
+		return ErrStaleRevision
 	}
 	return nil
 }
@@ -386,7 +409,7 @@ func (s *Store) PublishStorefrontVersion(tenantID, storeID string, candidateRevi
 	if err := s.assertStorefrontRefsFresh(latest, tenantID); err != nil {
 		return StorefrontPublishResult{}, err
 	}
-	verdicts, err := s.storefrontRefVerdicts(tenantID, storeID, latest.ActionRefs, at)
+	verdicts, err := s.storefrontVersionVerdicts(latest, at)
 	if err != nil {
 		return StorefrontPublishResult{}, err
 	}
@@ -394,7 +417,7 @@ func (s *Store) PublishStorefrontVersion(tenantID, storeID string, candidateRevi
 		return StorefrontPublishResult{}, &StorefrontBlockedError{Kind: "publish", Actions: blocked}
 	}
 
-	publishedAt := at.UTC().Format(time.RFC3339)
+	publishedAt := at.UTC().Format(time.RFC3339Nano)
 	latest.Status = StorefrontStatusPublished
 	latest.PublishedAt = publishedAt
 	latest.SummaryFingerprint = confirmFingerprint
@@ -441,7 +464,7 @@ func (s *Store) RollbackStorefrontVersion(tenantID, storeID string, targetRevisi
 	if target.Status != StorefrontStatusPublished {
 		return StorefrontPublishResult{}, ErrStorefrontNotPublished
 	}
-	verdicts, err := s.storefrontRefVerdicts(tenantID, storeID, target.ActionRefs, at)
+	verdicts, err := s.storefrontVersionVerdicts(target, at)
 	if err != nil {
 		return StorefrontPublishResult{}, err
 	}
@@ -449,7 +472,7 @@ func (s *Store) RollbackStorefrontVersion(tenantID, storeID string, targetRevisi
 		return StorefrontPublishResult{}, &StorefrontBlockedError{Kind: "rollback", Actions: blocked}
 	}
 
-	publishedAt := at.UTC().Format(time.RFC3339)
+	publishedAt := at.UTC().Format(time.RFC3339Nano)
 	rollRow := target // 历史行零改写:只动指针与事件,行内容原样。
 	if err := s.txStorefrontPublish(rollRow, pointer, "rollback", []string{}, actor, publishedAt); err != nil {
 		return StorefrontPublishResult{}, err
@@ -476,6 +499,16 @@ func (s *Store) txStorefrontPublish(v StorefrontVersion, previousRevision int, a
 		return err
 	}
 	defer tx.Rollback()
+	if action == "publish" && v.Services != nil {
+		var current int
+		err := tx.QueryRow(`SELECT config_revision FROM store_service_configs WHERE store_id=?`, v.StoreID).Scan(&current)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if current != v.ServicesRevision {
+			return ErrStorefrontRefDrift
+		}
+	}
 	if action == "publish" {
 		// 发布冻结行:置 published + published_at + 确认的摘要指纹(历史自此只读)。
 		if _, err := tx.Exec(`UPDATE storefront_versions SET status=?,published_at=?,
@@ -487,10 +520,14 @@ func (s *Store) txStorefrontPublish(v StorefrontVersion, previousRevision int, a
 		}
 	}
 	// 单一发布指针(4584 建列,本票接管写)。
-	if _, err := tx.Exec(`UPDATE store_storefronts SET storefront_revision=?,updated_at=?
-		WHERE store_id=? AND tenant_id=?`,
-		v.Revision, publishedAt, v.StoreID, v.TenantID); err != nil {
+	result, err := tx.Exec(`UPDATE store_storefronts SET storefront_revision=?,updated_at=?
+ WHERE store_id=? AND tenant_id=? AND storefront_revision=?`,
+		v.Revision, publishedAt, v.StoreID, v.TenantID, previousRevision)
+	if err != nil {
 		return err
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return ErrStaleRevision
 	}
 	if _, err := tx.Exec(`INSERT INTO storefront_publish_events(
 			id,tenant_id,store_id,action,revision,previous_revision,actor,summary,created_at)
@@ -562,7 +599,7 @@ func (s *Store) GetStorefrontPublishedByCode(code string) (StorefrontVersion, er
 	v, err := scanStorefrontVersion(s.DB.QueryRow(
 		`SELECT v.id,v.tenant_id,v.store_id,v.store_code,v.revision,v.status,v.sections,v.actions,
 			v.action_revision_refs,v.offer_refs,v.campaign_refs,v.brand_ref,v.summary_fingerprint,
-			v.created_by,v.created_at,v.updated_at,v.published_at
+			v.created_by,v.created_at,v.updated_at,v.published_at,v.services,v.services_revision
 		 FROM storefront_versions v
 		 JOIN store_storefronts f ON f.store_id = v.store_id AND f.storefront_revision = v.revision
 		 WHERE f.store_code = ?`, strings.TrimSpace(code)))
@@ -634,6 +671,9 @@ func (s *Store) StorefrontActionFacts(tenantID, storeID string, actionIDs []stri
 // store_actions 行 + store_action_content_bindings + store_content_pack_adoptions
 // (3553 contentpack 真值). Zero writes.
 func (s *Store) storefrontRefVerdicts(tenantID, storeID string, refs map[string]int, at time.Time) ([]storefrontversion.Verdict, error) {
+	if len(refs) == 0 {
+		return []storefrontversion.Verdict{}, nil
+	}
 	ids := make([]string, 0, len(refs))
 	for id := range refs {
 		ids = append(ids, id)
@@ -749,4 +789,99 @@ func sortedStrings(in []string) []string {
 		}
 	}
 	return out
+}
+
+// ActionsForStorefrontVersion combines frozen customer targets with live safety vetoes.
+// Candidate target edits never change a published promise; disable/revoke/expiry still do.
+func (s *Store) ActionsForStorefrontVersion(v StorefrontVersion, at time.Time) ([]StoreAction, error) {
+	return s.actionsForFrozenPublication(v, at, true)
+}
+
+func (s *Store) actionsForFrozenPublication(v StorefrontVersion, at time.Time, versioned bool) ([]StoreAction, error) {
+	out := make([]StoreAction, 0, len(v.Actions))
+	for _, snap := range v.Actions {
+		live, err := s.GetStoreActionByID(v.TenantID, v.StoreID, snap.ActionID)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		target, binding := snap.TargetRef, snap.ContentBindingRef
+		if target == "" {
+			historical, found, err := s.historicalStorefrontAction(v.StoreID, snap.ActionID, snap.ActionRevision)
+			if err != nil {
+				return nil, err
+			}
+			if found {
+				target, binding = historical.TargetRef, historical.ContentBindingRef
+			} else if live.Revision == snap.ActionRevision {
+				target, binding = live.TargetRef, live.ContentBindingRef
+			} else {
+				continue
+			}
+		}
+		live.TargetRef, live.ContentBindingRef = target, binding
+		live.ContentVersionID, live.ContentCandidates = snap.ContentVersionID, snap.ContentCandidates
+		live.Label, live.CatalogCode, live.Kind, live.Platform, live.Variant = snap.Label, snap.CatalogCode, snap.Kind, snap.Platform, snap.Variant
+		if snap.ContentCandidates == nil {
+			// Old published JSON predates content freezing. Restore only an adopted version
+			// proven at publication time; never resolve a later adoption as the old publication.
+			if err := s.restorePublishedContent(v, &live); err != nil {
+				return nil, err
+			}
+		}
+		live.CapabilityRef, live.Presentation, live.Revision = snap.CapabilityRef, snap.Presentation, snap.ActionRevision
+		live.TenantID, live.StoreID = v.TenantID, v.StoreID
+		if versioned {
+			if err := s.filterFrozenActionContent(&live, storefrontContentCutoff(v)); err != nil {
+				return nil, err
+			}
+		}
+		if publicVisible(live, at) {
+			out = append(out, live)
+		}
+	}
+	return out, nil
+}
+func (s *Store) historicalStorefrontAction(storeID, actionID string, revision int) (StoreAction, bool, error) {
+	rows, err := s.DB.Query(`SELECT payload FROM store_action_snapshots WHERE store_id=? ORDER BY config_revision`, storeID)
+	if err != nil {
+		return StoreAction{}, false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return StoreAction{}, false, err
+		}
+		var items []StoreAction
+		if err := json.Unmarshal([]byte(raw), &items); err != nil {
+			return StoreAction{}, false, err
+		}
+		for _, item := range items {
+			if item.ID == actionID && item.Revision == revision {
+				return item, true, nil
+			}
+		}
+	}
+	return StoreAction{}, false, rows.Err()
+}
+func (s *Store) ListPublishedStoreActions(storeID string, at time.Time) ([]StoreAction, error) {
+	var code string
+	err := s.DB.QueryRow(`SELECT store_code FROM store_storefronts WHERE store_id=?`, storeID).Scan(&code)
+	if errors.Is(err, sql.ErrNoRows) {
+		return s.legacyPublishedActions(storeID, at)
+	}
+	if err != nil {
+		return nil, err
+	}
+	v, err := s.GetStorefrontPublishedByCode(code)
+	if errors.Is(err, ErrNotFound) {
+		return s.legacyPublishedActions(storeID, at)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.ActionsForStorefrontVersion(v, at)
 }

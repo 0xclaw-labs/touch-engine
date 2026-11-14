@@ -58,8 +58,8 @@ describe("三屏组件接线", () => {
 
 describe("基线保留(1670/PR#15/留资/五态)", () => {
   it("PublishHandoff 挂载窄补丁保留(import+挂载,≤10 行提及)", () => {
-    expect(page.includes('import { PublishHandoff } from "@/components/publish/PublishHandoff";')).toBe(true);
-    expect(page.includes("<PublishHandoff code={code} />")).toBe(true);
+    expect(page.includes('import { CampaignPublishFlow } from "@/components/publish/CampaignPublishFlow";')).toBe(true);
+    expect(page.includes('<CampaignPublishFlow code={code} participationId={participation.id} versionId={participation.content_pack_version ?? ""} />')).toBe(true);
     const lines = page.split("\n").filter((l) => l.includes("PublishHandoff"));
     expect(lines.length).toBeLessThanOrEqual(10);
   });

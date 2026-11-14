@@ -321,3 +321,32 @@ func TestTouchpointDeliveryHTTPReplace(t *testing.T) {
 		t.Fatalf("replacements = %v", det["replacements"])
 	}
 }
+
+func TestStoreRootDeliveryRequiresOriginalPaymentHTTP(t *testing.T) {
+	f := dlvFixture(t)
+	status, _, tp := f.do(t, "POST", "/api/v1/touchpoints", "sess-owner-a", f.tenA, fmt.Sprintf(`{"store_id":%q,"label":"无活动前台","creation_request_key":"delivery-root-request"}`, f.stoA.ID))
+	mustEqual(t, status, 201)
+	order := dlvSeedOrder(t, f, "root-hardware-order")
+	body := fmt.Sprintf(`{"touchpoint_id":%q,"hardware_order_id":%q}`, tp["id"], order)
+	status, _, out := f.do(t, "POST", "/api/v1/touchpoint-deliveries", "sess-owner-a", f.tenA, body)
+	if status != 409 || out["error"] != "payment_required" {
+		t.Fatalf("unpaid = %d %v", status, out)
+	}
+	dlvPayOrder(t, f, order)
+	status, _, _ = f.do(t, "POST", "/api/v1/touchpoints/"+tp["id"].(string)+"/status", "sess-owner-a", f.tenA, `{"status":"disabled"}`)
+	mustEqual(t, status, 200)
+	status, _, _ = f.do(t, "POST", "/api/v1/touchpoint-deliveries", "sess-owner-a", f.tenA, body)
+	mustEqual(t, status, 409)
+	status, _, _ = f.do(t, "POST", "/api/v1/touchpoints/"+tp["id"].(string)+"/status", "sess-owner-a", f.tenA, `{"status":"active"}`)
+	mustEqual(t, status, 200)
+	status, _, out = f.do(t, "POST", "/api/v1/touchpoint-deliveries", "sess-owner-a", f.tenA, body)
+	mustEqual(t, status, 201)
+	if out["status"] != "awaiting_dispatch" || out["verified_binding_revision"] != float64(0) {
+		t.Fatalf("creation claimed verification: %v", out)
+	}
+	status, _, _ = f.do(t, "GET", "/api/v1/billing/orders?kind=hardware", "sess-mgr-a", f.tenA, "")
+	mustEqual(t, status, 403)
+	if tpDetail(t, f, tp["id"].(string))["deployment_stage"] != "registered" {
+		t.Fatal("delivery creation advanced logical stage")
+	}
+}

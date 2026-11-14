@@ -95,6 +95,7 @@ type participationView struct {
 	ContentPackVersion      string        `json:"content_pack_version,omitempty"`
 	RuleVersion             int           `json:"rule_version"`
 	BenefitReservationState string        `json:"benefit_reservation_state"`
+	ReservationRequired     bool          `json:"reservation_required"`
 	StartsAt                string        `json:"starts_at,omitempty"`
 	ExpiresAt               string        `json:"expires_at,omitempty"`
 	CreatedAt               string        `json:"created_at"`
@@ -132,6 +133,15 @@ func newAttemptView(a participation.Attempt) attemptView {
 // writeParticipationError maps domain sentinels onto status codes. Unknown
 // and not-found collapse into 404 so probing learns nothing.
 func writeParticipationError(w http.ResponseWriter, err error) {
+	var refused *participation.StartRefusedError
+	if errors.As(err, &refused) {
+		fail(w, refused.Status, refused.Reason, refused.Message)
+		return
+	}
+	if errors.Is(err, participation.ErrReservationUnconfirmed) {
+		fail(w, 409, "reservation_unconfirmed", "名额尚未确认，请先恢复本次预留；不要先完成有奖励任务")
+		return
+	}
 	switch {
 	case err == nil:
 		return
@@ -183,6 +193,30 @@ func (s *Server) handleParticipationStart(w http.ResponseWriter, r *http.Request
 	if !decodeParticipationBody(w, r, &body) {
 		return
 	}
+
+	if visitor := visitorKey(r); visitor != "" && strings.TrimSpace(body.IdempotencyKey) != "" {
+		p, found, err := s.Participation.FindStartByLink(r.Context(), strings.TrimSpace(body.LinkCode), visitor, strings.TrimSpace(body.IdempotencyKey))
+		if err != nil {
+			writeParticipationError(w, err)
+			return
+		}
+		if found {
+			camp, err := s.St.GetCampaign(p.CampaignID, p.TenantID)
+			if err != nil || camp.StoreID != p.StoreID {
+				fail(w, 409, "idempotency_conflict", "原参与仍保留在原门店，不能换绑到另一门店")
+				return
+			}
+			if (p.ReservationState == participation.ReservationPending || p.ReservationState == participation.ReservationFailed) && p.Status != participation.StatusCanceled && p.Status != participation.StatusFulfilled {
+				p, err = s.Participation.RetryReservation(r.Context(), p.ID, visitor)
+				if err != nil {
+					writeParticipationError(w, err)
+					return
+				}
+			}
+			writeJSON(w, 200, s.publicParticipationView(p))
+			return
+		}
+	}
 	res, ok := s.resolveAvailableLink(w, body.LinkCode)
 	if !ok {
 		return
@@ -209,7 +243,7 @@ func (s *Server) handleParticipationStart(w http.ResponseWriter, r *http.Request
 	started, err := s.Participation.Start(r.Context(), participation.StartInput{
 		TenantID: res.Campaign.TenantID, StoreID: res.Campaign.StoreID, CampaignID: res.Campaign.ID,
 		LinkCode: res.Link.Code, Source: participation.Source(strings.TrimSpace(body.Source)),
-		RuleVersion: ruleVersion, ContentPackVersion: strings.TrimSpace(body.ContentPackVersion),
+		RuleVersion: ruleVersion, ExpectedRewardVersion: body.RuleVersion, ContentPackVersion: strings.TrimSpace(body.ContentPackVersion),
 		VisitorID: visitor, IdempotencyKey: strings.TrimSpace(body.IdempotencyKey),
 		Window: participation.Window{StartsAt: res.Campaign.StartsAt, ExpiresAt: res.Campaign.EndsAt},
 	})
@@ -221,7 +255,7 @@ func (s *Server) handleParticipationStart(w http.ResponseWriter, r *http.Request
 	if started.Started {
 		status = http.StatusCreated
 	}
-	writeJSON(w, status, newParticipationView(started.Participation))
+	writeJSON(w, status, s.publicParticipationView(started.Participation))
 }
 
 // handleParticipationLookup: 同设备重复碰触优先恢复未完参与(不开新记录)。
@@ -255,7 +289,7 @@ func (s *Server) handleParticipationLookup(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusNotFound, map[string]any{"state": "not_found"})
 		return
 	}
-	writeJSON(w, http.StatusOK, newParticipationView(p))
+	writeJSON(w, http.StatusOK, s.publicParticipationView(p))
 }
 
 // requireVisitor404: 无 cookie 就没有任何「自身参与」可言;统一 404
@@ -282,7 +316,7 @@ func (s *Server) handleParticipationGet(w http.ResponseWriter, r *http.Request) 
 		writeParticipationError(w, err)
 		return
 	}
-	view := newParticipationView(p)
+	view := s.publicParticipationView(p)
 	if view.Attempts, err = s.visitorAttempts(r, p.ID, visitor); err != nil {
 		writeParticipationError(w, err)
 		return
@@ -316,12 +350,25 @@ func (s *Server) handleParticipationContent(w http.ResponseWriter, r *http.Reque
 	if !decodeParticipationBody(w, r, &body) {
 		return
 	}
-	updated, err := s.Participation.UpdateContent(r.Context(), r.PathValue("id"), visitor, strings.TrimSpace(body.ContentPackVersion))
+	p, err := s.Participation.GetForVisitor(r.Context(), r.PathValue("id"), visitor)
 	if err != nil {
 		writeParticipationError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, newParticipationView(updated))
+	selected := strings.TrimSpace(body.ContentPackVersion)
+	if selected != p.ContentPackVersion {
+		resolved, _, ok := s.campaignParticipationSelection(w, p.TenantID, p.CampaignID, selected, p.RuleVersion)
+		if !ok {
+			return
+		}
+		selected = resolved
+	}
+	updated, err := s.Participation.UpdateContent(r.Context(), r.PathValue("id"), visitor, selected)
+	if err != nil {
+		writeParticipationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.publicParticipationView(updated))
 }
 
 func (s *Server) handleParticipationCancel(w http.ResponseWriter, r *http.Request) {
@@ -337,7 +384,7 @@ func (s *Server) handleParticipationCancel(w http.ResponseWriter, r *http.Reques
 		writeParticipationError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, newParticipationView(updated))
+	writeJSON(w, http.StatusOK, s.publicParticipationView(updated))
 }
 
 func (s *Server) handleParticipationAttempts(w http.ResponseWriter, r *http.Request) {
@@ -418,7 +465,7 @@ func (s *Server) handleParticipationHandoff(w http.ResponseWriter, r *http.Reque
 		"target_scope":  redact.MaskCode(tok.Credential.TargetScope),
 		"expires_at":    tok.Credential.ExpiresAt,
 		"token":         tok.Token, // 唯一一次明文;消费/日志都不再出现
-		"participation": newParticipationView(tok.Participation),
+		"participation": s.publicParticipationView(tok.Participation),
 	}
 	if tok.QRPayload != "" {
 		resp["qr_payload"] = tok.QRPayload
@@ -470,7 +517,7 @@ func (s *Server) handleParticipationRedeem(w http.ResponseWriter, r *http.Reques
 		writeParticipationError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, newParticipationView(res.Participation))
+	writeJSON(w, http.StatusOK, s.publicParticipationView(res.Participation))
 }
 
 // ---- staff surface (requireSession + authz store scope) ---------------------------
@@ -502,7 +549,7 @@ func (s *Server) handleParticipationStaffView(w http.ResponseWriter, r *http.Req
 		writeParticipationError(w, err)
 		return
 	}
-	view := newParticipationView(p)
+	view := s.publicParticipationView(p)
 	view.Attempts = make([]attemptView, 0, len(attempts))
 	for _, a := range attempts {
 		view.Attempts = append(view.Attempts, newAttemptView(a))
@@ -562,7 +609,7 @@ func (s *Server) handleParticipationStaffRedeem(w http.ResponseWriter, r *http.R
 		writeParticipationError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, newParticipationView(res.Participation))
+	writeJSON(w, http.StatusOK, s.publicParticipationView(res.Participation))
 }
 
 // handleParticipationStaffPeek (HUI-3562 店员台): 扫/手输核验凭据打开参与卡,
@@ -592,9 +639,23 @@ func (s *Server) handleParticipationStaffPeek(w http.ResponseWriter, r *http.Req
 		fail(w, http.StatusBadRequest, "bad_request", "token is required")
 		return
 	}
-	p, _, err := s.Participation.PeekCredential(r.Context(), body.Token)
+	p, credential, err := s.Participation.PeekCredential(r.Context(), body.Token)
 	if err != nil {
 		writeParticipationError(w, err)
+		return
+	}
+	// 只读定位不能把顾客续接凭据当作店员核验授权，也不能绕过撤销/到期。
+	if credential.Purpose != participation.PurposeStaffVerify || credential.TargetScope != c.Member.TenantID {
+		writeParticipationError(w, participation.ErrTargetMismatch)
+		return
+	}
+	expires, expiryErr := time.Parse(time.RFC3339Nano, credential.ExpiresAt)
+	if expiryErr != nil || !expires.After(time.Now().UTC()) {
+		writeParticipationError(w, participation.ErrCredentialExpired)
+		return
+	}
+	if credential.RevokedAt != "" {
+		writeParticipationError(w, participation.ErrCredentialRevoked)
 		return
 	}
 	if p.TenantID != c.Member.TenantID {
@@ -616,7 +677,7 @@ func (s *Server) handleParticipationStaffPeek(w http.ResponseWriter, r *http.Req
 		writeParticipationError(w, err)
 		return
 	}
-	view := newParticipationView(p)
+	view := s.publicParticipationView(p)
 	view.Attempts = make([]attemptView, 0, len(attempts))
 	for _, a := range attempts {
 		view.Attempts = append(view.Attempts, newAttemptView(a))
@@ -630,6 +691,14 @@ func (s *Server) handleParticipationStaffPeek(w http.ResponseWriter, r *http.Req
 	}
 	if raw, err := json.Marshal(view); err == nil {
 		_ = json.Unmarshal(raw, &card)
+	}
+	// 允许动作是服务端当前权限与冻结参与的投影；开卡从不调用奖励事务。
+	decision := authz.Authorize(s.authzMember(c), authz.ActionUpdate, authz.RecordScope{TenantID: p.TenantID, StoreID: p.StoreID})
+	campaignRecord, campaignErr := s.St.GetCampaign(p.CampaignID, p.TenantID)
+	confirmationAllowed := decision.Allowed && campaignErr == nil && campaignRecord.Status == "active" && !p.Window.Expired(time.Now().UTC())
+	card["confirmation_allowed"] = confirmationAllowed
+	if !confirmationAllowed {
+		card["confirmation_blocked_reason"] = "当前账号、活动状态或本次参与期限不允许新发放；已有有效权益仍按原规则办理。"
 	}
 	writeJSON(w, http.StatusOK, card)
 }
@@ -646,4 +715,20 @@ func (s *Server) allowStaffTokenAttempt(c *caller, w http.ResponseWriter) bool {
 	}
 	fail(w, http.StatusTooManyRequests, "too_many_attempts", "尝试太频繁，请稍后再试。")
 	return false
+}
+
+func (s *Server) handleParticipationReservationRetry(w http.ResponseWriter, r *http.Request) {
+	if !s.participationReady(w) {
+		return
+	}
+	visitor := requireVisitor404(w, r)
+	if visitor == "" {
+		return
+	}
+	p, err := s.Participation.RetryReservation(r.Context(), r.PathValue("id"), visitor)
+	if err != nil {
+		writeParticipationError(w, err)
+		return
+	}
+	writeJSON(w, 200, s.publicParticipationView(p))
 }

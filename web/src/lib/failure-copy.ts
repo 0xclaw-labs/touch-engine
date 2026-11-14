@@ -2,11 +2,18 @@
 // 每条都带下一步动作（gate-r2 盲评 fail 项：`没有完成(400 store_required)` 直出红字）。
 // server 侧机器 token → 产品语义的映射只收口在这里；新增错误码在这里补产品语句。
 export function failureText(status: number, data: Record<string, unknown>): string {
+  if (data.error === "follow_up_target_unavailable") return "获客详情入口当前不可用或尚未获平台登记。请稍后重试，原线索仍保留在列表中。";
+  if (data.error === "follow_up_unavailable") return "暂时不能进入这条线索：需要接收方确认入库、当前获客成员权限与顾客许可都可核验。请刷新或稍后重试。";
+  if (data.error === "source_unknown") return "这条线索的原门店归属还无法核验。请让负责人核对来源，暂不能进入跟进。";
+
   if (data.error === "store_required") {
     return "这次没有完成：活动还没有关联门店。先到「门店」添加或选好门店，再操作一次。";
   }
-  if (status === 401 || status === 403) {
-    return "登录状态可能过期，或者这个账号没有做这件事的权限。请重新登录后再试。";
+  if (status === 401) {
+    return "当前登录状态已失效。请重新登录后继续原来的操作。";
+  }
+  if (status === 403) {
+    return "当前账号没有执行此操作的权限，或原授权已被收回。请让负责人核对授权后再试。";
   }
   if (status === 404) {
     return "要找的内容不在了，可能已被删除。回到列表刷新看看其他内容。";

@@ -2,18 +2,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { ExtraJumpPanel } from "@/components/admin/ExtraJumpPanel";
-import { TaskHandoffActions } from "@/components/admin/TaskHandoffActions";
 import { failureText, useSession } from "@/components/work/merchant-session";
+import { CampaignLegacyHistory } from "@/components/work/campaign-legacy-history";
 import { CampaignConfigPanel } from "@/components/work/campaign-config-panel";
 import { CampaignShare } from "@/components/work/campaign-share";
-import { ContentPackPanel } from "@/components/work/content-pack-panel";
-import { MotionHandoffBrief } from "@/components/work/motion-handoff-brief";
-import { ProductionPanel } from "@/components/work/production-panel";
-import { StoreMotionNote } from "@/components/work/store-motion-note";
 import { isPastEnd, surfaceLabel } from "@/lib/product-finish";
 import { formatCampaignWindow } from "@/lib/public-time";
 import { takenList } from "@/lib/campaign-detail";
+import { refusalCopy } from "@/lib/campaign-config";
 
 interface Campaign {
   id: string;
@@ -23,6 +19,7 @@ interface Campaign {
   starts_at?: string;
   ends_at?: string;
   store_id?: string;
+  availability?: {state:string;label:string;can_start:boolean;reason?:string};
 }
 
 interface LinkRec {
@@ -54,6 +51,9 @@ export default function CampaignDetailPage() {
   const [busy, setBusy] = useState(false);
   const [storeName, setStoreName] = useState("");
   const [created, setCreated] = useState(false);
+  const [legacy,setLegacy]=useState(false);
+  const [promotion,setPromotion]=useState(false);
+  const [pendingTransition,setPendingTransition]=useState("");
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -66,6 +66,8 @@ export default function CampaignDetailPage() {
     }
     const loaded = campaignRes.data as unknown as Campaign;
     setCampaign(loaded);
+    const configRes=await session.api("GET",`campaigns/${id}/publish-config`);
+    if(configRes.ok)setPromotion(true);
     if (loaded.store_id) {
       const storeRes = await session.api("GET", `stores/${loaded.store_id}`).catch(() => null);
       setStoreName(storeRes && storeRes.ok && typeof storeRes.data.name === "string" ? storeRes.data.name : "");
@@ -89,12 +91,15 @@ export default function CampaignDetailPage() {
 
   useEffect(() => {
     setCreated(new URLSearchParams(window.location.search).get("created") === "1");
+    setLegacy(["#store-motion","#motion-handoff","#production"].includes(window.location.hash) || new URLSearchParams(window.location.search).get("history")==="1");
     void load().catch(() => setPhase("error"));
   }, [load]);
 
-  async function transition(status: string) {
+  async function transition(status: string, confirmed=false) {
+    if((status==="paused" || status==="ended") && !confirmed){setPendingTransition(status);return;}
+    setPendingTransition("");
     const res = await session.api("POST", `campaigns/${id}/status`, { status });
-    if (!res.ok) setError(failureText(res.status, res.data));
+    if (!res.ok) setError(res.status === 422 ? refusalCopy(res.status, res.data).text : failureText(res.status, res.data));
     await load();
   }
 
@@ -122,7 +127,7 @@ export default function CampaignDetailPage() {
       }
       const res = await session.api("POST", `campaigns/${id}/status`, { status: "active" });
       if (!res.ok) {
-        setError(failureText(res.status, res.data));
+        setError(res.status === 422 ? refusalCopy(res.status, res.data).text : failureText(res.status, res.data));
         return;
       }
       setCreated(true);
@@ -150,34 +155,27 @@ export default function CampaignDetailPage() {
           <p className="tk-lead">{campaign.public_content || "顾客能看到的内容还是空的。"}</p>
           {created ? <p className="tk-note" data-state="published" data-testid="publish-notice">活动已发布。把下面的链接或分享文案发给顾客。</p> : null}
           <p className="tk-note" data-state={campaign.status} data-testid="campaign-status">
-            状态：{statusLabel(campaign.status)}
+            状态：{campaign.availability?.label || statusLabel(campaign.status)}
             {campaign.status === "paused" ? <span> · {surfaceLabel("paused")}</span> : null}
             {campaign.status === "ended" ? <span> · {surfaceLabel("ended")}</span> : null}
-            {expired ? <span className="tk-unknown"> · 窗口已过，服务端状态没有被自动改掉</span> : null}
+            {campaign.availability?.reason ? <span> · {campaign.availability.reason}</span> : null}
           </p>
-          <p className="tk-note">活动时间：{formatCampaignWindow(campaign.starts_at, campaign.ends_at)}</p>
+          <p className="tk-note">活动时间：{formatCampaignWindow(campaign.starts_at, campaign.ends_at,{timeZone:"Asia/Shanghai"})}（北京时间 UTC+8）</p>
           <div className="tk-row">
             {campaign.status === "draft" ? <button className="tk-primary" type="button" disabled={busy} data-primary-action="true" onClick={() => void publish()}>{busy ? "正在发布…" : "发布活动"}</button> : null}
-            {campaign.status === "paused" ? <button className="tk-primary" type="button" data-primary-action="true" onClick={() => void transition("active")}>恢复活动</button> : null}
-            {campaign.status === "active" ? <a className="tk-quiet" href="#share">去分享给顾客</a> : null}
+            {campaign.status === "paused" && !expired ? <button className="tk-primary" type="button" data-primary-action="true" onClick={() => void transition("active")}>恢复活动</button> : null}
+            {campaign.status === "active" && !expired ? <a className="tk-quiet" href="#share">去分享给顾客</a> : null}
             {campaign.status === "active" ? <button className="tk-quiet" type="button" onClick={() => void transition("paused")}>暂停</button> : null}
-            {campaign.status === "active" || campaign.status === "paused" ? <button className="tk-quiet" type="button" onClick={() => void transition("ended")}>结束</button> : null}
+            {campaign.status === "active" || campaign.status === "paused" && !expired ? <button className="tk-quiet" type="button" onClick={() => void transition("ended")}>结束</button> : null}
             {campaign.status === "ended" || expired ? <p className="tk-note">活动已结束，不能继续发布。需要再办一场请新建活动。</p> : null}
           </div>
-          {error ? <p className="tk-danger" data-state="error">{error}</p> : null}
-          <section id="store-motion" className="tk-section">
-            <h2 className="tk-section-title">门店参数</h2>
-            <p className="tk-note">还没生成成片</p>
-            <StoreMotionNote campaignId={id} />
-          </section>
-          <MotionHandoffBrief campaignId={id} />
-          <ProductionPanel campaignId={id} campaignEndsAt={campaign.ends_at ?? null} />
-          <ContentPackPanel campaignId={id} />
-          <CampaignConfigPanel
-            campaignId={id}
-            campaignTitle={campaign.title}
-            campaignStoreId={campaign.store_id}
-          />
+          {pendingTransition?<section className="tk-card" aria-label="确认活动影响"><p>将停止新参与与新发放。在途预留按冻结条件核对，已发有效券继续按原条件使用；历史记录保留。</p><button className="tk-button" type="button" onClick={()=>void transition(pendingTransition,true)}>确认{pendingTransition==="ended"?"结束":"暂停"}活动</button><button className="tk-quiet" type="button" onClick={()=>setPendingTransition("")}>取消</button></section>:null}
+          {error ? <p className="tk-danger" data-state="error">{error}{promotion ? <> <a href="#publish-config">查看活动承诺与启用检查</a></> : null}</p> : null}
+          {campaign.store_id?<p><a href={`/work/stores/${campaign.store_id}?tab=page`}>进入{storeName || "当前门店"}工作区</a></p>:null}
+          {session.role!=="org_owner"?<p className="tk-note">活动承诺由负责人维护。当前角色可到<a href={`/work/service?campaign=${encodeURIComponent(id)}`}>店员台办理顾客事项</a>。</p>:promotion?<CampaignConfigPanel campaignId={id} campaignTitle={campaign.title} campaignBody={campaign.public_content} campaignStoreId={campaign.store_id} campaignStoreName={storeName} onAuthorityChanged={()=>void load()}/>:<section className="tk-section"><h2 className="tk-section-title">活动目标</h2><p>本活动展示门店本次服务与咨询信息。</p><button className="tk-quiet" type="button" onClick={()=>setPromotion(true)}>增加内容推广与优惠承诺</button></section>}
+          <p><a href={`/work/rewards?campaign=${encodeURIComponent(id)}`}>管理优惠库存、待处理与旧券履约</a></p>
+          <p><button className="tk-quiet" type="button" onClick={()=>setLegacy(v=>!v)}>{legacy?"收起历史制作记录":"核对历史制作交接记录"}</button></p>
+          {legacy?<CampaignLegacyHistory campaignId={id} endsAt={campaign.ends_at}/>:null}
           {linkPhase === "error" ? (
             <p className="tk-state tk-danger" data-list="links" data-state="error">
               短码没有读到。这不是还没有短码。
@@ -210,15 +208,7 @@ export default function CampaignDetailPage() {
             </ul>
             <p><a href="/admin">去批量生成标签</a></p>
           </section>
-          <section className="tk-section">
-            <h2 className="tk-section-title">下一步</h2>
-            <TaskHandoffActions campaignId={id} onPlanned={setNotice} />
-            {notice ? <p>{notice}</p> : null}
-            <p className="tk-gap"><a href="/work/materials">去看素材</a> <a href="/work/rewards">去看奖励规则</a></p>
-          </section>
-          <section id="jumps">
-            <ExtraJumpPanel campaigns={[{ id: campaign.id, title: campaign.title }]} role={session.role} tenantId={session.tenantId} />
-          </section>
+
         </>
       ) : null}
     </main>

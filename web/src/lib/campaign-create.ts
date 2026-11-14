@@ -1,3 +1,4 @@
+import { toRFC3339, fromRFC3339 } from "@/lib/campaign-config";
 // HUI-2628: merchant creation draft rules. The same draft is persisted locally
 // (so navigation/refresh cannot lose typing) and, after step 1, exists as a
 // real server draft. No technical field is ever requested from the merchant.
@@ -9,6 +10,7 @@ export interface CampaignDraft {
   public_content: string;
   starts_at_local: string;
   ends_at_local: string;
+  goal?: "consultation" | "promotion";
 }
 
 export const EMPTY_DRAFT: CampaignDraft = {
@@ -17,6 +19,7 @@ export const EMPTY_DRAFT: CampaignDraft = {
   public_content: "",
   starts_at_local: "",
   ends_at_local: "",
+  goal: "consultation",
 };
 
 const DATETIME_LOCAL = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
@@ -30,7 +33,7 @@ export function toRFC3339Local(value: string): string | null {
   const raw = value.trim();
   if (raw === "") return "";
   if (!DATETIME_LOCAL.test(raw)) return null;
-  const time = new Date(raw);
+  const time = new Date(toRFC3339(raw));
   if (!Number.isFinite(time.getTime())) return null;
   return time.toISOString();
 }
@@ -38,9 +41,7 @@ export function toRFC3339Local(value: string): string | null {
 /** Server RFC3339 → local `datetime-local` value (for edit/restore). */
 export function formatLocalInput(value: string | null | undefined): string {
   if (!value) return "";
-  const time = new Date(value);
-  if (!Number.isFinite(time.getTime())) return "";
-  return `${time.getFullYear()}-${pad(time.getMonth() + 1)}-${pad(time.getDate())}T${pad(time.getHours())}:${pad(time.getMinutes())}`;
+  return fromRFC3339(value);
 }
 
 export function draftErrors(draft: CampaignDraft, now = new Date()): Record<string, string> {
@@ -80,6 +81,7 @@ export function parseDraft(raw: string | null): CampaignDraft | null {
       if (typeof d[field] !== "string") return null;
     }
     return {
+      goal: d.goal === "promotion" ? "promotion" : "consultation",
       store_id: d.store_id as string,
       title: d.title as string,
       public_content: d.public_content as string,

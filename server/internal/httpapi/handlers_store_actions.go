@@ -65,6 +65,7 @@ func (s *Server) handleStoreActionsPut(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		ExpectedRevision *int             `json:"expected_revision"`
+		PublicationMode  string           `json:"publication_mode"`
 		Items            *[]storeActionIn `json:"items"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ExpectedRevision == nil || body.Items == nil {
@@ -124,7 +125,15 @@ func (s *Server) handleStoreActionsPut(w http.ResponseWriter, r *http.Request) {
 	for _, it := range oldItems {
 		oldRefs[it.ID] = it.ContentBindingRef
 	}
-	rev, items, err := s.St.ReplaceStoreActions(c.Member.TenantID, rec.ID, *body.ExpectedRevision, inputs)
+	if body.PublicationMode != "" && body.PublicationMode != "draft" {
+		fail(w, http.StatusBadRequest, "bad_request", "publication_mode must be draft")
+		return
+	}
+	save := s.St.ReplaceStoreActions
+	if body.PublicationMode == "draft" {
+		save = s.St.StageStoreActions
+	}
+	rev, items, err := save(c.Member.TenantID, rec.ID, *body.ExpectedRevision, inputs)
 	switch {
 	case errors.Is(err, store.ErrStaleRevision):
 		fail(w, http.StatusConflict, "stale_version", "config was changed by someone else; reload and retry")

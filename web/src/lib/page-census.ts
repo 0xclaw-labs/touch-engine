@@ -92,13 +92,14 @@ const markerBook: readonly { route: string; markers: readonly Marker[] }[] = [
   { route: "/admin", markers: ["raw button", "raw input"] },
   // HUI-2628 r2：preview/page.tsx 行内样式已清零，账本同步。
   { route: "/admin/preview", markers: [] },
+  { route: "/work/stores/[id]", markers: [] },
   { route: "/work/stores", markers: ["raw button", "raw input"] },
   { route: "/work/campaigns", markers: ["raw button"] },
   // HUI-2628: creation route is a thin page; interactive form lives in the
   // wizard component (page source has no native control markers).
   { route: "/work/campaigns/new", markers: [] },
   { route: "/work/campaigns/[id]", markers: ["raw button"] },
-  { route: "/work/materials", markers: ["raw button", "raw input"] },
+  { route: "/work/materials", markers: [] },
   // HUI-2628 r3：错误态补「重试」钮后各记 1 个 raw button（账本同步，命中只记账）。
   { route: "/work/rewards", markers: ["raw button", "raw input"] },
   // HUI-3562：店员台页面是薄壳，交互全部在组件里，页面源零标记。
@@ -107,6 +108,7 @@ const markerBook: readonly { route: string; markers: readonly Marker[] }[] = [
   { route: "/work/analytics", markers: [] },
   { route: "/c/[code]", markers: [] },
   { route: "/c/[code]/contact", markers: [] },
+  { route: "/c/[code]/benefits", markers: [] },
   // HUI-1665:/t 稳定入口页是 server 闸门薄壳,交互在 touch-entry.tsx,页面源零标记。
   { route: "/t/[code]", markers: [] },
   // HUI-1896:顾客六视图页面是薄壳,交互全部在视图组件里,页面源零标记。
@@ -127,6 +129,7 @@ const markerBook: readonly { route: string; markers: readonly Marker[] }[] = [
   { route: "/work/settings", markers: [] },
   // HUI-4594:线索页面是薄壳,交互全部在组件里,页面源零标记。
   { route: "/work/leads", markers: [] },
+  { route: "/lead-follow-up-return/[h]", markers: [] },
   // HUI-4593:A1 代理工作台页面是薄壳,交互全部在组件里,页面源零标记。
   { route: "/agency", markers: [] },
   // HUI-4591:M12 订购与账单页面是薄壳,交互全部在组件里,页面源零标记。

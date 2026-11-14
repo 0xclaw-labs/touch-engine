@@ -144,11 +144,26 @@ func TestInventoryLineMirrorsLedgerOccupancy(t *testing.T) {
 	}
 	line := resp.Inventory[0]
 	// available 照抄账本占用口径:total − (reserved+issued+redeemed) = 90。
-	if line.Available != 90 {
-		t.Fatalf("available = %d, want 90 (ledger occupancy semantics)", line.Available)
+	if line.Available == nil || *line.Available != 90 {
+		t.Fatalf("available = %v, want 90 (ledger occupancy semantics)", line.Available)
 	}
 	if line.Reversed != 1 || line.Expired != 4 {
 		t.Fatalf("corrections must stay disclosed: %+v", line)
+	}
+}
+
+func TestScopedInventoryAvailabilityStaysUnknown(t *testing.T) {
+	resp := BuildOperations(funnelWindow, Scope{TenantID: "t1", StoreScope: "s1"}, OpsFacts{Inventory: []InventoryFactLine{{InventoryID: "batch", TotalQty: 100, Reserved: 1, AvailableUnknown: true}}}, FilterSet{})
+	line := resp.Inventory[0]
+	if line.Available != nil || !line.AvailableUnknown {
+		t.Fatalf("scoped occupancy cannot establish availability: %+v", line)
+	}
+	raw, err := json.Marshal(line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"available":null`) || !strings.Contains(string(raw), `"available_unknown":true`) {
+		t.Fatalf("unknown must not serialize as a guessed number: %s", raw)
 	}
 }
 
@@ -229,18 +244,18 @@ func TestAppliedFiltersDisclosed(t *testing.T) {
 			t.Fatalf("visits must NOT apply %s (no linked facts)", forbidden)
 		}
 	}
-	// 参与级:campaign/store/touchpoint/content_pack_version 全适用;平台/交接方式不适用。
+	// 参与开始仅有campaign/store/touchpoint；当前内容选择不能追认开始时版本。
 	started := byKey[FunnelStarted]
 	gotStarted := map[string]bool{}
 	for _, k := range started.AppliedFilters {
 		gotStarted[k] = true
 	}
-	for _, must := range []string{"campaign_id", "store_id", "touchpoint", "content_pack_version"} {
+	for _, must := range []string{"campaign_id", "store_id", "touchpoint"} {
 		if !gotStarted[must] {
 			t.Fatalf("started must apply %s, got %v", must, started.AppliedFilters)
 		}
 	}
-	if gotStarted["platform"] || gotStarted["handoff_method"] {
+	if gotStarted["platform"] || gotStarted["handoff_method"] || gotStarted["content_pack_version"] {
 		t.Fatalf("started must not pretend platform/handoff_method filtering")
 	}
 	// 内容选择级:平台/承接方式有原生事实列,必须适用。
@@ -259,6 +274,52 @@ func TestAppliedFiltersDisclosed(t *testing.T) {
 	}
 	if len(resp.FilterEcho) == 0 {
 		t.Fatalf("requested filters must be echoed back")
+	}
+}
+
+func TestContentVersionOnlyAppliesToImmutableFacts(t *testing.T) {
+	resp := BuildOperations(funnelWindow, Scope{TenantID: "t1"}, OpsFacts{}, FilterSet{ContentPackVersion: "v1"})
+	for _, stage := range resp.Funnel {
+		want := stage.Key == FunnelContentSelected || stage.Key == FunnelHandoffInitiated
+		got := false
+		for _, key := range stage.AppliedFilters {
+			if key == "content_pack_version" {
+				got = true
+			}
+		}
+		if got != want {
+			t.Errorf("%s version applicability=%v, want %v", stage.Key, got, want)
+		}
+	}
+	// 逐行契约：发布交接快照可筛，混合层中的权益/旧自报/官方查询不能猜作内容包版本。
+	raw, err := json.Marshal(resp.EvidenceLayers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var panel struct {
+		Layers []struct {
+			Counts []struct {
+				Key     string
+				Applied []string `json:"applied_filters"`
+			}
+		}
+	}
+	if err := json.Unmarshal(raw, &panel); err != nil {
+		t.Fatal(err)
+	}
+	wantApplied := map[string]bool{"customer_click": true, "wake_attempt": true, "editor_open_proved": true, "handoff_requested": true, "handoff_completed": true, "media_handoff_events": true, "customer_self_report": true, "staff_saw_submit": true, "staff_verified_work": true, "staff_confirm": true, "platform_confirmed_handoffs": true, "official_confirmed_events": true, "platform_confirm": true}
+	for _, layer := range panel.Layers {
+		for _, count := range layer.Counts {
+			got := false
+			for _, key := range count.Applied {
+				if key == "content_pack_version" {
+					got = true
+				}
+			}
+			if got != wantApplied[count.Key] {
+				t.Errorf("%s content version applied=%v, want %v", count.Key, got, wantApplied[count.Key])
+			}
+		}
 	}
 }
 

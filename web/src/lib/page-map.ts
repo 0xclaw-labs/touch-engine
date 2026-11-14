@@ -60,6 +60,7 @@ const recorded: readonly { route: string; id: PatternId; regions: readonly strin
   { route: "/", id: "workspace", regions: ["primary_action", "status", "empty"] },
   { route: "/admin", id: "workspace", regions: ["primary_action", "status", "empty"] },
   { route: "/admin/preview", id: "billing", regions: ["primary_action", "status", "empty"] },
+  { route: "/work/stores/[id]", id: "workspace", regions: ["primary_action", "status", "empty"] },
   { route: "/work/stores", id: "list", regions: ["primary_action", "status", "empty"] },
   { route: "/work/campaigns", id: "list", regions: ["primary_action", "status", "empty"] },
   // HUI-2628: the normal creation flow is a real route (creation pattern), not
@@ -75,6 +76,7 @@ const recorded: readonly { route: string; id: PatternId; regions: readonly strin
   { route: "/work/analytics", id: "workspace", regions: ["primary_action", "status", "empty"] },
   { route: "/c/[code]", id: "public_consumer", regions: ["primary_action", "status", "empty"] },
   { route: "/c/[code]/contact", id: "public_consumer", regions: ["primary_action", "status", "empty"] },
+  { route: "/c/[code]/benefits", id: "public_consumer", regions: ["primary_action", "status", "empty"] },
   // HUI-1665 稳定入口 /t/{code}:公开消费者面,off 时整页 404。
   { route: "/t/[code]", id: "public_consumer", regions: ["primary_action", "status", "empty"] },
   // HUI-1896 顾客六视图(C1-C6):门店首页/内容预览与交接/服务详情/权益凭证/隐私授权。
@@ -96,6 +98,8 @@ const recorded: readonly { route: string; id: PatternId; regions: readonly strin
   { route: "/work/settings", id: "settings", regions: ["primary_action", "status", "empty"] },
   // HUI-4594 M11 线索页:授权线索/接收确认/待同步/撤回(待同步不计入已获客)。
   { route: "/work/leads", id: "list", regions: ["primary_action", "status", "empty"] },
+  // 原身份/门店接续承载；不另算一个业务视图。
+  { route: "/lead-follow-up-return/[h]", id: "recovery", regions: ["primary_action", "status", "empty"] },
   // HUI-4593 A1 代理工作台(授权商户/受控进入/配置入口/续费协助;硬件与结算诚实空态)。
   { route: "/agency", id: "list", regions: ["primary_action", "status", "empty"] },
   // HUI-4592 平台运营控制台六视图(共享壳 /ops layout;每视图真实读面+操作)。

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { failureText, useSession } from "@/components/work/merchant-session";
 import { surfaceLabel } from "@/lib/product-finish";
 
@@ -14,6 +15,7 @@ interface StoreRec {
 
 export default function StoresPage() {
   const session = useSession();
+  const router = useRouter();
   const [phase, setPhase] = useState<"loading" | "error" | "empty" | "ready">("loading");
   const [stores, setStores] = useState<StoreRec[]>([]);
   const [error, setError] = useState("");
@@ -38,8 +40,9 @@ export default function StoresPage() {
         typeof (it as StoreRec).id === "string" && (it as StoreRec).id !== "",
     );
     setStores(items);
+    if (items.length === 1 && new URLSearchParams(window.location.search).get("manage") !== "1") router.replace(`/work/stores/${encodeURIComponent(items[0].id)}`);
     setPhase(items.length === 0 ? "empty" : "ready");
-  }, [session]);
+  }, [session, router]);
 
   useEffect(() => {
     void load().catch(() => setPhase("error"));
@@ -107,7 +110,7 @@ export default function StoresPage() {
               </form>
             ) : (
               <>
-                <strong>{store.name}</strong>
+                <Link className="tk-button" href={`/work/stores/${encodeURIComponent(store.id)}`}>{store.name} · 进入工作区</Link>
                 <span className="tk-note"> {store.address || "无地址"} </span>
                 {store.status === "disabled" ? <span className="tk-unknown">已停用</span> : <span className="tk-note">启用</span>}
                 {/* HUI-4584 M4: 门店渠道动作配置入口。 */}

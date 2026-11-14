@@ -12,6 +12,7 @@ interface Campaign {
   status: string;
   starts_at?: string;
   ends_at?: string;
+  availability?: {state:string;label:string;can_start:boolean};
 }
 
 export default function CampaignsPage() {
@@ -20,6 +21,7 @@ export default function CampaignsPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("");
+  const [pending,setPending]=useState<{id:string;status:string}|null>(null);
 
   const load = useCallback(async () => {
     setPhase("loading");
@@ -38,7 +40,9 @@ export default function CampaignsPage() {
     void load().catch(() => setPhase("error"));
   }, [load]);
 
-  async function transition(id: string, status: string) {
+  async function transition(id: string, status: string,confirmed=false) {
+    if((status==="paused"||status==="ended")&&!confirmed){setPending({id,status});return;}
+    setPending(null);
     const res = await session.api("POST", `campaigns/${id}/status`, { status });
     if (!res.ok) setError(failureText(res.status, res.data));
     await load();
@@ -65,21 +69,22 @@ export default function CampaignsPage() {
       {filter === "ended" && visible.length === 0 && phase === "ready" ? <p data-state="ended">{surfaceLabel("ended")}的活动还没有。</p> : null}
       {filter === "expired" && visible.length === 0 && phase === "ready" ? <p data-state="expired">{surfaceLabel("expired")}的活动还没有。</p> : null}
       {error && phase !== "error" ? <p className="tk-danger">{error}</p> : null}
+      {pending?<section className="tk-card" aria-label="确认活动影响"><p>将停止新参与与新发放。已发有效券仍可使用，历史记录保留；在途预留需按冻结条件核对。</p><button className="tk-button" type="button" onClick={()=>void transition(pending.id,pending.status,true)}>确认{pending.status==="ended"?"结束":"暂停"}活动</button><button className="tk-quiet" type="button" onClick={()=>setPending(null)}>取消</button></section>:null}
       <ul className="tk-list">
         {visible.map((item) => {
           const expired = isPastEnd(item.ends_at);
           return (
             <li key={item.id}>
               <a href={`/work/campaigns/${item.id}`}>{item.title}</a>
-              <span className="tk-note"> {statusLabel(item.status)}</span>
+              <span className="tk-note"> {item.availability?.label || statusLabel(item.status)}</span>
               {item.status === "paused" ? <span data-state="paused" className="tk-unknown"> {surfaceLabel("paused")}</span> : null}
               {item.status === "ended" ? <span data-state="ended" className="tk-note"> {surfaceLabel("ended")}</span> : null}
-              {expired ? <span data-state="expired" className="tk-unknown"> {surfaceLabel("expired")}</span> : null}
+
               <div className="tk-row tk-gap">
-                {item.status === "draft" ? <button className="tk-quiet" type="button" onClick={() => void transition(item.id, "active")}>启用</button> : null}
+                {item.status === "draft" && !expired ? <button className="tk-quiet" type="button" onClick={() => void transition(item.id, "active")}>启用</button> : null}
                 {item.status === "active" ? <button className="tk-quiet" type="button" onClick={() => void transition(item.id, "paused")}>暂停</button> : null}
-                {item.status === "paused" ? <button className="tk-quiet" type="button" onClick={() => void transition(item.id, "active")}>恢复</button> : null}
-                {item.status === "active" || item.status === "paused" ? <button className="tk-quiet" type="button" onClick={() => void transition(item.id, "ended")}>结束</button> : null}
+                {item.status === "paused" && !expired ? <button className="tk-quiet" type="button" onClick={() => void transition(item.id, "active")}>恢复</button> : null}
+                {item.status === "active" || item.status === "paused" && !expired ? <button className="tk-quiet" type="button" onClick={() => void transition(item.id, "ended")}>结束</button> : null}
               </div>
             </li>
           );
@@ -92,13 +97,14 @@ export default function CampaignsPage() {
 
 function matches(item: Campaign, filter: string): boolean {
   if (!filter) return true;
-  if (filter === "expired") return isPastEnd(item.ends_at);
+  if (filter === "expired") return item.availability?.state === "expired" || isPastEnd(item.ends_at);
+  if(filter === "active") return item.availability?.can_start === true || (!item.availability && item.status === "active" && !isPastEnd(item.ends_at));
   return item.status === filter;
 }
 
 function labelFor(filter: string): string {
   if (filter === "draft") return "草稿";
-  if (filter === "active") return "进行中";
+  if (filter === "active") return "当前可参与";
   if (filter === "paused") return "暂停";
   if (filter === "ended") return "结束";
   if (filter === "expired") return "过期";

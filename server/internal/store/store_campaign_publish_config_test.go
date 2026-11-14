@@ -164,7 +164,7 @@ func TestPublishConfigEnablePinPauseTrail(t *testing.T) {
 	}
 }
 
-func TestPublishConfigSaveWhileEnabledDemotesToDraft(t *testing.T) {
+func TestPublishConfigSaveWhileEnabledKeepsPublishedVersion(t *testing.T) {
 	s := openConfigStore(t)
 	tenA, _, campA, _ := configFixture(t, s)
 	if _, err := s.UpsertPublishConfigDraft(tenA, campA, sampleSpec(), "usr_cfg_owner_a"); err != nil {
@@ -177,8 +177,8 @@ func TestPublishConfigSaveWhileEnabledDemotesToDraft(t *testing.T) {
 	spec2.Reward.TotalQuantity = intPtr(80)
 	rec, err := s.UpsertPublishConfigDraft(tenA, campA, spec2, "usr_cfg_owner_a")
 	must(t, err)
-	if rec.Status != "draft" {
-		t.Fatalf("editing an enabled config must demote to draft, got %s", rec.Status)
+	if rec.Status != "enabled" {
+		t.Fatalf("editing must keep the published lifecycle, got %s", rec.Status)
 	}
 	if rec.Version != 2 {
 		t.Fatalf("edit version = %d, want 2", rec.Version)
@@ -265,7 +265,7 @@ func TestPublishConfigSameVersionAcrossReadPaths(t *testing.T) {
 	if _, err := s.UpsertPublishConfigDraft(tenA, campA, sampleSpec(), "usr_cfg_owner_a"); err != nil {
 		t.Fatalf("draft save: %v", err)
 	}
-	must(t, s.EnablePublishConfig(tenA, campA, 1, "{}", "usr_cfg_owner_a"))
+	must(t, s.EnablePublishConfig(tenA, campA, 1, campaignenable.BuildDisclosure(sampleSpec(), 1, timeFixed()).JSON(), "usr_cfg_owner_a"))
 
 	cfg, err := s.GetPublishConfig(tenA, campA)
 	must(t, err)

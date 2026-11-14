@@ -19,6 +19,7 @@ package participation
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -59,6 +60,7 @@ var (
 // tenant/store binding, revisions and rule snapshots — client inputs are
 // expectations, never authorities.
 type ActionRef struct {
+	ContentCandidates  []string
 	ActionID           string
 	CatalogCode        string
 	Platform           string
@@ -90,6 +92,7 @@ type ActionDirectory interface {
 // account. The visitor binding (first-party random cookie key) is the only
 // access secret.
 type ActionSession struct {
+	ContentCandidates  []string
 	ID                 string
 	TenantID           string
 	StoreID            string
@@ -132,17 +135,23 @@ type SessionStarted struct {
 const sessionCols = `id, tenant_id, store_id, action_id, catalog_code, platform, kind,
 	storefront_revision, action_revision, rule_version, rule_snapshot,
 	content_pack_version, visitor_id, participation_id, status,
-	COALESCE(idempotency_key, ''), created_at, updated_at`
+	COALESCE(idempotency_key, ''), created_at, updated_at, content_candidates`
 
 func scanSession(row rowScanner) (ActionSession, error) {
 	var sess ActionSession
 	var status string
+	var pool sql.NullString
 	err := row.Scan(&sess.ID, &sess.TenantID, &sess.StoreID, &sess.ActionID, &sess.CatalogCode,
 		&sess.Platform, &sess.Kind, &sess.StorefrontRevision, &sess.ActionRevision,
 		&sess.RuleVersion, &sess.RuleSnapshot, &sess.ContentPackVersion, &sess.VisitorID,
-		&sess.ParticipationID, &status, &sess.IdempotencyKey, &sess.CreatedAt, &sess.UpdatedAt)
+		&sess.ParticipationID, &status, &sess.IdempotencyKey, &sess.CreatedAt, &sess.UpdatedAt, &pool)
 	if err != nil {
 		return ActionSession{}, err
+	}
+	if pool.Valid {
+		if err := json.Unmarshal([]byte(pool.String), &sess.ContentCandidates); err != nil {
+			return ActionSession{}, err
+		}
 	}
 	sess.Status = SessionStatus(status)
 	return sess, nil
@@ -190,6 +199,19 @@ func (s *Service) StartActionSession(ctx context.Context, in SessionStartInput) 
 	if !ValidSource(in.Source) && in.Source != "" {
 		return SessionStarted{}, ErrInvalidSource
 	}
+	// A valid holder keeps the original frozen progress even after its public action is withdrawn.
+	{
+		restored, rerr := scanSession(s.db.QueryRow(`SELECT `+sessionCols+` FROM action_sessions WHERE action_id=? AND visitor_id=? AND status=? ORDER BY created_at DESC LIMIT 1`, in.ActionID, in.VisitorID, string(SessionActive)))
+		if rerr == nil {
+			if err := s.recordSessionEvent("resumed", restored, ""); err != nil {
+				return SessionStarted{}, err
+			}
+			return SessionStarted{Session: restored}, nil
+		}
+		if !errors.Is(rerr, sql.ErrNoRows) {
+			return SessionStarted{}, rerr
+		}
+	}
 	ref, err := s.liveAction(ctx, in.ActionID)
 	if err != nil {
 		return SessionStarted{}, err
@@ -226,8 +248,15 @@ func (s *Service) StartActionSession(ctx context.Context, in SessionStartInput) 
 	if content == "" {
 		content = ref.ContentPackVersion // 未选择时落目录已采用版本
 	}
+	candidates := append([]string{}, ref.ContentCandidates...)
+	if ref.ContentPackVersion != "" && !containsContent(candidates, ref.ContentPackVersion) {
+		candidates = append(candidates, ref.ContentPackVersion)
+	}
+	if content != "" && !containsContent(candidates, content) {
+		return SessionStarted{}, ErrStaleVersion
+	}
 	now := rfc3339(s.now())
-	sess := ActionSession{
+	sess := ActionSession{ContentCandidates: candidates,
 		ID: newID("as_"), TenantID: ref.TenantID, StoreID: ref.StoreID,
 		ActionID: ref.ActionID, CatalogCode: ref.CatalogCode, Platform: ref.Platform, Kind: ref.Kind,
 		StorefrontRevision: ref.StorefrontRevision, ActionRevision: ref.ActionRevision,
@@ -245,12 +274,12 @@ func (s *Service) StartActionSession(ctx context.Context, in SessionStartInput) 
 		(id, tenant_id, store_id, action_id, catalog_code, platform, kind,
 		 storefront_revision, action_revision, rule_version, rule_snapshot,
 		 content_pack_version, visitor_id, participation_id, status, idempotency_key,
-		 created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 created_at, updated_at, content_candidates)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		sess.ID, sess.TenantID, sess.StoreID, sess.ActionID, sess.CatalogCode, sess.Platform, sess.Kind,
 		sess.StorefrontRevision, sess.ActionRevision, sess.RuleVersion, sess.RuleSnapshot,
 		sess.ContentPackVersion, sess.VisitorID, "", string(sess.Status), keyArg,
-		sess.CreatedAt, sess.UpdatedAt); err != nil {
+		sess.CreatedAt, sess.UpdatedAt, stringMustJSON(sess.ContentCandidates)); err != nil {
 		// 并发同键:唯一索引兜底,回查原行。
 		if sess.IdempotencyKey != "" {
 			if existing, ok, _ := s.getSessionByIdempotencyKey(ref.TenantID, in.ActionID, sess.IdempotencyKey); ok && existing.VisitorID == in.VisitorID {
@@ -266,9 +295,9 @@ func (s *Service) StartActionSession(ctx context.Context, in SessionStartInput) 
 }
 
 // UpdateActionSessionContent moves the session's content reference during
-// preview. Authoritative content validation happens at the content-serving
-// and handoff surfaces (HUI-3553/1670); this records the customer's pick and
-// refuses when the action is live-disabled or the session has ended.
+// preview within the session's frozen publication pool. Content-serving and
+// handoff additionally enforce live block/expiry; arbitrary same-pack versions
+// never become authorized just by recording a session selection.
 func (s *Service) UpdateActionSessionContent(ctx context.Context, id, visitorID, contentPackVersion string) (ActionSession, error) {
 	if !s.SessionsReady() {
 		return ActionSession{}, ErrDirectoryUnavailable
@@ -284,6 +313,9 @@ func (s *Service) UpdateActionSessionContent(ctx context.Context, id, visitorID,
 		return ActionSession{}, err
 	}
 	content := strings.TrimSpace(contentPackVersion)
+	if content != "" && !containsContent(sess.ContentCandidates, content) && !(sess.ContentCandidates == nil && content == sess.ContentPackVersion) {
+		return ActionSession{}, ErrStaleVersion
+	}
 	if _, err := s.db.Exec(`UPDATE action_sessions SET content_pack_version=?, updated_at=?
 		WHERE id=? AND tenant_id=? AND visitor_id=?`,
 		content, rfc3339(s.now()), sess.ID, sess.TenantID, visitorID); err != nil {
@@ -550,7 +582,7 @@ func (s *Service) ActionSessionStatus(ctx context.Context, id, visitorID string)
 			view.Participation = &SessionParticipationRef{
 				ID:                      p.ID,
 				Status:                  string(p.Status),
-				BenefitReservationState: string(p.ReservationState),
+				BenefitReservationState: string(s.projectReservation(ctx, p).ReservationState),
 			}
 		}
 	}
@@ -600,6 +632,9 @@ func (s *Service) AttachParticipation(ctx context.Context, in AttachInput) (Atta
 	if err != nil {
 		return AttachResult{}, err
 	}
+	if ref.TenantID != sess.TenantID || ref.StoreID != sess.StoreID {
+		return AttachResult{}, ErrTargetMismatch
+	}
 	if ref.CampaignID == "" {
 		return AttachResult{}, ErrCampaignRequired // 无活动动作办不了权益,不伪造活动
 	}
@@ -607,6 +642,16 @@ func (s *Service) AttachParticipation(ctx context.Context, in AttachInput) (Atta
 		p, perr := s.getScoped(sess.ParticipationID, sess.TenantID)
 		if perr != nil {
 			return AttachResult{}, perr
+		}
+		if p.VisitorID != sess.VisitorID || p.StoreID != sess.StoreID || p.TenantID != sess.TenantID || p.CampaignID != ref.CampaignID || ref.StoreID != sess.StoreID || ref.TenantID != sess.TenantID {
+			return AttachResult{}, ErrTargetMismatch
+		}
+		p = s.projectReservation(ctx, p)
+		if p.ReservationState == ReservationPending || p.ReservationState == ReservationFailed {
+			p, perr = s.RetryReservation(ctx, p.ID, sess.VisitorID)
+			if perr != nil {
+				return AttachResult{}, perr
+			}
 		}
 		return AttachResult{Session: sess, Participation: p, Created: false}, nil
 	}
@@ -670,6 +715,12 @@ func (s *Service) CleanupSessions(ctx context.Context, now time.Time, retention 
 // visitor key (the visitor binding is the session's only access secret and
 // never leaves this package), no snapshot text.
 type SessionRef struct {
+	Platform           string
+	ContentSelectedAt  string
+	ContentCandidates  []string
+	StorefrontRevision int
+	ActionRevision     int
+	CreatedAt          string
 	TenantID           string
 	StoreID            string
 	ActionID           string
@@ -694,7 +745,15 @@ func (s *Service) LookupSessionRef(id string) (SessionRef, error) {
 	if sess.Status != SessionActive {
 		return SessionRef{}, ErrSessionEnded
 	}
-	return SessionRef{
+	selectedAt := sess.CreatedAt
+	var eventAt string
+	err = s.db.QueryRow(`SELECT occurred_at FROM action_session_events WHERE session_id=? AND content_pack_version=? AND kind IN ('created','content_changed') ORDER BY occurred_at DESC LIMIT 1`, sess.ID, sess.ContentPackVersion).Scan(&eventAt)
+	if err == nil {
+		selectedAt = eventAt
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return SessionRef{}, err
+	}
+	return SessionRef{Platform: sess.Platform, ContentSelectedAt: selectedAt, ContentCandidates: sess.ContentCandidates, StorefrontRevision: sess.StorefrontRevision, ActionRevision: sess.ActionRevision, CreatedAt: sess.CreatedAt,
 		TenantID:           sess.TenantID,
 		StoreID:            sess.StoreID,
 		ActionID:           sess.ActionID,
@@ -784,3 +843,13 @@ func (s *Service) countSessionEvents(sessionID string) (int, error) {
 	}
 	return n, nil
 }
+
+func containsContent(items []string, want string) bool {
+	for _, id := range items {
+		if id == want {
+			return true
+		}
+	}
+	return false
+}
+func stringMustJSON(value []string) string { raw, _ := json.Marshal(value); return string(raw) }

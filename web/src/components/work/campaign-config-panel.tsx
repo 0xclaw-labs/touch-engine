@@ -2,6 +2,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { failureText, useSession } from "@/components/work/merchant-session";
+import { CampaignInventoryPrepare } from "@/components/work/campaign-inventory-prepare";
+import { ContentEditor } from "@/components/work/store-content-drawer";
+import { formatMoney, moneyInputMinor } from "@/lib/reward-ops";
 import { surfaceLabel } from "@/lib/product-finish";
 import {
   admissionNote,
@@ -38,7 +41,7 @@ import {
 //   - 三核验模式配置时写顾客文案;启用是唯一放行点,拒绝落到具体字段;
 //     预览是明确测试模式,不消耗真实奖励;
 //   - 奖励口径只覆盖券/码/赠品/折扣,其余发放形式不在本面板;
-//   - 暂停后老参与的核验/履约入口不受影响(本面板不动参与/奖励)。
+//   - 保存只改编辑稿；暂停停新参与与新发放，恢复只用原线上版本。
 
 interface PackVersion {
   id: string;
@@ -64,18 +67,24 @@ interface StoreRec {
 export function CampaignConfigPanel({
   campaignId,
   campaignTitle,
+  campaignBody,
   campaignStoreName,
   campaignStoreId,
+  adoptedVersionId,
+  onAuthorityChanged,
 }: {
   campaignId: string;
   campaignTitle?: string;
+  campaignBody?: string;
   campaignStoreName?: string;
   campaignStoreId?: string;
+  adoptedVersionId?: string;
+  onAuthorityChanged?: () => void;
 }) {
   const session = useSession();
   const [phase, setPhase] = useState<"loading" | "error" | "ready">("loading");
   const [spec, setSpec] = useState<PublishSpec>(() => defaultSpec());
-  const [status, setStatus] = useState<string>("draft");
+  const [publishedStatus,setPublishedStatus]=useState<string>("not_enabled");
   const [version, setVersion] = useState<number>(0);
   const [enabledVersion, setEnabledVersion] = useState<number>(0);
   const [packs, setPacks] = useState<ContentPack[]>([]);
@@ -89,6 +98,7 @@ export function CampaignConfigPanel({
   const [fieldError, setFieldError] = useState<{ field: string; text: string } | null>(null);
   const [formError, setFormError] = useState("");
   const [notice, setNotice] = useState("");
+  const [contentOpen,setContentOpen]=useState(false);
 
   const load = useCallback(async () => {
     setPhase("loading");
@@ -99,8 +109,10 @@ export function CampaignConfigPanel({
       if (cfg.spec) {
         setSpec({
           ...cfg.spec,
+          content_version_id:adoptedVersionId || cfg.spec.content_version_id,
           reward: {
             ...cfg.spec.reward,
+            slot: cfg.spec.reward.slot || "first_publish",
             claim_from: fromRFC3339(cfg.spec.reward.claim_from),
             claim_until: fromRFC3339(cfg.spec.reward.claim_until),
             redeem_from: fromRFC3339(cfg.spec.reward.redeem_from),
@@ -108,7 +120,7 @@ export function CampaignConfigPanel({
           },
         });
       }
-      setStatus(cfg.status ?? "draft");
+      setPublishedStatus(cfg.published_status ?? "unknown");
       setVersion(cfg.version ?? 0);
       setEnabledVersion(cfg.enabled_version ?? 0);
     } else if (cfgRes.status !== 404) {
@@ -116,6 +128,7 @@ export function CampaignConfigPanel({
       setPhase("error");
       return;
     }
+    if (cfgRes.status === 404) setSpec(s => ({...s,reward:{...s.reward,store_ids:campaignStoreId?[campaignStoreId]:[]}}));
     // 防薅羊毛规则集(PR#8 既有端点,零改动复用)。
     const rulesRes = await session.api("GET", `campaigns/${campaignId}/rules`);
     if (rulesRes.ok) {
@@ -131,7 +144,7 @@ export function CampaignConfigPanel({
     setAdmissions(admRes.ok && Array.isArray(admRes.data.records) ? (admRes.data.records as ChannelAdmissionRecord[]) : []);
     setStores(storeRes.ok && Array.isArray(storeRes.data.items) ? (storeRes.data.items as StoreRec[]) : []);
     setPhase("ready");
-  }, [campaignId, session]);
+  }, [campaignId, campaignStoreId, adoptedVersionId, session]);
 
   useEffect(() => {
     void load().catch(() => {
@@ -139,6 +152,8 @@ export function CampaignConfigPanel({
       setPhase("error");
     });
   }, [load]);
+
+  useEffect(()=>{if(adoptedVersionId)setSpec(s=>({...s,content_version_id:adoptedVersionId}));},[adoptedVersionId]);
 
   function patch(reward: Partial<PublishSpec["reward"]>) {
     setSpec((s) => ({ ...s, reward: { ...s.reward, ...reward } }));
@@ -171,7 +186,7 @@ export function CampaignConfigPanel({
     }));
   }
 
-  async function saveDraft(): Promise<boolean> {
+  async function saveDraft(notifyHost = true): Promise<number | null> {
     setBusy("save");
     setFieldError(null);
     setFormError("");
@@ -189,24 +204,26 @@ export function CampaignConfigPanel({
         const rulesRes = await session.api("PUT", `campaigns/${campaignId}/rules`, rulesBody);
         if (!rulesRes.ok && rulesRes.status !== 404) {
           setFormError(failureText(rulesRes.status, rulesRes.data) + "(防薅羊毛规则没有存上)");
-          return false;
+          return null;
         }
         setRulesDirty(false);
       }
       const cfgRes = await session.api("PUT", `campaigns/${campaignId}/publish-config`, toServerSpec(spec));
       if (!cfgRes.ok) {
         setFormError(failureText(cfgRes.status, cfgRes.data));
-        return false;
+        return null;
       }
       const cfg = toPublishConfig(cfgRes.data);
-      // enabled 下保存会被服务端收回草稿(改版必须重新启用)——如实展示。
-      setStatus(cfg.status ?? "draft");
+      // 保存只更新编辑稿；线上仍由原正式修订决定。
+      setPublishedStatus(cfg.published_status ?? "unknown");
       setVersion(cfg.version ?? version);
+      setEnabledVersion(cfg.enabled_version ?? 0);
       setNotice("草稿已保存。刷新或重新登录都会回到这里。");
-      return true;
+      if(notifyHost)onAuthorityChanged?.();
+      return cfg.version ?? version;
     } catch {
       setFormError("没有连上服务。草稿没有存上,内容还在这一页上。");
-      return false;
+      return null;
     } finally {
       setBusy("");
     }
@@ -218,16 +235,20 @@ export function CampaignConfigPanel({
     setFormError("");
     setNotice("");
     try {
-      if (!(await saveDraft())) return;
-      const res = await session.api("POST", `campaigns/${campaignId}/publish-config/enable`);
+      const expectedVersion = await saveDraft(false);
+      if (expectedVersion == null) return;
+      setBusy("enable");
+      const res = await session.api("POST", `campaigns/${campaignId}/publish-config/enable`,{expected_version:expectedVersion});
       if (!res.ok) {
         setFieldError(refusalCopy(res.status, res.data));
         return;
       }
       const cfg = toPublishConfig(res.data);
-      setStatus(cfg.status ?? "enabled");
+      setPublishedStatus(cfg.published_status ?? "unknown");
+      setVersion(cfg.version ?? version);
       setEnabledVersion(cfg.enabled_version ?? version);
       setNotice("已启用。顾客开始参与前会先申请权益预留,未预留成功不会先让顾客白跑。");
+      onAuthorityChanged?.();
     } catch {
       setFormError("没有连上服务。启用没有完成。");
     } finally {
@@ -244,13 +265,25 @@ export function CampaignConfigPanel({
         setFormError(failureText(res.status, res.data));
         return;
       }
-      setStatus("paused");
-      setNotice("已暂停:不再放新参与;已经参与的顾客照常核对与履约。");
+      setPublishedStatus("paused");
+      onAuthorityChanged?.();
+      setNotice("已暂停:停止新参与与新发放；在途事项按原冻结条件核对，需恢复活动后重新核验；已发有效券仍可使用。");
     } catch {
       setFormError("没有连上服务。暂停没有完成。");
     } finally {
       setBusy("");
     }
+  }
+
+  async function resume() {
+    setBusy("resume");setFormError("");setNotice("");
+    try {
+      const res=await session.api("POST",`campaigns/${campaignId}/publish-config/resume`,{expected_version:enabledVersion});
+      if(!res.ok){setFieldError(refusalCopy(res.status,res.data));return;}
+      const cfg=toPublishConfig(res.data);setPublishedStatus(cfg.published_status ?? "unknown");setEnabledVersion(cfg.enabled_version ?? enabledVersion);
+      setNotice(`已恢复线上第 ${cfg.enabled_version ?? enabledVersion} 版。编辑稿没有发布，仍须准备对应库存并明确启用。`);
+      onAuthorityChanged?.();
+    }catch {setFormError("没有连上服务。恢复没有完成，请回查原状态。");}finally {setBusy("");}
   }
 
   const windowWarn = windowProblem(spec);
@@ -265,9 +298,9 @@ export function CampaignConfigPanel({
       <p className="tk-note">
         {campaignTitle ? `活动「${campaignTitle}」` : "本活动"}
         {boundStoreName ? ` · 门店资料用「${boundStoreName}」,不用重填` : ""}
-        {version > 0 ? ` · 当前第 ${version} 版` : " · 还没有保存过配置"}
-        {status === "enabled" && enabledVersion > 0 ? ` · 已启用(第 ${enabledVersion} 版的告知快照对已参与的顾客不变)` : ""}
-        {status === "paused" ? " · 已暂停(新参与停止,老参与照常核对履约)" : ""}
+        {version > 0 ? ` · 编辑稿第 ${version} 版` : " · 还没有保存过配置"}
+        {enabledVersion > 0 ? ` · 线上第 ${enabledVersion} 版${publishedStatus === "enabled" ? "生效中" : publishedStatus === "paused" ? "已暂停" : "状态未读到"}` : " · 尚未启用"}
+        {publishedStatus === "paused" ? " · 停止新参与与新发放，已发有效券仍可使用" : ""}
       </p>
       {phase === "loading" ? <p className="tk-state" data-state="loading">{surfaceLabel("loading")}</p> : null}
       {phase === "error" ? (
@@ -287,7 +320,7 @@ export function CampaignConfigPanel({
                 : "这个活动还没有绑定门店。先在活动资料里选门店,这里才能继续。"}
             </p>
             <label className="tk-label" data-field="claim_window">
-              领取时间
+              领取时间（北京时间 UTC+8）
               <input
                 className="tk-input"
                 type="datetime-local"
@@ -305,7 +338,7 @@ export function CampaignConfigPanel({
               />
             </label>
             <label className="tk-label" data-field="redeem_window">
-              兑换时间
+              优惠使用时间（北京时间 UTC+8）
               <input
                 className="tk-input"
                 type="datetime-local"
@@ -330,7 +363,7 @@ export function CampaignConfigPanel({
             <legend>② 准备内容</legend>
             {adoptedVersions.length === 0 ? (
               <p className="tk-state" data-state="empty">
-                还没有已采用的内容。先在本页上方「活动内容」里预览并采用一版,再回到这里选它。
+                还没有已采用的内容。点下面「准备活动内容」，预览采用后继续；采用只更新候选，启用前仍须检查。
               </p>
             ) : (
               adoptedVersions.map((v) => (
@@ -347,6 +380,8 @@ export function CampaignConfigPanel({
               ))
             )}
           </fieldset>
+
+          {campaignStoreId ? <><button type="button" className="tk-quiet" onClick={()=>setContentOpen(v=>!v)}>准备活动内容</button>{contentOpen?<ContentEditor storeId={campaignStoreId} storeName={boundStoreName} campaignId={campaignId} purpose="活动推广内容" initialTitle={campaignTitle} initialBody={campaignBody} returnHref={`/work/campaigns/${campaignId}#publish-config`} onAdopted={result=>{setNotice("已采用为候选内容，请保存并预检后启用。");setSpec(s=>({...s,content_version_id:result.versionId}));void session.api("GET",`campaigns/${campaignId}/content-packs`).then(res=>{if(res.ok && Array.isArray(res.data.items))setPacks(res.data.items as ContentPack[]);});}}/>:null}</>:null}
 
           {/* 第 3 步:发布方式(3535 真实可用 + 缺项原因;不可用不给勾) */}
           <fieldset className="tk-fieldset" data-step="3">
@@ -421,17 +456,7 @@ export function CampaignConfigPanel({
                 ))}
               </select>
             </label>
-            <label className="tk-label" data-field="benefit_slot">
-              权益名称(给奖励批次用的名字)
-              <input
-                className="tk-input"
-                type="text"
-                name="benefit_slot"
-                value={spec.reward.slot}
-                onChange={(e) => patch({ slot: e.target.value })}
-                placeholder="例如:store_coupon_main"
-              />
-            </label>
+            <p className="tk-note">权益关联由系统维护，不需要手填槽位或规则版本。</p>
             <p className="tk-note" data-field="budget_mode">
               预算口径:
               <label className="tk-label">
@@ -470,32 +495,21 @@ export function CampaignConfigPanel({
               </label>
             ) : (
               <label className="tk-label" data-field="cost_budget_minor">
-                成本预算(分)
+                成本预算（元）
                 <input
                   className="tk-input"
                   type="text"
                   inputMode="numeric"
                   name="cost_budget_minor"
-                  value={spec.reward.cost_budget_minor ?? ""}
+                  value={spec.reward.cost_budget_minor == null ? "" : spec.reward.cost_budget_minor / 100}
                   onChange={(e) => {
-                    const n = e.target.value.replace(/[^0-9]/g, "");
-                    patch({ cost_budget_minor: n === "" ? undefined : Number(n) });
+                    const n = moneyInputMinor(e.target.value);
+                    if(n!==null) patch({ cost_budget_minor: n });
                   }}
                 />
               </label>
             )}
-            <p className="tk-note">可用门店(必须勾上活动绑定的门店):</p>
-            {stores.map((st) => (
-              <label className="tk-label" key={st.id} data-field="store_ids">
-                <input
-                  type="checkbox"
-                  name="store_ids"
-                  checked={spec.reward.store_ids.includes(st.id)}
-                  onChange={(e) => toggleStore(st.id, e.target.checked)}
-                />
-                {st.name}
-              </label>
-            ))}
+            <p className="tk-note" data-field="store_ids">适用门店：{boundStoreName || "请先绑定活动门店"}。沿用活动门店，不扩大到其他门店。</p>
             <label className="tk-label" data-field="onsite_redemption">
               <input
                 type="checkbox"
@@ -599,31 +613,38 @@ export function CampaignConfigPanel({
               <p data-field="preview-mode">完成后: {verificationModeLabel(spec.verification_mode)}</p>
               <p data-field="preview-copy">{spec.customer_copy || "(顾客文案还没写)"}</p>
               <p data-field="preview-dedup">防重复: {dedupBasisLabel(spec.dedup_basis)}{spec.per_order_limit ? ",按订单限领" : ""}</p>
+              <p>适用门店：{boundStoreName || "尚未选定"}；领取期：{spec.reward.claim_from.replace("T"," ") || "待填写"} 至 {spec.reward.claim_until.replace("T"," ") || "待填写"}；使用期：{spec.reward.redeem_from.replace("T"," ") || "待填写"} 至 {spec.reward.redeem_until.replace("T"," ") || "待填写"}（北京时间 UTC+8）。</p>
+              <p>缺货处理：{outOfStockLabel(spec.reward.out_of_stock_rule)}。未完成或预留超时不会记为已发放，按参与时告知的期限处理；已发有效券保留原使用条件。</p>
+              <p>可用路径预览：先阅读承诺、取得预留，再通过{spec.channels.length?spec.channels.map(channelLabel).join("、"):"尚未选定的获准渠道"}完成任务，经{verificationModeLabel(spec.verification_mode)}核验后领取，按使用期兑现。本预览不发起参与、不占库存。</p>
               <p data-field="preview-benefit">
                 {benefitKindLabel(spec.reward.kind)}
                 {spec.reward.total_quantity != null ? ` · 名额 ${spec.reward.total_quantity}` : ""}
-                {spec.reward.cost_budget_minor != null ? ` · 预算 ${spec.reward.cost_budget_minor} 分` : ""}
+                {spec.reward.cost_budget_minor != null ? ` · 预算 ${formatMoney(spec.reward.cost_budget_minor)}` : ""}
                 {spec.reward.onsite_redemption ? " · 现场兑现" : ""}
               </p>
             </div>
+            <p className="tk-note">保存草稿只保留编辑内容，不替换或关闭线上承诺。更改承诺后必须重新准备对应版本的库存并检查启用；已有参与保留原告知快照，已发有效券不改写。暂停或结束会停止新参与和新发放，在途预留不能承诺继续发奖，可先核对记录并按原条件恢复办理。</p>
             <div className="tk-row">
               <button className="tk-quiet" type="button" data-action="save-draft" disabled={busy !== ""} onClick={() => void saveDraft()}>
                 保存草稿
               </button>
-              {status !== "enabled" ? (
+              {enabledVersion === 0 || version !== enabledVersion ? (
                 <button className="tk-button" type="button" data-action="enable" disabled={busy !== ""} onClick={() => void enable()}>
-                  {status === "paused" ? "重新启用" : "启用"}
+                  {version > 0 ? `启用第 ${version} 版草稿` : "检查并启用"}
                 </button>
-              ) : (
-                <button className="tk-quiet" type="button" data-action="pause" disabled={busy !== ""} onClick={() => void pause()}>
-                  紧急暂停
-                </button>
-              )}
+              ) : null}
+              {publishedStatus === "paused" && enabledVersion > 0 ? (
+                <button className="tk-quiet" type="button" data-action="resume" disabled={busy !== ""} onClick={() => void resume()}>恢复线上第 {enabledVersion} 版</button>
+              ) : null}
+              {enabledVersion > 0 && publishedStatus !== "paused" ? (
+                <button className="tk-quiet" type="button" data-action="pause" disabled={busy !== ""} onClick={() => void pause()}>紧急暂停</button>
+              ) : null}
             </div>
             {notice ? <p className="tk-ok" data-state="notice">{notice}</p> : null}
             {fieldError ? <p className="tk-danger" data-field={fieldError.field} data-state="refused">{fieldError.text}</p> : null}
             {formError ? <p className="tk-danger" data-state="error">{formError}</p> : null}
           </fieldset>
+          {version > 0 ? <section aria-label="准备活动库存"><h3 className="tk-section-title">准备已保存承诺的库存</h3><p className="tk-note">先保存承诺，再准备库存，最后启用。库存准备成功而启用失败时，请按缺项修复后重试，不必再建同一批。</p><CampaignInventoryPrepare campaignId={campaignId} revision={version}/></section> : null}
         </>
       ) : null}
     </section>

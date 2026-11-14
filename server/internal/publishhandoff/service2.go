@@ -174,17 +174,8 @@ func (s *Service) StartAction(_ context.Context, in ActionStartInput) (ActionRes
 	}
 
 	// 2) payload 分流:required_inputs 说了算(3535 合同 §4 语义)。
-	requiresContent := false
-	for _, r := range in.Record.RequiredInputs {
-		if strings.TrimSpace(r) == "content_pack_version" {
-			requiresContent = true
-		}
-	}
-	if requiresContent && in.PayloadKind != PayloadKindMedia {
-		return ActionResult{}, fmt.Errorf("%w: this route requires a real adopted content pack version", ErrPayloadMismatch)
-	}
-	if !requiresContent && in.PayloadKind != PayloadKindLinkShare {
-		return ActionResult{}, fmt.Errorf("%w: this route is a pure link/open target and takes no content pack", ErrPayloadMismatch)
+	if err := ValidateActionPayloadKind(in.Record, in.PayloadKind); err != nil {
+		return ActionResult{}, err
 	}
 
 	// 3) 幂等先于确认核验:同键同负载回放;同键不同负载冲突
@@ -298,7 +289,7 @@ func (s *Service) StartAction(_ context.Context, in ActionStartInput) (ActionRes
 		prepared, perr := adapter.Prepare(context.Background(), PrepareRequest{
 			Handoff: h, Plan: plan, Text: in.PlanPayload.Text, Media: in.PlanPayload.Media,
 			MediaRefs: in.PlanPayload.MediaRefs, ShareURL: in.PlanPayload.ShareURL,
-			SessionID: in.SessionID, Environment: in.Environment,
+			SessionID: in.SessionID, Environment: in.Environment, FieldSupport: in.Record.FieldSupport,
 		})
 		if perr != nil {
 			failed, ferr := s.setState(h.Handoff, StateFailed, EvidenceSystemAdapter)
@@ -359,7 +350,7 @@ func (s *Service) GetActionForVisitor(_ context.Context, id, visitorID string) (
 		return ActionHandoff{}, ErrNotFound
 	}
 	h, err := s.scanActionHandoff(s.db.QueryRow(`SELECT `+actionHandoffCols+` FROM publish_handoffs
-		WHERE id=? AND visitor_id=?`, id, visitorID))
+		WHERE id=? AND ((visitor_id=? AND NOT EXISTS (SELECT 1 FROM action_sessions a WHERE a.id=publish_handoffs.action_session_id)) OR EXISTS (SELECT 1 FROM action_sessions a WHERE a.id=publish_handoffs.action_session_id AND a.tenant_id=publish_handoffs.tenant_id AND a.visitor_id=?))`, id, visitorID, visitorID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return ActionHandoff{}, ErrNotFound
 	}
@@ -367,7 +358,7 @@ func (s *Service) GetActionForVisitor(_ context.Context, id, visitorID string) (
 		return ActionHandoff{}, err
 	}
 	// v1 行(payload_kind='')不走 v2 读面。
-	if h.PayloadKind == "" {
+	if h.PayloadKind == "" && h.Method == "" {
 		return ActionHandoff{}, ErrNotFound
 	}
 	return h, nil
@@ -442,11 +433,25 @@ func (s *Service) SubmitAction(ctx context.Context, id, visitorID string) (Actio
 	if h.Status != StateHandoffReady && h.Status != StateEditorOpened {
 		return h, fmt.Errorf("%w: %s is not submittable", ErrInvalidState, h.Status)
 	}
-	prepared, err := adapter.Prepare(ctx, s.prepareRequestFor(h))
+	req, err := s.prepareRequestFor(ctx, h)
 	if err != nil {
-		return h, fmt.Errorf("%w: adapter prepare: %v", ErrUnsupported, err)
+		return h, err
+	}
+	prepared, err := adapter.Prepare(ctx, req)
+	if err != nil {
+		return h, fmt.Errorf("adapter prepare: %w", err)
 	}
 	if err := adapter.Submit(ctx, h.Handoff, prepared); err != nil {
+		var required interface{ RequiredAction() string }
+		if errors.As(err, &required) && required.RequiredAction() == "query_original" {
+			submitting, serr := s.setState(h.Handoff, StateSubmitting, EvidenceSystemAdapter)
+			if serr != nil {
+				return h, errors.Join(err, serr)
+			}
+			unknown, uerr := s.setState(submitting, StateUnknown, EvidenceSystemAdapter)
+			h.Handoff = unknown
+			return h, errors.Join(err, uerr)
+		}
 		return h, err
 	}
 	next, err := s.setState(h.Handoff, StateSubmitting, EvidenceSystemAdapter)
@@ -537,12 +542,59 @@ func (s *Service) ApplyPlatformCallback(ctx context.Context, platform string, ra
 }
 
 // prepareRequestFor builds the adapter Prepare request from a frozen row.
-func (s *Service) prepareRequestFor(h ActionHandoff) PrepareRequest {
-	text, media, _ := s.SnapshotOf(_context(), h.ID, h.TenantID)
-	return PrepareRequest{
-		Handoff: h, Text: text, Media: media, ShareURL: h.ShareURL,
-		SessionID: h.SessionID, Environment: h.Environment,
+// RefreshActionPrepare refreshes only executable parameters on the SAME handoff.
+// Terminal/in-flight records are read unchanged; refreshing never resubmits.
+func (s *Service) RefreshActionPrepare(ctx context.Context, id, visitorID string) (ActionHandoff, error) {
+	h, err := s.GetActionForVisitor(ctx, id, visitorID)
+	if err != nil {
+		return h, err
 	}
+	if h.Status != StateHandoffReady && h.Status != StateEditorOpened {
+		return h, nil
+	}
+	adapter := s.AdapterFor(h.Platform)
+	if adapter == nil {
+		return h, nil
+	}
+	req, err := s.prepareRequestFor(ctx, h)
+	if err != nil {
+		return h, err
+	}
+	prepared, err := adapter.Prepare(ctx, req)
+	if err != nil {
+		return h, err
+	}
+	if prepared.ClientAction.Type == "" {
+		return h, nil
+	}
+	merged := prepared.ClientAction
+	if merged.Params == nil {
+		merged.Params = map[string]string{}
+	}
+	for k, v := range prepared.Payload {
+		merged.Params[k] = v
+	}
+	raw, err := json.Marshal(merged)
+	if err != nil {
+		return h, err
+	}
+	_, err = s.db.Exec(`UPDATE publish_handoffs SET client_action_json=?,unsupported_fields_json=?,updated_at=? WHERE id=? AND tenant_id=? AND status IN ('handoff_ready','editor_opened')`, string(raw), mustJSON(prepared.UnsupportedFields), rfc3339(s.now()), h.ID, h.TenantID)
+	if err != nil {
+		return h, err
+	}
+	return s.actionByID(h.TenantID, h.ID)
+}
+
+func (s *Service) prepareRequestFor(ctx context.Context, h ActionHandoff) (PrepareRequest, error) {
+	text, media, err := s.SnapshotOf(ctx, h.ID, h.TenantID)
+	if err != nil {
+		return PrepareRequest{}, err
+	}
+	req := PrepareRequest{Handoff: h, Plan: s.frozenPlan(h), Text: text, Media: media, ShareURL: h.ShareURL, SessionID: h.SessionID, Environment: h.Environment}
+	if s.opt.ActionPrepare != nil {
+		return s.opt.ActionPrepare(ctx, h, req)
+	}
+	return req, nil
 }
 
 func (s *Service) requireFrozenAttempt2(tenantID, participationID, attemptID string) error {
@@ -574,4 +626,28 @@ func mustJSON(v []string) string {
 		return "[]"
 	}
 	return string(raw)
+}
+
+// FindActionForSession reads the original handoff through the session's current holder.
+func (s *Service) FindActionForSession(ctx context.Context, sessionID, visitorID string) (ActionHandoff, error) {
+	var id string
+	err := s.db.QueryRow(`SELECT h.id FROM publish_handoffs h JOIN action_sessions a ON a.id=h.action_session_id AND a.tenant_id=h.tenant_id WHERE a.id=? AND a.visitor_id=? AND h.payload_kind<>'' ORDER BY h.created_at DESC LIMIT 1`, sessionID, visitorID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ActionHandoff{}, ErrNotFound
+	}
+	if err != nil {
+		return ActionHandoff{}, err
+	}
+	return s.RefreshActionPrepare(ctx, id, visitorID)
+}
+
+// LoadMediaSource is a read-only lookup for a server-verified signed media
+// source. It neither refreshes adapter parameters nor grants access: callers
+// must verify the exact tenant/session/version, current admission and purpose.
+func (s *Service) LoadMediaSource(id string) (ActionHandoff, error) {
+	h, err := s.scanActionHandoff(s.db.QueryRow(`SELECT `+actionHandoffCols+` FROM publish_handoffs WHERE id=?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ActionHandoff{}, ErrNotFound
+	}
+	return h, err
 }

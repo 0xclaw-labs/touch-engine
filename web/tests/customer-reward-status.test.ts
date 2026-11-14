@@ -72,7 +72,7 @@ describe("屏3 奖励状态:真实进度,不冒充", () => {
 
   it("已兑现不再引导重复领券(动作按钮以 redeemed 门控收起;文案在 lib 唯一出口)", () => {
     expect(component.includes("const redeemed")).toBe(true);
-    expect(component.includes("!redeemed && (")).toBe(true);
+    expect(component.includes("!redeemed && ready && (")).toBe(true);
   });
 });
 

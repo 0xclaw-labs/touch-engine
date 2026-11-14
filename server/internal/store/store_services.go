@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/bianjiefilm/touch-engine/server/internal/extrajump"
+	"github.com/bianjiefilm/touch-engine/server/internal/storefrontversion"
 )
 
 // ServiceKind is the service category (B07 连接域三类).
@@ -266,6 +267,12 @@ func (s *Store) serviceConfigRevision(storeID string) (int, bool, error) {
 // mirror ReplaceStoreActions: expectedRevision optimistic lock, duplicate id
 // refusal, unknown id refusal, idempotent replay, snapshot on real change.
 func (s *Store) ReplaceStoreServices(tenantID, storeID string, expectedRevision int, inputs []StoreServiceInput) (int, []StoreService, error) {
+	return s.replaceStoreServices(tenantID, storeID, expectedRevision, inputs, false)
+}
+func (s *Store) StageStoreServices(tenantID, storeID string, expectedRevision int, inputs []StoreServiceInput) (int, []StoreService, error) {
+	return s.replaceStoreServices(tenantID, storeID, expectedRevision, inputs, true)
+}
+func (s *Store) replaceStoreServices(tenantID, storeID string, expectedRevision int, inputs []StoreServiceInput, staged bool) (int, []StoreService, error) {
 	if _, err := s.GetStore(storeID, tenantID); err != nil {
 		return 0, nil, err
 	}
@@ -353,6 +360,16 @@ func (s *Store) ReplaceStoreServices(tenantID, storeID string, expectedRevision 
 		return current, existing, nil
 	}
 
+	if staged {
+		baseline, err := json.Marshal(serviceSnapshots(existing))
+		if err != nil {
+			return 0, nil, err
+		}
+		if _, err := tx.Exec(`INSERT INTO store_service_configs(store_id,config_revision,updated_at,public_baseline) VALUES(?,?,?,?)
+    ON CONFLICT(store_id) DO UPDATE SET public_baseline=COALESCE(store_service_configs.public_baseline,excluded.public_baseline)`, storeID, current, now(), string(baseline)); err != nil {
+			return 0, nil, err
+		}
+	}
 	keep := map[string]bool{}
 	for _, item := range desired {
 		keep[item.ID] = true
@@ -447,6 +464,22 @@ func (s *Store) GetStoreServiceByID(tenantID, storeID, serviceID string) (StoreS
 // whose stored config still passes validation. Anything else stays invisible
 // (fail-closed — a merchant may have hand-edited history).
 func (s *Store) ListPublicStoreServices(storeID string) ([]StoreService, error) {
+	var snapshot sql.NullString
+	err := s.DB.QueryRow(`SELECT COALESCE(v.services,c.public_baseline) FROM stores s
+ LEFT JOIN store_storefronts f ON f.store_id=s.id
+ LEFT JOIN storefront_versions v ON v.store_id=s.id AND v.revision=f.storefront_revision
+ LEFT JOIN store_service_configs c ON c.store_id=s.id WHERE s.id=?`, storeID).Scan(&snapshot)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	if snapshot.Valid {
+		var frozen []storefrontversion.ServiceSnapshot
+		if err := json.Unmarshal([]byte(snapshot.String), &frozen); err != nil {
+			return nil, err
+		}
+		return ServicesFromSnapshots(frozen), nil
+	}
+
 	rs, err := s.DB.Query(`SELECT id,catalog_code,kind,variant,label,config,sort_order,enabled,revision,created_at,updated_at
 		FROM store_services WHERE store_id=? ORDER BY sort_order, created_at, id`, storeID)
 	if err != nil {
@@ -480,19 +513,28 @@ func (s *Store) RecordServiceEvent(tenantID, storeID, serviceID, eventKind, envi
 	default:
 		return fmt.Errorf("%w: event kind %q has no evidence tier", ErrBadServiceConfig, eventKind)
 	}
-	var n int
-	if err := s.DB.QueryRow(`SELECT COUNT(1) FROM store_services WHERE id=? AND tenant_id=? AND store_id=? AND enabled=1`,
-		serviceID, tenantID, storeID).Scan(&n); err != nil {
+	if _, err := s.GetStore(storeID, tenantID); err != nil {
+		return ErrUnknownService
+	}
+	visible, err := s.ListPublicStoreServices(storeID)
+	if err != nil {
 		return err
 	}
-	if n == 0 {
+	found := false
+	for _, row := range visible {
+		if row.ID == serviceID {
+			found = true
+			break
+		}
+	}
+	if !found {
 		return ErrUnknownService
 	}
 	tier := "click"
 	if eventKind == ServiceEventJumpAttempt {
 		tier = "jump_attempt"
 	}
-	_, err := s.DB.Exec(`INSERT INTO store_service_events(id,tenant_id,store_id,service_id,event_kind,environment,evidence_tier,occurred_at)
+	_, err = s.DB.Exec(`INSERT INTO store_service_events(id,tenant_id,store_id,service_id,event_kind,environment,evidence_tier,occurred_at)
 		VALUES(?,?,?,?,?,?,?,?)`, "sse_"+randHex(12), tenantID, storeID, serviceID, eventKind,
 		strings.TrimSpace(environment), tier, now())
 	if err == nil {
@@ -627,4 +669,24 @@ func validServiceCatalogCode(code string) bool {
 		return false
 	}
 	return code[1] >= '0' && code[1] <= '9' && code[2] >= '0' && code[2] <= '9'
+}
+
+func serviceSnapshots(items []StoreService) []storefrontversion.ServiceSnapshot {
+	out := make([]storefrontversion.ServiceSnapshot, 0, len(items))
+	for _, v := range items {
+		out = append(out, storefrontversion.ServiceSnapshot{ID: v.ID, CatalogCode: v.CatalogCode, Kind: v.Kind, Variant: v.Variant, Label: v.Label, Config: v.ConfigJSON, Order: v.SortOrder, Enabled: v.Enabled, Revision: v.Revision})
+	}
+	return out
+}
+
+// ServicesFromSnapshots validates the same whitelist for preview and public reads.
+func ServicesFromSnapshots(items []storefrontversion.ServiceSnapshot) []StoreService {
+	out := make([]StoreService, 0, len(items))
+	for _, v := range items {
+		if !v.Enabled || ValidateStoreServiceConfig(v.Kind, v.Variant, v.Enabled, v.Config) != nil {
+			continue
+		}
+		out = append(out, StoreService{ID: v.ID, CatalogCode: v.CatalogCode, Kind: v.Kind, Variant: v.Variant, Label: v.Label, ConfigJSON: v.Config, SortOrder: v.Order, Enabled: v.Enabled, Revision: v.Revision})
+	}
+	return out
 }

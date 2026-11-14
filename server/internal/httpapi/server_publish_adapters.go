@@ -30,6 +30,8 @@ func registerPublishAdapters(database *sql.DB, srv *Server, cfg config.Config) {
 	if strings.TrimSpace(cfg.PublishHandoffDouyinKey) != "" {
 		srv.PublishHandoff.SetAdapter(adapters.NewDouyinAdapter(database, adapters.DouyinConfig{
 			ClientKey:   cfg.PublishHandoffDouyinKey,
+			Signer:      douyinSigner(cfg),
+			Query:       adapters.NewDouyinHTTP(cfg.PublishHandoffDouyinKey, cfg.PublishHandoffDouyinSecret, cfg.PublishHandoffDouyinQueryURL, cfg.PublishHandoffDouyinQueryBearer),
 			AppRef:      cfg.PublishHandoffAppRef,
 			MiniappPath: cfg.PublishHandoffDouyinPath,
 		}))
@@ -37,13 +39,15 @@ func registerPublishAdapters(database *sql.DB, srv *Server, cfg config.Config) {
 	// 4586 小红书:官方 JS 媒体交接(公开鉴权参数;无 secret 进浏览器)。
 	if strings.TrimSpace(cfg.PublishHandoffXhsAppID) != "" {
 		srv.PublishHandoff.SetAdapter(adapters.NewXiaohongshuAdapter(database, adapters.XhsPublicConfig{
-			AppID: cfg.PublishHandoffXhsAppID,
+			AppID:  cfg.PublishHandoffXhsAppID,
+			Signer: xhsSigner(cfg),
 		}))
 	}
 	// 4587 快手:网站 OAuth+服务端投稿(secret 仅服务器)。
 	if strings.TrimSpace(cfg.PublishHandoffKsID) != "" && strings.TrimSpace(cfg.PublishHandoffKsSecret) != "" {
 		srv.PublishHandoff.SetAdapter(adapters.NewKuaishouAdapter(database, adapters.KuaishouConfig{
 			ClientID:       cfg.PublishHandoffKsID,
+			Platform:       adapters.NewKuaishouHTTP(cfg.PublishHandoffKsID, cfg.PublishHandoffKsSecret),
 			ClientSecret:   cfg.PublishHandoffKsSecret,
 			AppRef:         cfg.PublishHandoffAppRef,
 			AuthorizeBase:  firstNonEmptyStr(cfg.PublishHandoffKsAuthBase, "https://open.kuaishou.com/oauth2/authorize"),
@@ -114,4 +118,17 @@ func oauthReturnWithError(returnTo string, err error) (string, error) {
 		sep = "&"
 	}
 	return returnTo + sep + "oauth=denied&reason=" + url.QueryEscape("authorization_failed"), nil
+}
+
+func douyinSigner(cfg config.Config) adapters.DouyinSigner {
+	if strings.TrimSpace(cfg.PublishHandoffDouyinSecret) == "" {
+		return nil
+	}
+	return adapters.NewDouyinHTTP(cfg.PublishHandoffDouyinKey, cfg.PublishHandoffDouyinSecret, cfg.PublishHandoffDouyinQueryURL, cfg.PublishHandoffDouyinQueryBearer)
+}
+func xhsSigner(cfg config.Config) adapters.XhsSigner {
+	if strings.TrimSpace(cfg.PublishHandoffXhsSecret) == "" {
+		return nil
+	}
+	return adapters.NewXhsHTTP(cfg.PublishHandoffXhsAppID, cfg.PublishHandoffXhsSecret)
 }

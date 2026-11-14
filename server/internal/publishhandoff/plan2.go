@@ -90,6 +90,24 @@ type ActionPlan struct {
 	Caps              channeladmission.EnvCapabilities
 }
 
+// ValidateActionPayloadKind keeps the read-only preview and execution on the
+// same capability input contract, before either resolves customer content.
+func ValidateActionPayloadKind(rec channeladmission.ActionCapability, kind string) error {
+	requiresContent := false
+	for _, input := range rec.RequiredInputs {
+		if strings.TrimSpace(input) == "content_pack_version" {
+			requiresContent = true
+		}
+	}
+	if requiresContent && kind != PayloadKindMedia {
+		return fmt.Errorf("%w: this route requires a real adopted content pack version", ErrPayloadMismatch)
+	}
+	if !requiresContent && kind != PayloadKindLinkShare {
+		return fmt.Errorf("%w: this route is a pure link/open target and takes no content pack", ErrPayloadMismatch)
+	}
+	return nil
+}
+
 // JudgeActionPlan evaluates one action route through the 3535 action-level
 // gate and shapes the resulting v2 plan. The ActionQuery is SERVER-ASSEMBLED
 // (RewardPlay from the record's scenario, MerchantAppRef from deployment

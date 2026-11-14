@@ -323,3 +323,17 @@ func mustPreview(t *testing.T) Attempt {
 	}
 	return a
 }
+
+func TestManualPreviewDoesNotRequireUntrustedAccountLabel(t *testing.T) {
+	a, err := Preview(PreviewInput{Platform: PlatformDouyin, Publisher: PublisherActivityCustomer, Copy: "本人选择的内容"})
+	if err != nil {
+		t.Fatalf("untrusted account label should be optional: %v", err)
+	}
+	got, err := Confirm(a, Confirmation{Platform: a.Platform, Publisher: PublisherActivityCustomer, ContentVersion: a.ContentVersion, AssetUseAccepted: true})
+	if err != nil || !got.ConfirmationCurrent() {
+		t.Fatalf("content confirmation: %v", err)
+	}
+	if got.PlatformPostID != "" {
+		t.Fatal("manual confirmation became official account/publish fact")
+	}
+}

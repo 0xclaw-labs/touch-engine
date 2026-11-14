@@ -1,8 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { failureText, useSession } from "@/components/work/merchant-session";
 import { presentAccountSeparation, type SeparationView } from "@/lib/account-separation";
+import { CampaignInventoryPrepare } from "@/components/work/campaign-inventory-prepare";
+import { toRFC3339,benefitKindLabel,verificationModeLabel,type PublishConfigRecord } from "@/lib/campaign-config";
+import { formatCampaignWindow } from "@/lib/public-time";
 import { rewardPresentation, surfaceLabel } from "@/lib/product-finish";
 import { rewardNotice, type RewardView } from "@/lib/publish-reward";
 import {
@@ -15,20 +18,19 @@ import {
   type StoreDealOfferView,
 } from "@/lib/deals";
 import {
+  formatMoney,
+  moneyInputMinor,
   benefitStatusText,
   canConfirmRewards,
   canManageInventory,
   canReverseRewards,
-  confirmRequestBody,
   evidenceText,
   externalStateText,
   faceAndCostText,
   inventoryKindText,
   inventoryLine,
   maskCode,
-  redeemRequestBody,
   reverseRequestBody,
-  slotText,
   summaryLines,
   type RewardBenefitView,
   type RewardInventoryView,
@@ -81,12 +83,16 @@ export default function RewardsPage() {
   const [error, setError] = useState("");
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [campaignId, setCampaignId] = useState("");
+  const [promise,setPromise]=useState<PublishConfigRecord|null>(null);
   const [rulesNote, setRulesNote] = useState("规则还没读取");
   const [reward, setReward] = useState<RewardView>({ status: "unknown" });
   const [separation, setSeparation] = useState("");
   const [attempt, setAttempt] = useState(0);
 
   const [tab, setTab] = useState<RewardTab>("store");
+  const ledgerRequest=useRef(0);
+  const [ledgerPhase,setLedgerPhase]=useState<"loading"|"error"|"ready">("loading");
+  const [ledgerError,setLedgerError]=useState("");
   const [inventory, setInventory] = useState<RewardInventoryView[]>([]);
   const [benefits, setBenefits] = useState<RewardBenefitView[]>([]);
   const [summary, setSummary] = useState<RewardSummaryView | null>(null);
@@ -102,6 +108,8 @@ export default function RewardsPage() {
   const loadLedger = useCallback(
     async (cid: string) => {
       if (!cid) return;
+      const request=++ledgerRequest.current;setLedgerPhase(previous=>previous==="ready"?"ready":"loading");setLedgerError("");
+      try {
       const [invRes, benRes, sumRes, revRes, extRes] = await Promise.all([
         session.api("GET", `campaigns/${cid}/reward-inventory`),
         session.api("GET", `campaigns/${cid}/reward-benefits`),
@@ -109,6 +117,10 @@ export default function RewardsPage() {
         session.api("GET", `campaigns/${cid}/reward-review-requests`),
         session.api("GET", `campaigns/${cid}/reward-external-issuances`),
       ]);
+      if(request!==ledgerRequest.current)return;
+      const failed=[invRes,benRes,sumRes,revRes].find(result=>!result.ok);
+      if(failed){setLedgerError(failureText(failed.status,failed.data));setLedgerPhase("error");return;}
+      setLedgerPhase("ready");
       setInventory(invRes.ok && Array.isArray(invRes.data.items) ? (invRes.data.items as RewardInventoryView[]) : []);
       setBenefits(benRes.ok && Array.isArray(benRes.data.items) ? (benRes.data.items as RewardBenefitView[]) : []);
       setSummary(sumRes.ok ? (sumRes.data as unknown as RewardSummaryView) : null);
@@ -117,6 +129,7 @@ export default function RewardsPage() {
       if (!invRes.ok && invRes.status !== 404) {
         setActionNote(failureText(invRes.status, invRes.data));
       }
+      } catch {if(request===ledgerRequest.current){setLedgerPhase("error");setLedgerError("没有连上库存与履约服务，请重试。这不是空记录。");}}
     },
     [session],
   );
@@ -137,7 +150,8 @@ export default function RewardsPage() {
       }
       const items = Array.isArray(campaignRes.data.items) ? (campaignRes.data.items as Campaign[]) : [];
       setCampaigns(items);
-      setCampaignId(items[0]?.id ?? "");
+      const requested=new URLSearchParams(window.location.search).get("campaign");
+      setCampaignId(items.some(item=>item.id===requested)?requested!:items[0]?.id ?? "");
       if (storesRes && storesRes.ok && Array.isArray(storesRes.data.items)) {
         const recs = storesRes.data.items as StoreRec[];
         setStores(recs);
@@ -160,29 +174,17 @@ export default function RewardsPage() {
 
   useEffect(() => {
     if (!campaignId) return;
+    setLedgerPhase("loading");
     let alive = true;
     void (async () => {
-      const rulesRes = await session.api("GET", `campaigns/${campaignId}/rules`);
-      if (!alive) return;
-      if (rulesRes.status === 404) {
-        setRulesNote("还没有活动规则，或规则未开通。缺失不是已核销，也不是不限已经生效的证明。");
-      } else if (!rulesRes.ok) {
-        setRulesNote(failureText(rulesRes.status, rulesRes.data));
-      } else {
-        const ruleset = (rulesRes.data.ruleset ?? {}) as Ruleset;
-        setRulesNote(
-          [
-            line("奖励门槛", ruleset.reward_threshold),
-            line("每日发布上限", ruleset.daily_publish_limit),
-            line("重复发布窗口（小时）", ruleset.duplicate_publish_window_hours),
-            line("每人每日提交上限", ruleset.per_contact_daily_submission_cap),
-            "奖励批次上保存的规则版本引用是审计快照，这里不编辑活动规则。",
-          ].join(" "),
-        );
-      }
+      setPromise(null);setRulesNote("正在读取活动承诺…");
+      const rulesRes=await session.api("GET",`campaigns/${campaignId}/publish-config`);
+      if(!alive)return;
+      if(rulesRes.ok){setPromise(rulesRes.data as PublishConfigRecord);setRulesNote("活动承诺来自唯一活动配置，库存只处理数量与履约事务。");}
+      else setRulesNote(rulesRes.status===404?"尚未保存顾客承诺，请先到活动页配置。":failureText(rulesRes.status,rulesRes.data));
       await loadLedger(campaignId);
     })().catch(() => {
-      if (alive) setActionNote("奖励账本没有读到。不把它写成已发放。");
+      if (alive) {setLedgerPhase("error");setLedgerError("奖励账本没有读到，请重试。这不是空记录。");}
     });
     return () => {
       alive = false;
@@ -238,22 +240,6 @@ export default function RewardsPage() {
     [],
   );
 
-  const redeemBenefit = (ben: RewardBenefitView) =>
-    void runAction(async () => {
-      const res = await session.api(
-        "POST",
-        `campaigns/${campaignId}/reward-benefits/${ben.id}/redeem`,
-        redeemRequestBody(ben.store_id ?? ""),
-      );
-      if (res.ok) {
-        const outcome = String(res.data.outcome ?? "");
-        setActionNote(outcome === "redeemed" ? "核销完成（一条事实）。" : "该权益已核销过，回读已处理结果。");
-      } else {
-        setActionNote(failureText(res.status, res.data));
-      }
-      await loadLedger(campaignId);
-    });
-
   const reverseBenefit = (ben: RewardBenefitView) => {
     const reason = window.prompt("更正撤销必须注明原因（保留原发放事实，不删账）：");
     if (!reason || reason.trim() === "") {
@@ -288,7 +274,7 @@ export default function RewardsPage() {
 
   return (
     <main>
-      <h1 className="tk-title">奖励和核销</h1>
+      <h1 className="tk-title">优惠库存与履约</h1>
       <p className="tk-lead">
         未知奖励不是已发放。发放与核销是两条事实；更正撤销保留原发放事实，不删账。
         {confirmAllowed ? "" : "当前角色只能查看。"}
@@ -312,7 +298,7 @@ export default function RewardsPage() {
 
           <div role="tablist" aria-label="奖励管理页签" data-field="reward-tabs">
             <button role="tab" type="button" data-action="tab-store" aria-selected={tab === "store"} onClick={() => setTab("store")}>门店券库存</button>
-            <button role="tab" type="button" data-action="tab-external" aria-selected={tab === "external"} onClick={() => setTab("external")}>外部团购（HUI-4590）</button>
+            <button role="tab" type="button" data-action="tab-external" aria-selected={tab === "external"} onClick={() => setTab("external")}>外部团购</button>
           </div>
 
           {tab === "external" ? (
@@ -329,13 +315,14 @@ export default function RewardsPage() {
             />
           ) : (
             <>
+          {ledgerPhase==="loading"?<p className="tk-state" data-state="loading">正在读取优惠库存与履约记录…</p>:ledgerPhase==="error"?<p className="tk-danger" data-state="error">{ledgerError} 记录尚未读到，不视为没有库存或义务。<button className="tk-quiet" type="button" onClick={()=>void loadLedger(campaignId)}>重试读取</button></p>:<>
           <section aria-label="奖励汇总">
             <h2 className="tk-subtitle">奖励汇总</h2>
             {summary ? (
               <p className="tk-note" data-field="reward-summary">
                 {summaryLines(summary).join(" ")}
                 {summary.committed_face_minor !== undefined
-                  ? ` 已承诺面额 ${summary.committed_face_minor}（不是成本），成本 ${summary.committed_cost_minor}。`
+                  ? ` 已承诺面额 ${formatMoney(summary.committed_face_minor)}（不是成本），实际成本 ${summary.committed_cost_unrecorded===0 && summary.committed_cost_minor!==undefined ? formatMoney(summary.committed_cost_minor) : "未知（含未录入成本或未读到完整性）"}。`
                   : ""}
               </p>
             ) : (
@@ -343,27 +330,19 @@ export default function RewardsPage() {
             )}
           </section>
 
-          <RewardConfirmForm
-            allowed={confirmAllowed}
-            inventory={inventory}
-            campaignId={campaignId}
-            session={session}
-            onDone={(note) => {
-              setActionNote(note);
-              void loadLedger(campaignId);
-            }}
-          />
+          <section aria-label="活动承诺"><h2 className="tk-subtitle">同一份顾客承诺</h2><p className="tk-note">{rulesNote}</p>{promise ? <p className="tk-note">{promise.enabled_version ? `线上第 ${promise.enabled_version} 版${promise.published_status === "enabled" ? "生效中" : promise.published_status === "paused" ? "已暂停" : "状态未读到"}。` : "尚无已启用版本。"}{promise.version !== promise.enabled_version ? ` 下方展示第 ${promise.version} 版编辑稿，保存和备库存不会替换线上承诺；须明确启用后才生效。` : " 下方为同一版本的承诺摘要。"}</p> : null}{promise?.spec?<><p>{promise.spec.customer_copy || "顾客说明尚未填写"}</p><p>{benefitKindLabel(promise.spec.reward.kind)} · {verificationModeLabel(promise.spec.verification_mode)} · 第 {promise.version} 版 · 适用门店：{stores.filter(store=>promise.spec?.reward.store_ids.includes(store.id)).map(store=>store.name).join("、") || "门店资料尚未读到"}</p><p>领取期：{formatCampaignWindow(promise.spec.reward.claim_from,promise.spec.reward.claim_until,{timeZone:"Asia/Shanghai"})}；使用期：{formatCampaignWindow(promise.spec.reward.redeem_from,promise.spec.reward.redeem_until,{timeZone:"Asia/Shanghai"})}（北京时间 UTC+8）。</p></>:null}<p><a href={`/work/campaigns/${campaignId}#publish-config`}>修改活动承诺</a></p><p className="tk-note">活动暂停、结束或订阅到期会停止新发放；已发有效券仍可从下方履约记录找到并办理，券使用期限独立。在途预留需按冻结条件核对，不代表已发放。</p></section>
+          <p><a className="tk-button" href={`/work/service?campaign=${encodeURIComponent(campaignId)}&return=${encodeURIComponent(`/work/rewards?campaign=${campaignId}`)}`}>到店员台扫码确认或核销</a></p>
 
           <section aria-label="待核验">
-            <h2 className="tk-subtitle">待核验（顾客自报）</h2>
+            <h2 className="tk-subtitle">待处理（顾客申请核验）</h2>
             {reviewQueue.length === 0 ? (
               <p className="tk-note" data-field="review-empty">没有待核验的自报。空不是已处理。</p>
             ) : (
               <ul className="tk-list" data-field="review-queue">
                 {reviewQueue.map((item) => (
                   <li key={item.attempt_id}>
-                    自报 {item.platform} · 参与/尝试引用 {item.participation_ref}
-                    <span className="tk-note">（在确认表单里按活动允许的证据核对后确认）</span>
+                    {item.platform} · 申请时间 {new Date(item.created_at).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"})}
+                    <span className="tk-note">（到店员台按活动承诺核对证据）</span>
                   </li>
                 ))}
               </ul>
@@ -371,7 +350,7 @@ export default function RewardsPage() {
           </section>
 
           <section aria-label="奖励批次">
-            <h2 className="tk-subtitle">奖励批次（库存）</h2>
+            <h2 className="tk-subtitle">优惠库存</h2>
             {inventory.length === 0 ? (
               <p className="tk-note" data-field="inventory-empty">还没有奖励批次。空不是不限量。</p>
             ) : (
@@ -379,8 +358,9 @@ export default function RewardsPage() {
                 {inventory.map((inv) => (
                   <li key={inv.id} data-inventory-id={inv.id}>
                     <span data-field="inventory-line">{inventoryLine(inv)}</span>
+                    <span className="tk-note"> 适用门店：{inv.store_id?stores.find(store=>store.id===inv.store_id)?.name || "门店资料尚未读到":"活动承诺适用门店"}</span>
                     <span className="tk-note"> 允许证据：{inv.allowed_evidence.map(evidenceText).join("、")}</span>
-                    <span className="tk-note"> {faceAndCostText(inv.face_value_minor, inv.cost_minor, inv.currency)}</span>
+                    <span className="tk-note"> {faceAndCostText(inv.face_value_minor, inv.cost_minor, inv.currency, inv.cost_recorded)}</span>
                     {manage && inv.status === "active" ? (
                       <button className="tk-quiet" type="button" data-action="pause-batch" onClick={() => setBatchStatus(inv, "paused")}>暂停批次</button>
                     ) : null}
@@ -392,21 +372,14 @@ export default function RewardsPage() {
               </ul>
             )}
             {manage ? (
-              <InventoryCreateForm
-                campaignId={campaignId}
-                onDone={(note) => {
-                  setActionNote(note);
-                  void loadLedger(campaignId);
-                }}
-                session={session}
-              />
+              <CampaignInventoryPrepare campaignId={campaignId} onDone={note=>{setActionNote(note);void loadLedger(campaignId);}} />
             ) : (
               <p className="tk-note">批次（预算）管理只归总部角色；店员不因此获得改全店预算的权限。</p>
             )}
           </section>
 
           <section aria-label="权益记录">
-            <h2 className="tk-subtitle">权益记录</h2>
+            <h2 className="tk-subtitle">履约记录与异常</h2>
             {benefits.length === 0 ? (
               <p className="tk-note" data-field="benefits-empty">还没有权益记录。没有事实时不写已发放。</p>
             ) : (
@@ -416,14 +389,13 @@ export default function RewardsPage() {
                     <span data-field="benefit-status">{benefitStatusText(ben.status)}</span>
                     {" · "}
                     <span data-field="benefit-evidence">{evidenceText(ben.evidence)}</span>
-                    {" · slot "}
-                    {slotText(ben.benefit_slot)}（规则 v{ben.rule_version}）
-                    {" · 参与引用 "}
-                    {ben.participation_id}
-                    {ben.store_id ? ` · 门店 ${ben.store_id}` : ""}
-                    {ben.reserved_until ? ` · 预留至 ${ben.reserved_until}` : ""}
+                    {" · "}{inventory.find(inv=>inv.id===(ben as RewardBenefitView & {inventory_id?:string}).inventory_id)?.name || "已冻结的顾客权益"}
+                    {" · "}{stores.find(store=>store.id===ben.store_id)?.name || "活动适用门店"}
+                    {ben.reserved_until ? ` · 预留至 ${new Date(ben.reserved_until).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"})}（北京时间）` : ""}
+                    {ben.issued_at ? ` · 发放于 ${new Date(ben.issued_at).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"})}（北京时间）` : ""}
+                    {ben.redeemed_at ? ` · 核销于 ${new Date(ben.redeemed_at).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"})}（北京时间）` : ""}
                     {ben.reverse_reason ? ` · 撤销原因：${ben.reverse_reason}` : ""}
-                    <span className="tk-note"> {faceAndCostText(ben.face_value_minor, ben.cost_minor, ben.currency)}</span>
+                    <span className="tk-note"> {faceAndCostText(ben.face_value_minor, ben.cost_minor, ben.currency, ben.cost_recorded)}</span>
                     <span className="tk-note" data-field="benefit-code">
                       {" 券码 "}
                       {revealed[ben.id] ? (ben.code || "（无码：现场赠品/折扣）") : maskCode(ben.code ?? "")}
@@ -432,7 +404,7 @@ export default function RewardsPage() {
                       <button className="tk-quiet" type="button" data-action="reveal-code" onClick={() => setRevealed((m) => ({ ...m, [ben.id]: true }))}>显示券码</button>
                     ) : null}
                     {confirmAllowed && ben.status === "issued" ? (
-                      <button className="tk-quiet" type="button" data-action="redeem" onClick={() => redeemBenefit(ben)}>核销</button>
+                      <a className="tk-quiet" data-action="redeem" href={`/work/service?benefit=${encodeURIComponent(ben.id)}&return=${encodeURIComponent(`/work/rewards?campaign=${campaignId}`)}`}>到店员台办理</a>
                     ) : null}
                     {reverseAllowed && ben.status !== "reversed" && ben.status !== "expired" ? (
                       <button className="tk-quiet" type="button" data-action="reverse" onClick={() => reverseBenefit(ben)}>更正撤销</button>
@@ -443,11 +415,7 @@ export default function RewardsPage() {
             )}
           </section>
 
-          {actionNote ? (
-            <p className="tk-note" data-field="action-note" data-state={actionNote.includes("完成") || actionNote.includes("核销完成") || actionNote.includes("撤销") ? "ok" : "warn"}>
-              {actionNote}
-            </p>
-          ) : null}
+
 
           <p className={presented.className} data-reward-tone={presented.tone} data-success={presented.success ? "true" : "false"}>
             {rewardNotice(reward)} 访客侧状态仍然只读；这一页不替访客发布。
@@ -460,8 +428,14 @@ export default function RewardsPage() {
           ) : null}
           <p className="tk-note">{separation}</p>
           <p className="tk-gap"><a href={campaignId ? `/work/campaigns/${campaignId}` : "/work/campaigns"}>回到活动</a></p>
+          </>}
           </>
           )}
+          {actionNote ? (
+            <p className="tk-note" data-field="action-note" data-state={actionNote.includes("完成") || actionNote.includes("核销完成") || actionNote.includes("撤销") ? "ok" : "warn"}>
+              {actionNote}
+            </p>
+          ) : null}
         </>
       ) : null}
     </main>
@@ -478,243 +452,6 @@ type SessionLike = {
   api: (method: string, path: string, body?: unknown) => Promise<{ ok: boolean; status: number; data: Record<string, unknown> }>;
   role: string;
 };
-
-function RewardConfirmForm(props: {
-  allowed: boolean;
-  inventory: RewardInventoryView[];
-  campaignId: string;
-  session: SessionLike;
-  onDone: (note: string) => void;
-}) {
-  const { allowed, inventory, campaignId, session, onDone } = props;
-  const [participationId, setParticipationId] = useState("");
-  const [batchKey, setBatchKey] = useState("");
-  const [evidence, setEvidence] = useState("");
-  const [storeId, setStoreId] = useState("");
-  const [fulfillNow, setFulfillNow] = useState(false);
-  const [note, setNote] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const selected = inventory.find((inv) => `${inv.benefit_slot}:${inv.rule_version}` === batchKey);
-
-  if (!allowed) {
-    return (
-      <section aria-label="确认发放">
-        <h2 className="tk-subtitle">确认并发放</h2>
-        <p className="tk-note" data-field="confirm-forbidden">当前角色不能确认发放（agent 只读）。</p>
-      </section>
-    );
-  }
-
-  const submit = () =>
-    void (async () => {
-      if (!selected || !participationId.trim() || !evidence || !storeId.trim()) {
-        onDone("参与引用、批次、证据和门店都要填。没有事实不写成功。");
-        return;
-      }
-      setBusy(true);
-      try {
-        const res = await session.api("POST", `campaigns/${campaignId}/reward-confirm`, {
-          ...confirmRequestBody({
-            campaignId,
-            participationId: participationId.trim(),
-            benefitSlot: selected.benefit_slot,
-            ruleVersion: selected.rule_version,
-            evidence,
-            storeId: storeId.trim(),
-            fulfillNow,
-            note: note.trim(),
-          }),
-        });
-        if (res.ok) {
-          const outcome = String(res.data.outcome ?? "");
-          onDone(
-            outcome === "issued_and_redeemed"
-              ? "确认并现场兑现完成（同一事务两条事实：发放+核销）。"
-              : outcome === "already_issued"
-                ? "该参与此 slot 已有权益，回读已处理结果，没有第二份。"
-                : "已发放真实权益（一条发放事实）。",
-          );
-          setParticipationId("");
-        } else {
-          onDone(failureText(res.status, res.data));
-        }
-      } finally {
-        setBusy(false);
-      }
-    })();
-
-  return (
-    <section aria-label="确认发放">
-      <h2 className="tk-subtitle">确认并发放</h2>
-      <p className="tk-note">按活动批次允许的证据确认；仅官方模式的批次不接受目测或核对，也不接受自报。</p>
-      <label className="tk-label">
-        参与 / 尝试引用
-        <input className="tk-input" data-field="confirm-participation" value={participationId} onChange={(e) => setParticipationId(e.target.value)} />
-      </label>
-      <label className="tk-label">
-        奖励批次
-        <select className="tk-select" data-field="confirm-batch" value={batchKey} onChange={(e) => { setBatchKey(e.target.value); setEvidence(""); }}>
-          <option value="">选择批次…</option>
-          {inventory.map((inv) => (
-            <option key={inv.id} value={`${inv.benefit_slot}:${inv.rule_version}`}>
-              {inv.name}（slot {slotText(inv.benefit_slot)} · 规则 v{inv.rule_version} · 余量 {inv.available_qty}）
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="tk-label">
-        证据
-        <select className="tk-select" data-field="confirm-evidence" value={evidence} onChange={(e) => setEvidence(e.target.value)}>
-          <option value="">选择活动允许的证据…</option>
-          {(selected?.allowed_evidence ?? []).map((ev) => (
-            <option key={ev} value={ev}>{evidenceText(ev)}</option>
-          ))}
-        </select>
-      </label>
-      <label className="tk-label">
-        确认门店 ID
-        <input className="tk-input" data-field="confirm-store" value={storeId} onChange={(e) => setStoreId(e.target.value)} />
-      </label>
-      <label className="tk-label">
-        <input type="checkbox" data-field="confirm-fulfill" checked={fulfillNow} onChange={(e) => setFulfillNow(e.target.checked)} />
-        现场已兑现（同一事务再记一条核销事实）
-      </label>
-      <label className="tk-label">
-        说明（可空）
-        <input className="tk-input" data-field="confirm-note" value={note} onChange={(e) => setNote(e.target.value)} />
-      </label>
-      <button className="tk-quiet" type="button" data-action="confirm-reward" disabled={busy} onClick={submit}>
-        {busy ? "提交中…" : "确认并发放"}
-      </button>
-      <p className="tk-note">官方证据需要服务端已有的官方事实引用；填不出的回执不会变成发放。</p>
-    </section>
-  );
-}
-
-function InventoryCreateForm(props: {
-  campaignId: string;
-  session: SessionLike;
-  onDone: (note: string) => void;
-}) {
-  const { campaignId, session, onDone } = props;
-  const [kind, setKind] = useState("store_coupon");
-  const [name, setName] = useState("");
-  const [slot, setSlot] = useState("first_publish");
-  const [version, setVersion] = useState("1");
-  const [evidence, setEvidence] = useState("staff_observed_submission,staff_verified_post");
-  const [qty, setQty] = useState("1");
-  const [codes, setCodes] = useState("");
-  const [face, setFace] = useState("0");
-  const [cost, setCost] = useState("0");
-  const [currency, setCurrency] = useState("FEN");
-  const [storeId, setStoreId] = useState("");
-  const [ruleRef, setRuleRef] = useState("");
-  const [validUntil, setValidUntil] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const submit = () =>
-    void (async () => {
-      setBusy(true);
-      try {
-        const body: Record<string, unknown> = {
-          kind,
-          name: name.trim(),
-          benefit_slot: slot.trim(),
-          rule_version: Number(version) || 0,
-          allowed_evidence: evidence.split(",").map((s) => s.trim()).filter(Boolean),
-          total_qty: Number(qty) || 0,
-          face_value_minor: Number(face) || 0,
-          cost_minor: Number(cost) || 0,
-          currency: currency.trim(),
-          store_id: storeId.trim(),
-          rule_ref: ruleRef.trim(),
-          valid_until: validUntil.trim(),
-        };
-        if (kind === "imported_code") {
-          body.codes = codes.split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
-        }
-        const res = await session.api("POST", `campaigns/${campaignId}/reward-inventory`, body);
-        if (res.ok) {
-          onDone("批次已建立（库存、面额、成本分开记）。");
-          setName("");
-          setCodes("");
-        } else {
-          onDone(failureText(res.status, res.data));
-        }
-      } finally {
-        setBusy(false);
-      }
-    })();
-
-  return (
-    <div data-field="inventory-create">
-      <p className="tk-note">批次绑定 slot 与规则版本（审计快照引用可填链接）；导入券码池必须给真实有效码。券面额不是成本，也不是可花的现金。</p>
-      <label className="tk-label">
-        类型
-        <select className="tk-select" data-field="batch-kind" value={kind} onChange={(e) => setKind(e.target.value)}>
-          <option value="store_coupon">门店券（系统内核销）</option>
-          <option value="imported_code">导入券码池（合法导入）</option>
-          <option value="gift_discount">现场赠品/折扣</option>
-        </select>
-      </label>
-      <label className="tk-label">
-        名称
-        <input className="tk-input" data-field="batch-name" value={name} onChange={(e) => setName(e.target.value)} />
-      </label>
-      <label className="tk-label">
-        权益 slot
-        <input className="tk-input" data-field="batch-slot" value={slot} onChange={(e) => setSlot(e.target.value)} />
-      </label>
-      <label className="tk-label">
-        规则版本
-        <input className="tk-input" data-field="batch-version" value={version} onChange={(e) => setVersion(e.target.value)} />
-      </label>
-      <label className="tk-label">
-        允许证据（逗号分隔：staff_observed_submission / staff_verified_post / official_publish_confirmed）
-        <input className="tk-input" data-field="batch-evidence" value={evidence} onChange={(e) => setEvidence(e.target.value)} />
-      </label>
-      {kind === "imported_code" ? (
-        <label className="tk-label">
-          券码（每行一个或逗号分隔，1..500，敏感不入日志）
-          <textarea className="tk-input" data-field="batch-codes" value={codes} onChange={(e) => setCodes(e.target.value)} />
-        </label>
-      ) : (
-        <label className="tk-label">
-          数量
-          <input className="tk-input" data-field="batch-qty" value={qty} onChange={(e) => setQty(e.target.value)} />
-        </label>
-      )}
-      <label className="tk-label">
-        券面额（分）
-        <input className="tk-input" data-field="batch-face" value={face} onChange={(e) => setFace(e.target.value)} />
-      </label>
-      <label className="tk-label">
-        实际成本（分）
-        <input className="tk-input" data-field="batch-cost" value={cost} onChange={(e) => setCost(e.target.value)} />
-      </label>
-      <label className="tk-label">
-        币种单位
-        <input className="tk-input" data-field="batch-currency" value={currency} onChange={(e) => setCurrency(e.target.value)} />
-      </label>
-      <label className="tk-label">
-        适用门店 ID（空 = 全部门店）
-        <input className="tk-input" data-field="batch-store" value={storeId} onChange={(e) => setStoreId(e.target.value)} />
-      </label>
-      <label className="tk-label">
-        规则快照引用（可空）
-        <input className="tk-input" data-field="batch-rule-ref" value={ruleRef} onChange={(e) => setRuleRef(e.target.value)} />
-      </label>
-      <label className="tk-label">
-        有效期至（RFC3339，可空）
-        <input className="tk-input" data-field="batch-valid-until" value={validUntil} onChange={(e) => setValidUntil(e.target.value)} />
-      </label>
-      <button className="tk-quiet" type="button" data-action="create-batch" disabled={busy} onClick={submit}>
-        {busy ? "提交中…" : "建立批次"}
-      </button>
-    </div>
-  );
-}
 
 // HUI-4590: 外部团购页签落地（上下架/编辑/校验时间管理 + 外部券授权核销工具）。
 // 诚实纪律：点击不是成交；平台成交与核销数本地不可知；未授权不接通——
@@ -756,13 +493,13 @@ function ExternalGroupBuyTab(props: {
   const editOffer = (offer: StoreDealOfferView, field: "title" | "price", raw: string) =>
     act(async () => {
       if (field === "price") {
-        if (!/^\d+$/.test(raw.trim())) {
-          onNote("价格要是非负整数（分）。没有改成就不写。");
+        if (moneyInputMinor(raw)==null) {
+          onNote("价格请用元，最多两位小数。没有改成就不写。");
           return;
         }
       }
       const body: Record<string, unknown> =
-        field === "title" ? { title: raw.trim() } : { price_minor: Number(raw.trim()) };
+        field === "title" ? { title: raw.trim() } : { price_minor: moneyInputMinor(raw) };
       const res = await session.api("PATCH", `stores/${storeId}/deal-offers/${offer.id}`, body);
       if (res.ok) onNote(field === "title" ? "标题已更新。" : "价格已更新（未重新核对前顾客仍看到「到平台查看」）。");
       else onNote(failureText(res.status, res.data));
@@ -788,10 +525,10 @@ function ExternalGroupBuyTab(props: {
         onNote("平台、标题和商品链接都要填。没有事实不写成功。");
         return;
       }
-      const priceMinor = Number(form.price);
+      const priceMinor = moneyInputMinor(form.price);
       // Walk D 对抗门 adv01：负数/非法价格前端先拦并给可见反馈，不再静默复位。
-      if (!Number.isFinite(priceMinor) || priceMinor <= 0) {
-        onNote("价格（分）必须是大于 0 的整数。没有事实不写成功。");
+      if (priceMinor == null || priceMinor <= 0) {
+        onNote("价格（元）必须大于 0，最多两位小数。没有事实不写成功。");
         return;
       }
       const res = await session.api("POST", `stores/${storeId}/deal-offers`, {
@@ -803,7 +540,7 @@ function ExternalGroupBuyTab(props: {
         price_minor: priceMinor,
         currency: form.currency.trim(),
         price_source: form.price_source,
-        valid_until: form.valid_until.trim(),
+        valid_until: toRFC3339(form.valid_until),
       });
       if (res.ok) onNote("套餐已上架（顾客门店页可以看到，点击会跳到平台商品页）。");
       else onNote(failureText(res.status, res.data));
@@ -814,7 +551,7 @@ function ExternalGroupBuyTab(props: {
       <section aria-label="外部团购套餐管理">
         <h2 className="tk-subtitle">外部团购（美团 / 大众点评 / 抖音）</h2>
         <p className="tk-note" data-field="external-placeholder">
-          外部团购配置与授权核销归 HUI-4590 的授权适配器；顾客点击套餐卡只是点击，不计为成交。
+          外部团购配置与核销通过已授权平台；顾客点击套餐卡只是点击，不计为成交。
           价格只在核对未超过 72 小时时展示，其余显示「到平台查看」。未接通的券不代发也不本地核销。
         </p>
         {stores.length === 0 ? (
@@ -864,7 +601,7 @@ function ExternalGroupBuyTab(props: {
                     ) : null}
                     {manage ? (
                       <button className="tk-quiet" type="button" data-action="offer-reprice" onClick={() => {
-                        const raw = window.prompt("新价格（分）：", String(offer.price_minor));
+                        const raw = window.prompt("新价格（元）：", String(offer.price_minor / 100));
                         if (raw !== null && raw.trim() !== "") editOffer(offer, "price", raw);
                       }}>改价格</button>
                     ) : null}
@@ -933,8 +670,8 @@ function DealOfferCreateForm(props: {
     product_url: "",
     title: "",
     image_ref: "",
-    price: "0",
-    currency: "FEN",
+    price: "",
+    currency: "CNY",
     price_source: "platform",
     valid_until: "",
   };
@@ -957,10 +694,6 @@ function DealOfferCreateForm(props: {
         </select>
       </label>
       <label className="tk-label">
-        平台商品 ID（可空）
-        <input className="tk-input" data-field="offer-provider-id" value={form.provider_offer_id} onChange={set("provider_offer_id")} />
-      </label>
-      <label className="tk-label">
         商品链接（https）
         <input className="tk-input" data-field="offer-url" value={form.product_url} onChange={set("product_url")} />
       </label>
@@ -969,16 +702,8 @@ function DealOfferCreateForm(props: {
         <input className="tk-input" data-field="offer-title-input" value={form.title} onChange={set("title")} />
       </label>
       <label className="tk-label">
-        展示图引用（可空）
-        <input className="tk-input" data-field="offer-image" value={form.image_ref} onChange={set("image_ref")} />
-      </label>
-      <label className="tk-label">
-        价格（分）
+        价格（元）
         <input className="tk-input" data-field="offer-price" value={form.price} onChange={set("price")} />
-      </label>
-      <label className="tk-label">
-        币种单位
-        <input className="tk-input" data-field="offer-currency" value={form.currency} onChange={set("currency")} />
       </label>
       <label className="tk-label">
         价格来源
@@ -988,8 +713,8 @@ function DealOfferCreateForm(props: {
         </select>
       </label>
       <label className="tk-label">
-        有效期至（RFC3339，可空）
-        <input className="tk-input" data-field="offer-valid-until" value={form.valid_until} onChange={set("valid_until")} />
+        有效期至（北京时间 UTC+8，可空）
+        <input className="tk-input" type="datetime-local" data-field="offer-valid-until" value={form.valid_until} onChange={set("valid_until")} />
       </label>
       <button className="tk-quiet" type="button" data-action="create-offer" disabled={busy} onClick={() => { setBusy(true); try { props.onCreate(form); } finally { setBusy(false); } setForm(initial); }}>
         {busy ? "提交中…" : "上架套餐"}

@@ -48,6 +48,7 @@ export function buildDouyinHandoff(raw: unknown, _environment: HandoffEnvironmen
       if (action.params["sdk"] !== "douyin_h5") {
         return { kind: "unavailable", reason: "抖音官方 H5 参数缺失（sdk=douyin_h5）；本页不拼通用参数" };
       }
+      if (!buildDouyinSchema(raw)) return { kind: "unavailable", reason: "交接签名或素材缺失、过期，请刷新原交接重新获取。" };
       const shareId = action.params["share_id"] ?? "";
       if (!shareId) return { kind: "unavailable", reason: "官方 share_id 关联缺失；请回到交接页重新获取" };
       const mediaUrl = action.params["media_url"] ?? "";
@@ -91,4 +92,22 @@ export function buildDouyinHandoff(raw: unknown, _environment: HandoffEnvironmen
 // (不做任何「手动发完领券」式的替代入口——拒绝面没有可执行入口)。
 export function douyinRefusalCopy(notice: string): string {
   return notice || "官方规范明确排除该场景，本动作不提供此平台的发布交接，也没有可替代的手动发布入口。";
+}
+
+/** Build only the documented H5 schema from a server-issued signed action.
+ * No arbitrary schemes, source text, secret or caller-provided query fields. */
+export function buildDouyinSchema(raw: unknown): string | null {
+ const action = parseClientAction(raw);
+ if (!action || action.type !== "js_media_handoff" || action.params.sdk !== "douyin_h5") return null;
+ const p = action.params;
+ if (["client_key", "share_id", "nonce_str", "timestamp", "signature"].some(k => !p[k])) return null;
+ const expires = Date.parse(p.share_expires_at ?? "");
+ if (!Number.isFinite(expires) || expires <= Date.now() || Math.abs(Date.now() / 1000 - Number(p.timestamp)) > 600) return null;
+ if (p.state !== p.share_id) return null;
+ const mediaKey = p.video_path ? "video_path" : "image_path";
+ if (!isHttpsUrl(p[mediaKey])) return null;
+ const q = new URLSearchParams({ share_type: "h5" });
+ for (const k of ["client_key", "nonce_str", "timestamp", "signature", "state", mediaKey]) q.set(k, p[k]);
+ for (const k of ["title", "hashtag_list"]) if (p[k]) q.set(k,p[k]);
+ return "snssdk1128://openplatform/share?" + q.toString();
 }

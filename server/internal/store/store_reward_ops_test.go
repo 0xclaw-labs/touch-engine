@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bianjiefilm/touch-engine/server/internal/db"
 	"github.com/bianjiefilm/touch-engine/server/internal/rewardops"
@@ -796,7 +797,8 @@ func TestRewardLedgerRestartConsistency(t *testing.T) {
 	if issued != 1 {
 		t.Fatalf("expected one live issuance after restart, got %d", issued)
 	}
-	inv, err := s2.GetRewardInventory(invA.ID, tenA.ID)
+	asOf, _ := time.Parse(time.RFC3339, "2026-10-14T10:05:00Z")
+	inv, err := s2.GetRewardInventoryAt(invA.ID, tenA.ID, asOf)
 	must(t, err)
 	if inv.AvailableQty != 8 {
 		t.Fatalf("availability after restart: %+v", inv)
@@ -808,7 +810,8 @@ func TestRewardSummary(t *testing.T) {
 	base := reserveInput(campA, invA)
 	base.TenantID = tenA
 	must(t, func() error { _, _, err := s.ReserveRewardBenefit(base, "2026-10-14T10:00:00Z"); return err }())
-	sum, err := s.RewardSummary(tenA, campA)
+	asOf, _ := time.Parse(time.RFC3339, "2026-10-14T10:30:00Z")
+	sum, err := s.RewardSummaryAt(tenA, campA, asOf)
 	must(t, err)
 	if sum.Counts[RewardStatusReserved] != 1 {
 		t.Fatalf("reserved count: %+v", sum.Counts)
@@ -824,7 +827,7 @@ func TestRewardSummary(t *testing.T) {
 	in.EventID = "cfm-sum"
 	in.Now = "2026-10-14T10:30:00Z"
 	must(t, func() error { _, _, err := s.ConfirmRewardBenefit(in); return err }())
-	sum, err = s.RewardSummary(tenA, campA)
+	sum, err = s.RewardSummaryAt(tenA, campA, asOf)
 	must(t, err)
 	if sum.Counts[RewardStatusIssued] != 1 || sum.Counts[RewardStatusReserved] != 1 {
 		t.Fatalf("counts after grant: %+v", sum.Counts)

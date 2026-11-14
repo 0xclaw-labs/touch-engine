@@ -18,7 +18,7 @@ import (
 // client-supplied post id.
 
 func (s *Server) handlePublicPublishCapabilities(w http.ResponseWriter, r *http.Request) {
-	res, ok := s.availablePublishLink(w, r)
+	res, ok := s.availableLegacyPublishLink(w, r)
 	if !ok {
 		return
 	}
@@ -31,7 +31,7 @@ func (s *Server) handlePublicPublishCapabilities(w http.ResponseWriter, r *http.
 }
 
 func (s *Server) handlePublicPublishPreview(w http.ResponseWriter, r *http.Request) {
-	res, ok := s.availablePublishLink(w, r)
+	res, ok := s.availableLegacyPublishLink(w, r)
 	if !ok {
 		return
 	}
@@ -236,7 +236,7 @@ func (s *Server) availablePublishLink(w http.ResponseWriter, r *http.Request) (s
 }
 
 func (s *Server) publishAttempt(w http.ResponseWriter, r *http.Request) (store.ResolvedLink, store.CustomerPublishAttempt, bool) {
-	res, ok := s.availablePublishLink(w, r)
+	res, ok := s.availableLegacyPublishLink(w, r)
 	if !ok {
 		return store.ResolvedLink{}, store.CustomerPublishAttempt{}, false
 	}
@@ -254,6 +254,26 @@ func (s *Server) publishAttempt(w http.ResponseWriter, r *http.Request) (store.R
 		return store.ResolvedLink{}, store.CustomerPublishAttempt{}, false
 	}
 	return res, row, true
+}
+
+// This older text-only workflow cannot carry the original participation,
+// reward hold or admitted media method. Configured campaigns use the normal
+// participation/handoff authority; old rows remain historical facts.
+func (s *Server) availableLegacyPublishLink(w http.ResponseWriter, r *http.Request) (store.ResolvedLink, bool) {
+	res, ok := s.availablePublishLink(w, r)
+	if !ok {
+		return store.ResolvedLink{}, false
+	}
+	_, err := s.St.GetPublishConfig(res.Campaign.TenantID, res.Campaign.ID)
+	if err == nil {
+		fail(w, http.StatusConflict, "original_participation_required", "本活动请使用原参与进度中的发布交接；名额确认前不要先完成有奖励任务。参考内容仍可查看。")
+		return store.ResolvedLink{}, false
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		fail(w, http.StatusServiceUnavailable, "participation_contract_unavailable", "本次活动条件暂时读不到，请稍后刷新原进度。")
+		return store.ResolvedLink{}, false
+	}
+	return res, true
 }
 
 func writePublishGate(w http.ResponseWriter, err error) {

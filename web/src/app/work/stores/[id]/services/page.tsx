@@ -15,6 +15,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useStoreWorkspace } from "@/components/work/store-workspace-context";
+import { workspaceHref } from "@/lib/work/store-workspace";
 import { useParams } from "next/navigation";
 import { failureText, useSession } from "@/components/work/merchant-session";
 import { surfaceLabel } from "@/lib/product-finish";
@@ -71,6 +73,7 @@ export default function StoreServicesPage() {
   const params = useParams<{ id: string }>();
   const storeId = params?.id ?? "";
   const session = useSession();
+  const workspace = useStoreWorkspace();
   const canEdit = session.role === "org_owner" || session.role === "staff" || session.role === "store_manager";
 
   const [phase, setPhase] = useState<"loading" | "error" | "ready">("loading");
@@ -82,6 +85,7 @@ export default function StoreServicesPage() {
   const [notice, setNotice] = useState("");
   const [saveError, setSaveError] = useState("");
   const [stale, setStale] = useState(false);
+  const [conflictBackup, setConflictBackup] = useState<DraftItem[] | null>(null);
   const [reloading, setReloading] = useState(false);
   const [refreshError, setRefreshError] = useState("");
   const [dirty, setDirty] = useState(false);
@@ -210,17 +214,18 @@ export default function StoreServicesPage() {
       setSaveError(blocked.blocker || "请先补全带提示的服务行。");
       return;
     }
-    const body = buildServicesPutBody(drafts, revision);
+    const body = { ...buildServicesPutBody(drafts, revision), publication_mode: "draft" };
     const res = await session.api("PUT", `stores/${storeId}/services`, body);
     if (!res.ok) {
       const failure = saveServicesFailure(res.status, res.data);
-      if (failure.kind === "conflict") setStale(true);
+      if (failure.kind === "conflict") { setStale(true); setConflictBackup(drafts); }
       setSaveError(failure.text);
       return;
     }
     applyConfig(res.data as unknown as ServicesDoc);
+    workspace?.saved();
     setStale(false);
-    setNotice(`门店服务已保存，当前是配置第 ${(res.data as unknown as ServicesDoc).config_revision} 版。顾客门店页只展示已启用的服务。`);
+    setNotice(`门店服务已保存，当前是配置第 ${(res.data as unknown as ServicesDoc).config_revision} 版。请在本工作区预览并发布，顾客继续使用上次发布的服务。`);
   }
 
   const blockers = drafts.filter((row) => row.blocker !== "").length;
@@ -243,13 +248,14 @@ export default function StoreServicesPage() {
 
   return (
     <main>
+      {!workspace ? <Link href={workspaceHref(storeId, "services")}>返回本店工作区</Link> : null}
       <h1 className="tk-title">门店服务 · {doc.store_name}</h1>
       <p className="tk-lead">
         连接类服务在这里配置：门店 Wi-Fi、加微信（个人/企业微信）、社群与公众号二维码引用。
         点评、关注等平台动作在「渠道动作」页配置。
       </p>
       <p className="tk-note">
-        顾客门店码 {doc.store_code}。当前是配置第 {revision} 版{dirty ? "（有未保存修改）" : ""}。
+        当前是配置第 {revision} 版{dirty ? "（有未保存修改）" : ""}。
         Wi-Fi 密码会明文展示给到店顾客（仅展示+主动复制，不要求顾客留任何信息）。
       </p>
       <p className={badge.tone === "warn" ? "tk-warn" : "tk-note"} data-testid="wecom-callback-badge">{badge.text}</p>
@@ -266,6 +272,10 @@ export default function StoreServicesPage() {
         </p>
       ) : null}
 
+      {conflictBackup && !stale ? <p className="tk-warn">已读取最新版本，你刚才的修改仍可恢复。
+        <button className="tk-quiet" onClick={() => {setDrafts(conflictBackup);setDirty(true);setConflictBackup(null);}}>恢复我的修改，再核对保存</button>
+        <button className="tk-quiet" onClick={() => setConflictBackup(null)}>放弃我刚才的修改</button>
+      </p> : null}
       <ul className="tk-list">
         {drafts.map((row, index) => (
           <li key={row.service_id !== "" ? row.service_id : `new-${index}-${row.order}`}>
@@ -457,7 +467,7 @@ export default function StoreServicesPage() {
         </p>
       </div>
 
-      <p className="tk-note">
+      <p className="tk-note" hidden={!!workspace}>
         <Link href={`/work/stores/${storeId}/channels`} className="tk-quiet">前往渠道动作配置</Link>
         {" · "}
         <Link href="/work/stores" className="tk-quiet">返回门店列表</Link>

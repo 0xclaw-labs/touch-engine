@@ -254,3 +254,17 @@ export function canManageBilling(role: string, permissions: string[] | null): bo
   }
   return role === "org_owner";
 }
+
+// A pending original subscription intent must be resumed before another purchase.
+export function blocksNewSubscription(order: Pick<BillingOrderView, "kind" | "status"> & Partial<Pick<BillingOrderView, "payment_ref">>): boolean {
+  return order.kind === "subscription" && (["processing", "opening"].includes(order.status) || (order.status === "failed" && Boolean(order.payment_ref)));
+}
+
+export function nextOrderStep(order: Pick<BillingOrderView, "kind" | "status" | "payment_ref">): string {
+  if (order.kind === "hardware") return "付款与实卡验收分别记录；回查原订单查看出库、写卡、回读和现场验收。";
+  if (order.status === "opening" || (order.payment_ref && order.status === "processing")) return "已确认支付，正在同步开通；请回查原订单，无需重复购买。";
+  if (order.status === "processing") return "等待支付结果；请回查原订单确认付款进度，无需重复下单。";
+  if (order.status === "failed") return "办理失败，请回查原订单定位原因；已付款的异常交由平台处理。";
+  if (order.status === "active") return "服务已生效；实卡交付以独立验收记录为准。";
+  return "请回查原订单，核对取消或后续处理结果。";
+}
