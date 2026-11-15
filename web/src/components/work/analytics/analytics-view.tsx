@@ -483,19 +483,36 @@ export function AnalyticsReport({ data, catalog, catalogNote, draft, onDraft, on
           <p className="tk-unknown" data-field="recon-forbidden">{data.cost_reconciliation.note || "当前账号没有账单查看权限。请联系组织管理员查看费用。"}</p>
         ) : <>
         <p className="tk-note" data-field="recon-scope">组织范围账单投影，不能按门店或活动分摊；上方业务筛选对此区块未生效。0 仅表示本地投影无相应记录，不证明外部账已同步齐全。</p>
-        {data.cost_reconciliation.subscription_available && data.cost_reconciliation.subscription_paid_minor != null ? (
+        {data.cost_reconciliation.subscription_available && data.cost_reconciliation.subscription_paid_minor != null && data.cost_reconciliation.subscription_paid_currency && !(data.cost_reconciliation.subscription_paid_time_unknown ?? 0) ? (
           <p data-field="recon-subscription">
             订阅实付(支付事实订单投影):{formatMinor(data.cost_reconciliation.subscription_paid_minor)}
-            ({countDisplay(data.cost_reconciliation.subscription_paid_orders)} 单)
+            ({countDisplay(data.cost_reconciliation.subscription_paid_orders)} 单，币种：{data.cost_reconciliation.subscription_paid_currency})
           </p>
         ) : (
           <p className="tk-unknown" data-field="recon-subscription-unknown">
-            订阅实付:没有读到可用的支付金额，未接入、未同步或缺字段均保持未知。请到账单页核对。
+            订阅实付:没有读到完整的单一币种支付金额，缺付款事实、发生时间、金额、币种或币种混合均保持未知。请到账单页核对。
           </p>
         )}
         {(data.cost_reconciliation.subscription_failed_orders ?? 0) > 0 ? (
           <p className="tk-note" data-field="recon-subscription-failed">
-            失败订阅单:{data.cost_reconciliation.subscription_failed_orders} 单(失败不是支出,是待处理)。
+            开通失败订阅单:{data.cost_reconciliation.subscription_failed_orders} 单，需处理开通结果；已付款金额仍按付款事实保留。
+          </p>
+        ) : null}
+        {(data.cost_reconciliation.subscription_paid_time_unknown ?? 0) > 0 ? (
+          <p className="tk-unknown" data-field="recon-subscription-paid-time-unknown">
+            有 {data.cost_reconciliation.subscription_paid_time_unknown} 单付款无法确认发生时间，本窗口付款合计未知；
+            已确认落在本窗口的付款为 {countDisplay(data.cost_reconciliation.subscription_paid_orders)} 单。请到账单页核对。
+          </p>
+        ) : null}
+        {(data.cost_reconciliation.subscription_refund_time_unknown ?? 0) > 0 ? (
+          <p className="tk-unknown" data-field="recon-subscription-refund-time-unknown">
+            有 {data.cost_reconciliation.subscription_refund_time_unknown} 笔退款无法确认发生时间，本窗口退款合计未知；
+            已确认落在本窗口的退款为 {countDisplay(data.cost_reconciliation.subscription_refunds)} 笔。请到账单页核对。
+          </p>
+        ) : (data.cost_reconciliation.subscription_refunds ?? 0) > 0 ? (
+          <p className="tk-note" data-field="recon-subscription-refunds">
+            订阅退款:{data.cost_reconciliation.subscription_refund_currency ? formatMinor(data.cost_reconciliation.subscription_refund_minor) : "未知（金额或币种不完整）"}
+            ({data.cost_reconciliation.subscription_refunds} 笔{data.cost_reconciliation.subscription_refund_currency ? `，币种：${data.cost_reconciliation.subscription_refund_currency}` : ""})——分列对账，不冲销原付款金额。
           </p>
         ) : null}
         <p data-field="recon-ai">
@@ -511,20 +528,31 @@ export function AnalyticsReport({ data, catalog, catalogNote, draft, onDraft, on
             ——单列披露,不计入支出。
           </p>
         ) : null}
-        {data.cost_reconciliation.hardware_available && data.cost_reconciliation.hardware_paid_minor != null ? (
+        {data.cost_reconciliation.hardware_available && data.cost_reconciliation.hardware_paid_minor != null && data.cost_reconciliation.hardware_paid_currency && !(data.cost_reconciliation.hardware_paid_time_unknown ?? 0) ? (
           <p data-field="recon-hardware">
             硬件支出(支付事实订单投影):{formatMinor(data.cost_reconciliation.hardware_paid_minor)}
-            ({countDisplay(data.cost_reconciliation.hardware_paid_orders)} 单)
+            ({countDisplay(data.cost_reconciliation.hardware_paid_orders)} 单，币种：{data.cost_reconciliation.hardware_paid_currency})
           </p>
         ) : (
           <p className="tk-unknown" data-field="recon-hardware-unknown">
-            硬件支出:没有读到可用的支付金额，未接入、未同步或缺字段均保持未知。请到账单页核对。
+            硬件支出:没有读到完整的单一币种支付金额，缺付款事实、发生时间、金额、币种或币种混合均保持未知。请到账单页核对。
           </p>
         )}
-        {(data.cost_reconciliation.hardware_refunds ?? 0) > 0 ? (
+        {(data.cost_reconciliation.hardware_paid_time_unknown ?? 0) > 0 ? (
+          <p className="tk-unknown" data-field="recon-hardware-paid-time-unknown">
+            有 {data.cost_reconciliation.hardware_paid_time_unknown} 单付款无法确认发生时间，本窗口付款合计未知；
+            已确认落在本窗口的付款为 {countDisplay(data.cost_reconciliation.hardware_paid_orders)} 单。请到账单页核对。
+          </p>
+        ) : null}
+        {(data.cost_reconciliation.hardware_refund_time_unknown ?? 0) > 0 ? (
+          <p className="tk-unknown" data-field="recon-hardware-refund-time-unknown">
+            有 {data.cost_reconciliation.hardware_refund_time_unknown} 笔退款无法确认发生时间，本窗口退款合计未知；
+            已确认落在本窗口的退款为 {countDisplay(data.cost_reconciliation.hardware_refunds)} 笔。请到账单页核对。
+          </p>
+        ) : (data.cost_reconciliation.hardware_refunds ?? 0) > 0 ? (
           <p className="tk-note" data-field="recon-hardware-refunds">
-            硬件退款:{formatMinor(data.cost_reconciliation.hardware_refund_minor)}
-            ({data.cost_reconciliation.hardware_refunds} 笔)——分列对账,不冲销原订单金额。
+            硬件退款:{data.cost_reconciliation.hardware_refund_currency ? formatMinor(data.cost_reconciliation.hardware_refund_minor) : "未知（金额或币种不完整）"}
+            ({data.cost_reconciliation.hardware_refunds} 笔{data.cost_reconciliation.hardware_refund_currency ? `，币种：${data.cost_reconciliation.hardware_refund_currency}` : ""})——分列对账,不冲销原付款金额。
           </p>
         ) : null}
         <details className="tk-note" data-field="recon-definition">

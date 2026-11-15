@@ -161,7 +161,13 @@ export interface CostReconciliation {
   subscription_available: boolean;
   subscription_paid_minor?: number | null;
   subscription_paid_orders: number | undefined;
+  subscription_paid_currency?: string;
+  subscription_paid_time_unknown?: number;
   subscription_failed_orders: number | undefined;
+  subscription_refund_minor?: number | null;
+  subscription_refunds?: number;
+  subscription_refund_currency?: string;
+  subscription_refund_time_unknown?: number;
   subscription_note?: string;
   ai_confirmed_minor: number | undefined;
   ai_confirmed_count: number | undefined;
@@ -174,8 +180,12 @@ export interface CostReconciliation {
   hardware_available: boolean;
   hardware_paid_minor?: number | null;
   hardware_paid_orders: number | undefined;
+  hardware_paid_currency?: string;
+  hardware_paid_time_unknown?: number;
   hardware_refund_minor: number | undefined;
   hardware_refunds: number | undefined;
+  hardware_refund_currency?: string;
+  hardware_refund_time_unknown?: number;
   definition: FunnelDefinition;
   face_note: string;
 }
@@ -436,7 +446,9 @@ export function parseOperationsResponse(value: unknown, tenantId: string): Opera
     }),
     cost: { ...numberFields(cost, "content_generation_amount_minor content_generation_runs reward_cost_minor reward_redeemed_cost_minor reward_face_minor unrecorded_batches reward_cost_unrecorded redeemed_cost_unrecorded"),
       content_generation_available: cost.content_generation_available === true, content_generation_note: text(cost.content_generation_note, note), face_note: text(cost.face_note, note) },
-    cost_reconciliation: { ...numberFields(recon, "subscription_paid_minor subscription_paid_orders subscription_failed_orders ai_confirmed_minor ai_confirmed_count ai_consumed_minor ai_consumed_count ai_refunded_minor ai_refunded_count ai_failed_minor ai_failed_count hardware_paid_minor hardware_paid_orders hardware_refund_minor hardware_refunds"),
+    cost_reconciliation: { ...numberFields(recon, "subscription_paid_minor subscription_paid_orders subscription_failed_orders subscription_refund_minor subscription_refunds ai_confirmed_minor ai_confirmed_count ai_consumed_minor ai_consumed_count ai_refunded_minor ai_refunded_count ai_failed_minor ai_failed_count hardware_paid_minor hardware_paid_orders hardware_refund_minor hardware_refunds subscription_paid_time_unknown subscription_refund_time_unknown hardware_paid_time_unknown hardware_refund_time_unknown"),
+      subscription_paid_currency: text(recon.subscription_paid_currency), subscription_refund_currency: text(recon.subscription_refund_currency),
+      hardware_paid_currency: text(recon.hardware_paid_currency), hardware_refund_currency: text(recon.hardware_refund_currency),
       availability: recon.availability === "forbidden" ? "forbidden" : undefined, note: text(recon.note),
       subscription_available: recon.subscription_available === true, hardware_available: recon.hardware_available === true,
       subscription_note: text(recon.subscription_note), definition: definition(recon.definition), face_note: text(recon.face_note, note) },

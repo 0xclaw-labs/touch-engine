@@ -269,11 +269,10 @@ type Config struct {
 	BrandBaseURL string
 	BrandToken   string
 
-	// Eco cashier jump params (HUI-4591 M12): the billing page reuses the
-	// eco-nav app switch to jump to the ecosystem cashier. Empty (default)
-	// means the cashier app is not wired in this deployment: the page answers
-	// honestly "生态收银台未接入" instead of inventing a jump target. The URL
-	// itself is always minted by public-ai shell launch — never constructed here.
+	// Retained cashier destination identifiers (HUI-4591 M12). These do not
+	// establish an order-bound checkout consumer: even a registered app switch
+	// carries no original order. Billing must remain checkout_unwired until
+	// the billing authority supplies a real checkout and return contract.
 	CashierAppID    string
 	CashierTargetID string
 

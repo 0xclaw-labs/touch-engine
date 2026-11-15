@@ -5,6 +5,38 @@ import (
 	"testing"
 )
 
+func TestCashierAvailabilityRequiresAnOrderBoundCheckout(t *testing.T) {
+	for _, target := range []struct{ name, app, target string }{
+		{"unconfigured", "", ""},
+		{"unregistered", "cashier", "ti-cashier-web"},
+		{"registered_navigation_only", "goboost", "ti-goboost-web"},
+	} {
+		t.Run(target.name, func(t *testing.T) {
+			f := billingFixture(t, false)
+			f.s.Cfg.CashierAppID, f.s.Cfg.CashierTargetID = target.app, target.target
+			seedCatalog(t, f)
+			status, out := f.do2(t, "GET", "/api/v1/billing/subscription", "sess-owner-a", f.tenA, "")
+			checkout, _ := out["checkout"].(map[string]any)
+			if status != 200 || checkout["available"] != false || checkout["reason"] != "checkout_unwired" {
+				t.Fatalf("checkout did not disclose its missing order-bound consumer: %d %v", status, out)
+			}
+			if checkout["app_id"] != "" || checkout["launch_target_id"] != "" {
+				t.Fatalf("unwired checkout exposed a payment destination: %v", checkout)
+			}
+			status, quote := f.do2(t, "POST", "/api/v1/billing/subscription-quote", "sess-owner-a", f.tenA,
+				`{"action":"new","plan_code":"store.plan.month"}`)
+			if status != 200 || quote["price_ref"] != "price_m_v2026" {
+				t.Fatalf("unwired payment hid the authoritative quote: %d %v", status, quote)
+			}
+			orders, err := f.s.St.ListBillingOrders(f.tenA, "subscription")
+			mustNoErr(t, err)
+			if len(orders) != 0 {
+				t.Fatalf("checking readiness or a quote created an order: %+v", orders)
+			}
+		})
+	}
+}
+
 func TestCashierRequiresCompleteTarget(t *testing.T) {
 	f := billingFixture(t, false)
 	f.s.Cfg.CashierAppID = "cashier"
@@ -18,7 +50,7 @@ func TestCashierRequiresCompleteTarget(t *testing.T) {
 	}
 }
 
-func TestOriginalUnpaidOrderOffersAuthorizedCheckoutWithoutReordering(t *testing.T) {
+func TestOriginalUnpaidOrderRemainsReadableWhenCheckoutIsUnwired(t *testing.T) {
 	f := billingFixture(t, true)
 	seedCatalog(t, f)
 	f.s.Cfg.CashierAppID = "cashier"
@@ -33,8 +65,8 @@ func TestOriginalUnpaidOrderOffersAuthorizedCheckoutWithoutReordering(t *testing
 	for i := 0; i < 2; i++ {
 		status, out = f.do2(t, "GET", path, "sess-owner-a", f.tenA, "")
 		checkout, _ := out["checkout"].(map[string]any)
-		if status != 200 || checkout["available"] != true || out["order"].(map[string]any)["id"] != id {
-			t.Fatalf("original unpaid order has no continuation: %d %v", status, out)
+		if status != 200 || checkout["available"] != false || checkout["reason"] != "checkout_unwired" || out["order"].(map[string]any)["id"] != id {
+			t.Fatalf("original unpaid order was hidden or offered an unbound checkout: %d %v", status, out)
 		}
 	}
 	rows, err := f.s.St.ListBillingOrders(f.tenA, "subscription")

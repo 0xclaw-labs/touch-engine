@@ -13,8 +13,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
-import { failureText, useMerchantSession, type MerchantSession } from "@/components/work/merchant-session";
+import { useEffect, useState } from "react";
+import { failureText, MerchantGate, useSession, type MerchantSession } from "@/components/work/merchant-session";
 import type { OpsOperation } from "@/lib/ops-console";
 
 const OPS_TABS: { href: string; label: string; command: string }[] = [
@@ -37,61 +37,81 @@ export function opsCommandsOf(effective: unknown): string[] {
 // OpsGate: session + access/effective 双门。FEATURE_AUTHZ off(access 404)
 // 与无 grant 同样受限——平台运营面只对持受信 grant 的人存在。
 export function OpsGate({ children }: { children: React.ReactNode }) {
-  const session = useMerchantSession();
-  const [commands, setCommands] = useState<string[] | null>(null); // null = 判定中
-  const [accessError, setAccessError] = useState("");
+  // 登录、选择组织、会话故障和身份切换均走原有门闸。六个 desk
+  // 与授权门消费同一个 SessionContext，不再竞争 beginTenantOp。
+  return <MerchantGate><OpsAccessGate>{children}</OpsAccessGate></MerchantGate>;
+}
 
-  const judge = useCallback(async (ses: MerchantSession) => {
-    const res = await ses.api("GET", "access/effective");
-    if (res.status === 404) {
-      // 授权域未启用:平台运营面整体不存在(统一 404 语义,不假装)。
-      setCommands([]);
-      return;
-    }
-    if (!res.ok) {
-      setAccessError(failureText(res.status, res.data));
-      setCommands([]);
-      return;
-    }
-    setCommands(opsCommandsOf(res.data));
-  }, []);
+interface OpsAccessDecision {
+  session: MerchantSession;
+  attempt: number;
+  commands: string[];
+  error: string;
+  expired: boolean;
+}
+
+function OpsAccessGate({ children }: { children: React.ReactNode }) {
+  const session = useSession();
+  const [decision, setDecision] = useState<OpsAccessDecision | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    if (session.phase !== "ready") return;
-    void judge(session);
-  }, [session.phase, session, judge]);
+    let active = true;
+    const record = (commands: string[], error = "", expired = false) => {
+      if (active) setDecision({ session, attempt, commands, error, expired });
+    };
+    void (async () => {
+      try {
+        const res = await session.api("GET", "access/effective");
+        if (res.status === 403 || res.status === 404) {
+          // 无授权/授权域未启用均受限，不以组织角色补权限。
+          record([]);
+        } else if (!res.ok) {
+          record([], failureText(res.status, res.data), res.status === 401);
+        } else {
+          record(opsCommandsOf(res.data));
+        }
+      } catch {
+        record([], "没有连上授权服务，请重试。");
+      }
+    })();
+    // 换组织/换号会由 MerchantGate 卸载本门；重试或会话快照改变也
+    // 作废旧请求。迟到的成功、拒绝和网络错误都不能覆盖当前判定。
+    return () => { active = false; };
+  }, [session, attempt]);
 
-  if (session.phase === "loading") {
-    return (
-      <main className="tk-page" data-state="loading">
-        <p className="tk-state">正在读取会话…</p>
-      </main>
-    );
-  }
-  if (session.phase !== "ready") {
-    return (
-      <main className="tk-page" data-state="unauthenticated">
-        <h1 className="tk-title">平台运营控制台</h1>
-        <p className="tk-state">请先登录平台账号。商家工作台入口在 /work。</p>
-      </main>
-    );
-  }
-  if (commands === null) {
+  // 在 render 阶段隔离旧业务树，不等待 effect 清空旧授权。不能只
+  // 比较 tenant 或脱敏 email：同组织换号仍必须重新取得受信 grant。
+  if (decision?.session !== session || decision.attempt !== attempt) {
     return (
       <main className="tk-page" data-state="loading">
         <p className="tk-state">正在核对平台运营授权…</p>
       </main>
     );
   }
-  if (commands.length === 0) {
+  if (decision.error) {
+    return (
+      <main className="tk-page" data-state="error">
+        <h1 className="tk-title">平台运营控制台</h1>
+        <p className="tk-state tk-danger">{decision.error}</p>
+        <button className="tk-button" type="button"
+          onClick={decision.expired ? session.retryConnection : () => setAttempt((value) => value + 1)}>
+          {decision.expired ? "重新核对会话" : "重试授权"}
+        </button>
+      </main>
+    );
+  }
+  if (decision.commands.length === 0) {
     return (
       <main className="tk-page" data-state="restricted">
         <h1 className="tk-title">平台运营控制台</h1>
         <p className="tk-state tk-danger" data-field="forbidden">
           当前账号没有平台运营授权(403)。平台操作能力只来自受信签发的 ops
           grant,商家负责人、店员与代理都不会自动获得;如需授权请联系平台管理方。
-          {accessError ? `(授权读取失败:${accessError})` : ""}
         </p>
+        <button className="tk-button" type="button" onClick={() => setAttempt((value) => value + 1)}>
+          重新核对授权
+        </button>
       </main>
     );
   }

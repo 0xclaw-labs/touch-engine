@@ -10,7 +10,7 @@
 //   - 到期(valid_until)/未核实证据档如实展示,unknown 不当 allowed。
 
 import { useCallback, useEffect, useState } from "react";
-import { useMerchantSession, type MerchantSession } from "@/components/work/merchant-session";
+import { useSession, type MerchantSession } from "@/components/work/merchant-session";
 import {
   OperationFeedback,
   OpsReasonForm,
@@ -23,7 +23,7 @@ import { evidenceGradeText, type OpsChannelRecord } from "@/lib/ops-console";
 type Phase = "loading" | "error" | "off" | "ready";
 
 export function ChannelsDesk() {
-  const session = useMerchantSession();
+  const session = useSession();
   const [phase, setPhase] = useState<Phase>("loading");
   const [records, setRecords] = useState<OpsChannelRecord[]>([]);
   const [busy, setBusy] = useState(false);

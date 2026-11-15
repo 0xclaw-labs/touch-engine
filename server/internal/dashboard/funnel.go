@@ -211,24 +211,34 @@ type LeadsFacts struct {
 	UniqueContacts          int64 // COUNT(DISTINCT phone) 窗口内提交
 }
 
-// CostReconciliationFacts: 4591 投影只读。指针 = 窗口内没有该类支付事实
-// (未录入,不冒充 0);退款是分列的对账事实,绝不冲销改写原订单金额。
+// CostReconciliationFacts: 4591 投影只读。nil 金额表示缺付款事实或金额/币种不完整；
+// 不冒充 0。退款是分列的对账事实,绝不冲销改写原订单金额。
 type CostReconciliationFacts struct {
-	SubscriptionPaidMinor    *int64 // kind='subscription' status='active' 的 SUM(amount_minor)
-	SubscriptionPaidOrders   int64
-	SubscriptionFailedOrders int64 // failed 订单数(失败不是支出,单列)
-	AIConfirmedMinor         int64 // state='confirmed'(已确认未消费)
-	AIConfirmedCount         int64
-	AIConsumedMinor          int64 // state='consumed'(已消费,已发生)
-	AIConsumedCount          int64
-	AIRefundedMinor          int64 // state='refunded'(单列,不计支出)
-	AIRefundedCount          int64
-	AIFailedMinor            int64 // state='failed'(单列,不计支出)
-	AIFailedCount            int64
-	HardwarePaidMinor        *int64 // kind='hardware' status='active' 的 SUM(amount_minor)
-	HardwarePaidOrders       int64
-	HardwareRefundMinor      int64 // billing_refunds SUM(分列对账)
-	HardwareRefunds          int64
+	SubscriptionPaidMinor         *int64 // payment_paid 权威事实关联的单币种订单金额;缺失保持未知
+	SubscriptionPaidOrders        int64
+	SubscriptionPaidCurrency      string
+	SubscriptionPaidTimeUnknown   int64 // 无法归窗的付款单数；确定落窗单数仍单列
+	SubscriptionFailedOrders      int64 // failed 开通订单数;可能已经支付,与付款分列
+	SubscriptionRefundMinor       *int64
+	SubscriptionRefunds           int64
+	SubscriptionRefundCurrency    string
+	SubscriptionRefundTimeUnknown int64 // 无法归窗的退款笔数，不归为本窗口的零
+	AIConfirmedMinor              int64 // state='confirmed'(已确认未消费)
+	AIConfirmedCount              int64
+	AIConsumedMinor               int64 // state='consumed'(已消费,已发生)
+	AIConsumedCount               int64
+	AIRefundedMinor               int64 // state='refunded'(单列,不计支出)
+	AIRefundedCount               int64
+	AIFailedMinor                 int64 // state='failed'(单列,不计支出)
+	AIFailedCount                 int64
+	HardwarePaidMinor             *int64 // payment_paid 权威事实关联的单币种订单金额
+	HardwarePaidOrders            int64
+	HardwarePaidCurrency          string
+	HardwarePaidTimeUnknown       int64
+	HardwareRefundMinor           *int64 // 仅硬件订单的退款;缺币种/金额不完整时未知
+	HardwareRefunds               int64
+	HardwareRefundCurrency        string
+	HardwareRefundTimeUnknown     int64
 }
 
 // LayerCount is one named count line inside an evidence layer. Each line has
@@ -272,29 +282,39 @@ type LeadsPanel struct {
 }
 
 // CostReconciliation is the read-only 4591 projection block. Subscriptions and
-// hardware carry pointer amounts: nil = no payment facts in the window (kept
-// unknown, never a fabricated 0). Refunds are listed apart, never netted.
+// hardware carry pointer amounts: nil = no payment facts or incomplete amount /
+// currency (kept unknown, never a fabricated 0). Refunds are listed apart.
 type CostReconciliation struct {
-	SubscriptionAvailable    bool       `json:"subscription_available"`
-	SubscriptionPaidMinor    *int64     `json:"subscription_paid_minor,omitempty"`
-	SubscriptionPaidOrders   int64      `json:"subscription_paid_orders"`
-	SubscriptionFailedOrders int64      `json:"subscription_failed_orders"`
-	SubscriptionNote         string     `json:"subscription_note,omitempty"`
-	AIConfirmedMinor         int64      `json:"ai_confirmed_minor"`
-	AIConfirmedCount         int64      `json:"ai_confirmed_count"`
-	AIConsumedMinor          int64      `json:"ai_consumed_minor"`
-	AIConsumedCount          int64      `json:"ai_consumed_count"`
-	AIRefundedMinor          int64      `json:"ai_refunded_minor"`
-	AIRefundedCount          int64      `json:"ai_refunded_count"`
-	AIFailedMinor            int64      `json:"ai_failed_minor"`
-	AIFailedCount            int64      `json:"ai_failed_count"`
-	HardwareAvailable        bool       `json:"hardware_available"`
-	HardwarePaidMinor        *int64     `json:"hardware_paid_minor,omitempty"`
-	HardwarePaidOrders       int64      `json:"hardware_paid_orders"`
-	HardwareRefundMinor      int64      `json:"hardware_refund_minor"`
-	HardwareRefunds          int64      `json:"hardware_refunds"`
-	Definition               Definition `json:"definition"`
-	FaceNote                 string     `json:"face_note"`
+	SubscriptionAvailable         bool       `json:"subscription_available"`
+	SubscriptionPaidMinor         *int64     `json:"subscription_paid_minor,omitempty"`
+	SubscriptionPaidOrders        int64      `json:"subscription_paid_orders"`
+	SubscriptionPaidCurrency      string     `json:"subscription_paid_currency,omitempty"`
+	SubscriptionPaidTimeUnknown   int64      `json:"subscription_paid_time_unknown"`
+	SubscriptionFailedOrders      int64      `json:"subscription_failed_orders"`
+	SubscriptionRefundMinor       *int64     `json:"subscription_refund_minor,omitempty"`
+	SubscriptionRefunds           int64      `json:"subscription_refunds"`
+	SubscriptionRefundCurrency    string     `json:"subscription_refund_currency,omitempty"`
+	SubscriptionRefundTimeUnknown int64      `json:"subscription_refund_time_unknown"`
+	SubscriptionNote              string     `json:"subscription_note,omitempty"`
+	AIConfirmedMinor              int64      `json:"ai_confirmed_minor"`
+	AIConfirmedCount              int64      `json:"ai_confirmed_count"`
+	AIConsumedMinor               int64      `json:"ai_consumed_minor"`
+	AIConsumedCount               int64      `json:"ai_consumed_count"`
+	AIRefundedMinor               int64      `json:"ai_refunded_minor"`
+	AIRefundedCount               int64      `json:"ai_refunded_count"`
+	AIFailedMinor                 int64      `json:"ai_failed_minor"`
+	AIFailedCount                 int64      `json:"ai_failed_count"`
+	HardwareAvailable             bool       `json:"hardware_available"`
+	HardwarePaidMinor             *int64     `json:"hardware_paid_minor,omitempty"`
+	HardwarePaidOrders            int64      `json:"hardware_paid_orders"`
+	HardwarePaidCurrency          string     `json:"hardware_paid_currency,omitempty"`
+	HardwarePaidTimeUnknown       int64      `json:"hardware_paid_time_unknown"`
+	HardwareRefundMinor           *int64     `json:"hardware_refund_minor,omitempty"`
+	HardwareRefunds               int64      `json:"hardware_refunds"`
+	HardwareRefundCurrency        string     `json:"hardware_refund_currency,omitempty"`
+	HardwareRefundTimeUnknown     int64      `json:"hardware_refund_time_unknown"`
+	Definition                    Definition `json:"definition"`
+	FaceNote                      string     `json:"face_note"`
 }
 
 // InventoryFactLine is one reward_inventory batch with its benefit counts.
@@ -942,11 +962,12 @@ func buildLeads(f LeadsFacts) LeadsPanel {
 }
 
 const (
-	subscriptionCostNote = "订阅实付是支付事实订单(active)的投影;failed/cancelled 不是支出,单列披露;" +
+	subscriptionCostNote = "订阅实付只计有 payment_paid 权威事实的原订单金额;开通中或开通失败不抹掉付款;" +
+		"没有付款事实或金额/币种不完整时保持未知,不同币种不相加;退款单列;" +
 		"账单权威在派诺生态统一账单,本看板不维护余额,明细可回查 /work/billing"
 	aiCostNote = "AI 实际费用按投影状态分列:consumed/confirmed 是已发生金额(confirmed=已确认未消费);" +
 		"refunded/failed 单列,不计入支出;浏览/复制等不计费动作结构上进不了投影"
-	hardwareCostNote = "硬件支出是支付事实订单(active)的投影;退款是分列的对账事实,不冲销不改写原订单金额"
+	hardwareCostNote = "硬件支出只计有 payment_paid 权威事实的原订单金额;退款按原订单类型分列,不冲销不改写原付款"
 	reconFaceNote    = "权益兑现成本与券面额在 cost 区块分列:面额是营销面值,不是已发生支出"
 )
 
@@ -954,31 +975,41 @@ const (
 // Pure function.
 func buildCostReconciliation(f CostReconciliationFacts) CostReconciliation {
 	return CostReconciliation{
-		SubscriptionAvailable:    f.SubscriptionPaidMinor != nil,
-		SubscriptionPaidMinor:    f.SubscriptionPaidMinor,
-		SubscriptionPaidOrders:   f.SubscriptionPaidOrders,
-		SubscriptionFailedOrders: f.SubscriptionFailedOrders,
-		SubscriptionNote:         subscriptionCostNote,
-		AIConfirmedMinor:         f.AIConfirmedMinor,
-		AIConfirmedCount:         f.AIConfirmedCount,
-		AIConsumedMinor:          f.AIConsumedMinor,
-		AIConsumedCount:          f.AIConsumedCount,
-		AIRefundedMinor:          f.AIRefundedMinor,
-		AIRefundedCount:          f.AIRefundedCount,
-		AIFailedMinor:            f.AIFailedMinor,
-		AIFailedCount:            f.AIFailedCount,
-		HardwareAvailable:        f.HardwarePaidMinor != nil,
-		HardwarePaidMinor:        f.HardwarePaidMinor,
-		HardwarePaidOrders:       f.HardwarePaidOrders,
-		HardwareRefundMinor:      f.HardwareRefundMinor,
-		HardwareRefunds:          f.HardwareRefunds,
+		SubscriptionAvailable:         f.SubscriptionPaidMinor != nil,
+		SubscriptionPaidMinor:         f.SubscriptionPaidMinor,
+		SubscriptionPaidOrders:        f.SubscriptionPaidOrders,
+		SubscriptionPaidCurrency:      f.SubscriptionPaidCurrency,
+		SubscriptionPaidTimeUnknown:   f.SubscriptionPaidTimeUnknown,
+		SubscriptionFailedOrders:      f.SubscriptionFailedOrders,
+		SubscriptionRefundMinor:       f.SubscriptionRefundMinor,
+		SubscriptionRefunds:           f.SubscriptionRefunds,
+		SubscriptionRefundCurrency:    f.SubscriptionRefundCurrency,
+		SubscriptionRefundTimeUnknown: f.SubscriptionRefundTimeUnknown,
+		SubscriptionNote:              subscriptionCostNote,
+		AIConfirmedMinor:              f.AIConfirmedMinor,
+		AIConfirmedCount:              f.AIConfirmedCount,
+		AIConsumedMinor:               f.AIConsumedMinor,
+		AIConsumedCount:               f.AIConsumedCount,
+		AIRefundedMinor:               f.AIRefundedMinor,
+		AIRefundedCount:               f.AIRefundedCount,
+		AIFailedMinor:                 f.AIFailedMinor,
+		AIFailedCount:                 f.AIFailedCount,
+		HardwareAvailable:             f.HardwarePaidMinor != nil,
+		HardwarePaidMinor:             f.HardwarePaidMinor,
+		HardwarePaidOrders:            f.HardwarePaidOrders,
+		HardwarePaidCurrency:          f.HardwarePaidCurrency,
+		HardwarePaidTimeUnknown:       f.HardwarePaidTimeUnknown,
+		HardwareRefundMinor:           f.HardwareRefundMinor,
+		HardwareRefunds:               f.HardwareRefunds,
+		HardwareRefundCurrency:        f.HardwareRefundCurrency,
+		HardwareRefundTimeUnknown:     f.HardwareRefundTimeUnknown,
 		Definition: Definition{
-			Source: "billing_orders/billing_ai_usage/billing_refunds(4591 投影表,受信权威缝写入;本看板只读)",
-			DedupKey: "订单 UNIQUE(tenant,idempotency_key);AI 用量 UNIQUE(tenant,quote_ref);" +
+			Source: "billing_order_events 的 payment_paid → billing_orders 冻结金额/币种;billing_ai_usage/billing_refunds(4591 受信权威投影;本看板只读)",
+			DedupKey: "付款按 tenant+order_id 去重(同单多次回调只计一单);AI 用量 UNIQUE(tenant,quote_ref);" +
 				"退款 UNIQUE(tenant,source,event_id)——重复回调不重复计",
-			Denominator: "窗口内按各自事件时间的真实投影行;支付金额=status='active' 订单的 amount_minor 投影",
-			EventTime:   "订单/退款/用量行的 created_at(事实落投影时刻,UTC)",
-			WindowNote:  windowNoteSecond + ";退款分列披露,不与支出对冲",
+			Denominator: "订阅/硬件付款与退款仅在该类发生时间可解析、窗口内金额全部已知且币种一致时汇总,否则未知;未知时间数为本组织该类无法归窗的事实,确定落窗笔数单列;订单状态不替代支付事实;AI 用量仍按原投影状态分列",
+			EventTime:   "付款按同单最早 payment_paid.occurred_at;退款按 billing_refunds.occurred_at;AI 按用量行 created_at(投影时刻,UTC)",
+			WindowNote:  windowNoteSecond + ";晚到付款/退款按原发生时间落窗;退款分列披露,不与付款对冲;失败订阅单为窗口内创建订单的当前开通状态",
 		},
 		FaceNote: reconFaceNote,
 	}

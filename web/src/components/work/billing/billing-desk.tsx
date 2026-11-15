@@ -305,7 +305,7 @@ export function BillingDesk() {
         <p>服务期至：{subPane?.paid_until || "尚无生效期限"}。付款主体：{session.role === "agent" ? "仅按商家已有的独立付款授权办理" : "当前组织，由有付款权限的人确认办理"}。</p>
         {!ordersReady ? <p role="alert">订单暂时读不到，请刷新重试，确认已有订单后再购买。</p> : null}
         {orders.filter((o) => blocksNewSubscription(o) || (o.kind === "hardware" && o.status !== "cancelled")).map((o) => <p key={o.id}>{planCodeText(o.plan_code)} · {formatAmount(o.amount_minor,o.currency)} · {nextOrderStep(o)} <button type="button" className="tk-quiet" onClick={() => { setTab("orders"); void lookupOrder(o.id); }}>回查原订单</button></p>)}
-        {!sub?.checkout?.available ? <p>收费通道尚未可用，请联系平台恢复生态收银台；已有订单可继续回查。</p> : null}
+        {!sub?.checkout?.available ? <p>支付接续尚未开通，暂不能确认下单。已有订单会保留，可继续回查；请联系平台完成接入。</p> : null}
       </section>
       <div role="tablist" aria-label="账单页签">
         {TABS.map((t) => (
@@ -360,7 +360,7 @@ export function BillingDesk() {
             <p>组织：{session.tenantName}。付款资格：{session.role === "agent" ? "商家独立代付授权" : "组织付款权限"}。</p>
             <p>商品：{planCodeText(purchase.plan)}；价格版本：{quote.pricing_version}；服务期 {quote.service_days} 天。</p>
             <p>预计金额：{formatAmount(quote.amount_minor,quote.currency)}。本次报价来自当前生效目录，价格引用随订单校验；生效日以支付后的服务事实为准；未到期续费接续原服务期。</p>
-            {!sub?.checkout?.available ? <p>可先核对本次报价。收费通道尚未可用，恢复后才能确认下单；当前没有创建订单。</p> : null}
+            {!sub?.checkout?.available ? <p>可先核对本次报价。支付接续尚未开通，当前没有创建订单。</p> : null}
             <button className="tk-button" type="button" disabled={ordering || !sub?.checkout?.available} onClick={() => void placeOrder(purchase.action,purchase.plan,purchase.count)}>确认并前往受控支付</button>
             <button className="tk-quiet" type="button" disabled={ordering} onClick={() => setPurchase(null)}>返回修改</button>
           </section> : null}
@@ -444,6 +444,7 @@ export function BillingDesk() {
                 {detail.order.order_ref ? ` · 权威订单引用 ${detail.order.order_ref}` : ""}
               </p>
               {detail.checkout?.available ? <button className="tk-button" type="button" disabled={ordering} onClick={() => void continuePayment(detail.order.id)}>继续支付原订单</button> : null}
+              {detail.checkout?.reason === "checkout_unwired" ? <p>支付接续尚未开通，原订单已保留。请联系平台完成接入；无需重新下单，可继续回查这笔订单。</p> : null}
               {detail.checkout?.reason === "original_payer_required" ? <p>原付款授权已变化，请由原付款人或平台核对这笔订单。查看订单不会授予付款权限。</p> : null}
               {detail.items && detail.fulfillment ? (
                 <ul data-testid="hardware-facts">

@@ -267,8 +267,8 @@ func TestAgentRenewalOrderCarriesPayerGrantSnapshot(t *testing.T) {
 	orderPath := "/api/v1/billing/orders/" + order["id"].(string)
 	status, out = f.do(t, "GET", orderPath, "sess-agent1", f.tenA, "")
 	checkout, _ := out["checkout"].(map[string]any)
-	if status != 200 || checkout["available"] != true {
-		t.Fatalf("original authorized agent cannot resume: %d %v", status, out)
+	if status != 200 || checkout["available"] != false || checkout["reason"] != "checkout_unwired" {
+		t.Fatalf("original payer was rejected or offered an unbound checkout: %d %v", status, out)
 	}
 	status, out = f.do(t, "GET", orderPath, "sess-owner-a", f.tenA, "")
 	checkout, _ = out["checkout"].(map[string]any)

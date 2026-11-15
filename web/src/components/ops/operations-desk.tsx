@@ -12,7 +12,7 @@
 //   - 硬件履约是 1663 未合流前的只读投影,来源如实标注。
 
 import { useCallback, useEffect, useState } from "react";
-import { useMerchantSession, type MerchantSession } from "@/components/work/merchant-session";
+import { useSession, type MerchantSession } from "@/components/work/merchant-session";
 import {
   OperationFeedback,
   OpsReasonForm,
@@ -34,7 +34,7 @@ import {
 type Phase = "loading" | "error" | "ready";
 
 export function OperationsDesk() {
-  const session = useMerchantSession();
+  const session = useSession();
   const [phase, setPhase] = useState<Phase>("loading");
   const [error, setError] = useState("");
   const [view, setView] = useState<OperationsOverview | null>(null);

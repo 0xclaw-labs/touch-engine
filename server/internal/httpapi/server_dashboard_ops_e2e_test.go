@@ -601,6 +601,10 @@ func TestDashboardOpsLayerBlocksE2E(t *testing.T) {
 		VALUES('sub-e2e-f',?,'subscription','renew',19900,'FEN','failed','idem-sub-e2e-f',?,?)`, f.tenA, inWin, inWin)
 	mustExec(`INSERT INTO billing_orders(id,tenant_id,kind,action,amount_minor,currency,status,idempotency_key,created_at,updated_at)
 		VALUES('hw-e2e',?,'hardware','purchase',50000,'FEN','active','idem-hw-e2e',?,?)`, f.tenA, inWin, inWin)
+	for _, id := range []string{"sub-e2e", "hw-e2e"} {
+		mustExec(`INSERT INTO billing_order_events(id,tenant_id,order_id,source,event_id,event_type,payload,occurred_at,created_at)
+		 VALUES(?,?,?,'engineering-authority',?,'payment_paid','{}',?,?)`, "payment-"+id, f.tenA, id, "payment-"+id, inWin, inWin)
+	}
 	mustExec(`INSERT INTO billing_refunds(id,tenant_id,order_id,refund_ref,amount_minor,currency,reason,source,event_id,occurred_at,created_at)
 		VALUES('ref-e2e',?,'hw-e2e','rr-e2e',10000,'FEN','hardware return','authority','evt-ref-e2e',?,?)`, f.tenA, inWin, inWin)
 	mustExec(`INSERT INTO billing_ai_usage(id,tenant_id,quote_ref,amount_minor,currency,state,created_at)

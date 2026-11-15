@@ -93,15 +93,13 @@ func (s *Server) payerDecisionFor(c *caller) billing.PayerDecision {
 	return billing.DecidePayerForOrder(billing.RoleAgent, c.Member.PrincipalRef, grant)
 }
 
-// cashierCheckout reports the eco-cashier jump params (empty = 未接入,页面诚实
-// 显示;URL 由生态 shell launch 铸造,本服务从不自造跳转地址)。
+// cashierCheckout reports whether this app can continue the original billing
+// order. A configured or registered app target only proves navigation: the
+// generic shell switch carries no checkout/order binding. Until the billing
+// authority supplies that consumer contract, keep quotes and existing orders
+// readable without advertising a payment destination or creating a UI order.
 func (s *Server) cashierCheckout() map[string]any {
-	app := strings.TrimSpace(s.Cfg.CashierAppID)
-	target := strings.TrimSpace(s.Cfg.CashierTargetID)
-	if !validEcoNavAppID(app) || !ecoNavTargetID.MatchString(target) || app == s.Cfg.AppID {
-		return map[string]any{"available": false, "app_id": "", "launch_target_id": ""}
-	}
-	return map[string]any{"available": true, "app_id": app, "launch_target_id": target}
+	return map[string]any{"available": false, "app_id": "", "launch_target_id": "", "reason": "checkout_unwired"}
 }
 
 // Continuing an unpaid order is a read, not another purchase. Recheck the live

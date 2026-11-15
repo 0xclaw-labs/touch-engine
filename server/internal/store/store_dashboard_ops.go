@@ -48,23 +48,33 @@ type OpsLeadsFacts struct {
 	UniqueContacts          int64
 }
 
-// OpsCostReconFacts: 4591 投影只读。指针 = 窗口内没有该类支付事实(未录入,不冒充 0)。
+// OpsCostReconFacts: 4591 投影只读。nil 金额表示缺付款事实或金额/币种不完整；不冒充 0。
 type OpsCostReconFacts struct {
-	SubscriptionPaidMinor    *int64
-	SubscriptionPaidOrders   int64
-	SubscriptionFailedOrders int64
-	AIConfirmedMinor         int64
-	AIConfirmedCount         int64
-	AIConsumedMinor          int64
-	AIConsumedCount          int64
-	AIRefundedMinor          int64
-	AIRefundedCount          int64
-	AIFailedMinor            int64
-	AIFailedCount            int64
-	HardwarePaidMinor        *int64
-	HardwarePaidOrders       int64
-	HardwareRefundMinor      int64
-	HardwareRefunds          int64
+	SubscriptionPaidMinor         *int64
+	SubscriptionPaidOrders        int64
+	SubscriptionPaidCurrency      string
+	SubscriptionPaidTimeUnknown   int64
+	SubscriptionFailedOrders      int64
+	SubscriptionRefundMinor       *int64
+	SubscriptionRefunds           int64
+	SubscriptionRefundCurrency    string
+	SubscriptionRefundTimeUnknown int64
+	AIConfirmedMinor              int64
+	AIConfirmedCount              int64
+	AIConsumedMinor               int64
+	AIConsumedCount               int64
+	AIRefundedMinor               int64
+	AIRefundedCount               int64
+	AIFailedMinor                 int64
+	AIFailedCount                 int64
+	HardwarePaidMinor             *int64
+	HardwarePaidOrders            int64
+	HardwarePaidCurrency          string
+	HardwarePaidTimeUnknown       int64
+	HardwareRefundMinor           *int64
+	HardwareRefunds               int64
+	HardwareRefundCurrency        string
+	HardwareRefundTimeUnknown     int64
 }
 
 // OpsTodoFacts is the store-side to-do digest fact set (当前态队列+准入到期)。
@@ -572,22 +582,16 @@ func (s *Store) DashboardOps(tenantID, storeScope string, start, end time.Time, 
 	}
 
 	// ---- 费用对账(4591 投影只读):订阅/AI/硬件分明细,退款分列不冲销 ----
-	// 订阅:支付事实订单(active)金额投影;failed 单列(失败不是支出)。
+	// 订阅付款按 payment_paid 权威事实；开通失败与已经支付可同时存在。
 	subCond := opsCond{clause: "o.tenant_id=? AND o.kind='subscription'", args: []any{tenantID}}
-	var subAmount sql.NullInt64
-	if err = s.opsScanRow("cost_subscription",
-		`SELECT COUNT(*), SUM(o.amount_minor) FROM billing_orders o WHERE `+subCond.clause+
-			` AND o.status='active'`+fmt.Sprintf(inWin, "o.created_at", "o.created_at"),
-		append(append([]any{}, subCond.args...), w.startTS, w.endTS),
-		func(scan func(dest ...any) error) error {
-			return scan(&facts.CostRecon.SubscriptionPaidOrders, &subAmount)
-		}); err != nil {
+	subPaid, err := s.opsPaidOrders(tenantID, "subscription", w)
+	if err != nil {
 		return facts, dims, err
 	}
-	if subAmount.Valid {
-		v := subAmount.Int64
-		facts.CostRecon.SubscriptionPaidMinor = &v
-	}
+	facts.CostRecon.SubscriptionPaidOrders = subPaid.Count
+	facts.CostRecon.SubscriptionPaidMinor = subPaid.Amount
+	facts.CostRecon.SubscriptionPaidCurrency = subPaid.Currency
+	facts.CostRecon.SubscriptionPaidTimeUnknown = subPaid.TimeUnknown
 	if facts.CostRecon.SubscriptionFailedOrders, err = s.opsScalar("cost_subscription_failed",
 		`SELECT COUNT(*) FROM billing_orders o WHERE `+subCond.clause+` AND o.status='failed'`+
 			fmt.Sprintf(inWin, "o.created_at", "o.created_at"),
@@ -629,35 +633,31 @@ func (s *Store) DashboardOps(tenantID, storeScope string, start, end time.Time, 
 	}
 	aiRows.Close()
 
-	// 硬件:支付事实订单(active)投影;退款分列对账,不冲销。
-	hwCond := opsCond{clause: "o.tenant_id=? AND o.kind='hardware'", args: []any{tenantID}}
-	var hwAmount sql.NullInt64
-	if err = s.opsScanRow("cost_hardware",
-		`SELECT COUNT(*), SUM(o.amount_minor) FROM billing_orders o WHERE `+hwCond.clause+
-			` AND o.status='active'`+fmt.Sprintf(inWin, "o.created_at", "o.created_at"),
-		append(append([]any{}, hwCond.args...), w.startTS, w.endTS),
-		func(scan func(dest ...any) error) error {
-			return scan(&facts.CostRecon.HardwarePaidOrders, &hwAmount)
-		}); err != nil {
+	// 硬件付款不等待出库/写卡/开通；退款按类型分列，均不冲销原付款。
+	hwPaid, err := s.opsPaidOrders(tenantID, "hardware", w)
+	if err != nil {
 		return facts, dims, err
 	}
-	if hwAmount.Valid {
-		v := hwAmount.Int64
-		facts.CostRecon.HardwarePaidMinor = &v
-	}
-	// 退款金额与单数分开查:SUM 为 0 时也要如实报 0 元/0 单。
-	if facts.CostRecon.HardwareRefundMinor, err = s.opsScalar("cost_hardware_refunds",
-		`SELECT COALESCE(SUM(r.amount_minor),0) FROM billing_refunds r WHERE r.tenant_id=?`+
-			fmt.Sprintf(inWin, "r.created_at", "r.created_at"),
-		append([]any{tenantID}, w.startTS, w.endTS)); err != nil {
+	facts.CostRecon.HardwarePaidOrders = hwPaid.Count
+	facts.CostRecon.HardwarePaidMinor = hwPaid.Amount
+	facts.CostRecon.HardwarePaidCurrency = hwPaid.Currency
+	facts.CostRecon.HardwarePaidTimeUnknown = hwPaid.TimeUnknown
+	subRefunds, err := s.opsRefunds(tenantID, "subscription", w)
+	if err != nil {
 		return facts, dims, err
 	}
-	if facts.CostRecon.HardwareRefunds, err = s.opsScalar("cost_hardware_refund_count",
-		`SELECT COUNT(*) FROM billing_refunds r WHERE r.tenant_id=?`+
-			fmt.Sprintf(inWin, "r.created_at", "r.created_at"),
-		append([]any{tenantID}, w.startTS, w.endTS)); err != nil {
+	facts.CostRecon.SubscriptionRefundMinor = subRefunds.Amount
+	facts.CostRecon.SubscriptionRefunds = subRefunds.Count
+	facts.CostRecon.SubscriptionRefundCurrency = subRefunds.Currency
+	facts.CostRecon.SubscriptionRefundTimeUnknown = subRefunds.TimeUnknown
+	hwRefunds, err := s.opsRefunds(tenantID, "hardware", w)
+	if err != nil {
 		return facts, dims, err
 	}
+	facts.CostRecon.HardwareRefundMinor = hwRefunds.Amount
+	facts.CostRecon.HardwareRefunds = hwRefunds.Count
+	facts.CostRecon.HardwareRefundCurrency = hwRefunds.Currency
+	facts.CostRecon.HardwareRefundTimeUnknown = hwRefunds.TimeUnknown
 
 	// ---- 漏斗第 6 级:奖励发放(granted;面额/成本分列)----
 	if err = s.opsScanRow("issued_total",

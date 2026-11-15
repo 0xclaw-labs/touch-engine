@@ -1,0 +1,17 @@
+{
+  "subscription_available": true,
+  "subscription_paid_minor": 1200,
+  "subscription_paid_orders": 1,
+  "subscription_paid_currency": "CNY",
+  "subscription_failed_orders": 1,
+  "subscription_refund_minor": 300,
+  "subscription_refunds": 1,
+  "subscription_refund_currency": "CNY",
+  "hardware_available": true,
+  "hardware_paid_minor": 2000,
+  "hardware_paid_orders": 1,
+  "hardware_paid_currency": "CNY",
+  "hardware_refund_minor": 500,
+  "hardware_refunds": 2,
+  "hardware_refund_currency": "CNY"
+}

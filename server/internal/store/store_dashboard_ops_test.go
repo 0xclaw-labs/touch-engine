@@ -514,6 +514,11 @@ func (w *opsWorld) seedLayerFactSet(t *testing.T) {
 	w.rawBillingOrder(t, "sub-2", "subscription", "renew", 29900, "failed", "2026-10-14T06:05:00Z")
 	w.rawBillingOrder(t, "hw-1", "hardware", "purchase", 120000, "active", "2026-10-14T06:10:00Z")
 	w.rawBillingOrder(t, "sub-9", "subscription", "new", 99900, "active", "2026-10-13T06:00:00Z") // 窗外
+	// 费用夹具必须包含原付款事实；active 状态本身不证明支付。
+	for _, row := range []struct{ id, at string }{{"sub-1", "2026-10-14T06:00:00Z"}, {"hw-1", "2026-10-14T06:10:00Z"}, {"sub-9", "2026-10-13T06:00:00Z"}} {
+		must(t, w.exec(`INSERT INTO billing_order_events(id,tenant_id,order_id,source,event_id,event_type,payload,occurred_at,created_at)
+		 VALUES(?,?,?,'engineering-authority',?,'payment_paid','{}',?,?)`, "event-"+row.id, w.tenA, row.id, "event-"+row.id, row.at, row.at))
+	}
 	w.rawRefund(t, "ref-1", "hw-1", 20000, "2026-10-14T07:00:00Z")
 	w.rawAIUsage(t, "ai-1", "q-1", "consumed", 100, "2026-10-14T07:10:00Z")
 	w.rawAIUsage(t, "ai-2", "q-2", "confirmed", 120, "2026-10-14T07:11:00Z")
@@ -806,8 +811,8 @@ func TestDashboardOpsCostReconciliationFacts(t *testing.T) {
 	if cr.HardwarePaidMinor == nil || *cr.HardwarePaidMinor != 120000 {
 		t.Fatalf("hardware paid = %v, want 120000", cr.HardwarePaidMinor)
 	}
-	if cr.HardwareRefundMinor != 20000 || cr.HardwareRefunds != 1 {
-		t.Fatalf("hardware refunds = %d/%d, want 20000/1 分列不冲销", cr.HardwareRefundMinor, cr.HardwareRefunds)
+	if cr.HardwareRefundMinor == nil || *cr.HardwareRefundMinor != 20000 || cr.HardwareRefunds != 1 {
+		t.Fatalf("hardware refunds = %v/%d, want 20000/1 分列不冲销", cr.HardwareRefundMinor, cr.HardwareRefunds)
 	}
 	// 跨租户零。
 	facts, _, err = w.s.DashboardOps(w.tenB, "", start, end, OpsFilter{})

@@ -250,7 +250,8 @@ func (s *Server) handleOpsSupportAccessClose(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	var in struct {
-		Reason string `json:"reason"`
+		Reason        string `json:"reason"`
+		OwnAccessOnly bool   `json:"own_access_only"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		fail(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
@@ -262,6 +263,23 @@ func (s *Server) handleOpsSupportAccessClose(w http.ResponseWriter, r *http.Requ
 	}
 	id := r.PathValue("id")
 	c := callerFrom(r)
+	if in.OwnAccessOnly {
+		// 商户详情中的「结束自己的支持访问」绑定执行时的受信主体。
+		// 即使共享会话在 GET 与 POST 之间换成另一个同有管理权的人，
+		// 也不能把原人的意图作为新人的操作执行。显式管理他人仍走原权限。
+		current, err := s.St.GetSupportAccess(id)
+		if errors.Is(err, store.ErrNotFound) {
+			fail(w, http.StatusNotFound, "not_found", "support access not found")
+			return
+		} else if err != nil {
+			fail(w, http.StatusInternalServerError, "internal", "support access lookup failed")
+			return
+		}
+		if current.PrincipalRef != c.Member.PrincipalRef {
+			fail(w, http.StatusForbidden, "support_access_subject_mismatch", "current account does not own this support access")
+			return
+		}
+	}
 	a, err := s.St.CloseSupportAccess(id, c.Member.PrincipalRef, strings.TrimSpace(in.Reason), time.Now())
 	if errors.Is(err, store.ErrNotFound) {
 		fail(w, http.StatusNotFound, "not_found", "support access not found")
