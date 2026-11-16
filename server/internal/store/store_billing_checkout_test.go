@@ -184,3 +184,67 @@ func TestApplyBillingCheckoutEventFailedThenRetryActivation(t *testing.T) {
 		t.Fatalf("retry activation: %+v err=%v", retried, err)
 	}
 }
+
+func TestApplyBillingCheckoutEventOpeningIsNoOpAck(t *testing.T) {
+	st, tenA, _ := newCheckoutStore(t)
+	row, _, err := st.UpsertBillingCheckoutRef(checkoutRefInput(tenA), now())
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	// v1.1:opening 落 checkout 分支 = FYI no-op ack,pending 态零改写。
+	acked, replayed, err := st.ApplyBillingCheckoutEvent(tenA, row.CheckoutRef, billing.AuthorityEventInput{
+		Source: "pai-billing", EventID: "evt-open-1", Type: billing.EventActivationOpening,
+	}, now())
+	if err != nil || !replayed || acked.State != billing.CheckoutStatePending {
+		t.Fatalf("opening on pending: %+v replayed=%v err=%v", acked, replayed, err)
+	}
+	// paid 态同样零改写(producer 在 payment_paid 之后发 opening)。
+	if _, _, err = st.ApplyBillingCheckoutEvent(tenA, row.CheckoutRef, billing.AuthorityEventInput{
+		Source: "pai-billing", EventID: "evt-paid-op", Type: billing.EventPaymentPaid,
+		Payload: billing.EventPayload{PaymentRef: "pay_op"}, AmountMinor: 990000, Currency: "CNY",
+	}, now()); err != nil {
+		t.Fatalf("paid: %v", err)
+	}
+	acked, replayed, err = st.ApplyBillingCheckoutEvent(tenA, row.CheckoutRef, billing.AuthorityEventInput{
+		Source: "pai-billing", EventID: "evt-open-2", Type: billing.EventActivationOpening,
+	}, now())
+	if err != nil || !replayed || acked.State != billing.CheckoutStatePaid {
+		t.Fatalf("opening on paid: %+v replayed=%v err=%v", acked, replayed, err)
+	}
+}
+
+func TestMarkBillingCheckoutActivatedLocalFact(t *testing.T) {
+	st, tenA, tenB := newCheckoutStore(t)
+	row, _, err := st.UpsertBillingCheckoutRef(checkoutRefInput(tenA), now())
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	// pending(无支付事实)不可本地激活。
+	if _, _, err := st.MarkBillingCheckoutActivated(tenA, row.CheckoutRef, now()); !errors.Is(err, billing.ErrInvalidTransition) {
+		t.Fatalf("pending local activation = %v, want ErrInvalidTransition", err)
+	}
+	if _, _, err = st.ApplyBillingCheckoutEvent(tenA, row.CheckoutRef, billing.AuthorityEventInput{
+		Source: "pai-billing", EventID: "evt-paid-loc", Type: billing.EventPaymentPaid,
+		Payload: billing.EventPayload{PaymentRef: "pay_loc"}, AmountMinor: 990000, Currency: "CNY",
+	}, now()); err != nil {
+		t.Fatalf("paid: %v", err)
+	}
+	// paid + 本地制作事实 → activated(v1.1 D3),支付事实保持。
+	advanced, replayed, err := st.MarkBillingCheckoutActivated(tenA, row.CheckoutRef, now())
+	if err != nil || replayed || advanced.State != billing.CheckoutStateActivated ||
+		advanced.PaymentRef != "pay_loc" || advanced.FailReason != "" {
+		t.Fatalf("local activation: %+v replayed=%v err=%v", advanced, replayed, err)
+	}
+	// 幂等:已 activated 重入 = replay 零改写。
+	again, replayed, err := st.MarkBillingCheckoutActivated(tenA, row.CheckoutRef, now())
+	if err != nil || !replayed || again.State != billing.CheckoutStateActivated {
+		t.Fatalf("idempotent re-entry: %+v replayed=%v err=%v", again, replayed, err)
+	}
+	// 他租户同 ref = ErrNotFound(掩蔽);未知 ref 同答。
+	if _, _, err := st.MarkBillingCheckoutActivated(tenB, row.CheckoutRef, now()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("foreign ref = %v, want ErrNotFound", err)
+	}
+	if _, _, err := st.MarkBillingCheckoutActivated(tenA, "ck_missing", now()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown ref = %v, want ErrNotFound", err)
+	}
+}

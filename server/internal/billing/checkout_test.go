@@ -5,7 +5,8 @@
 //     匹配通过/同形掩蔽不泄漏方向;
 //   - ApplyCheckoutEvent 状态机:pending→paid→activated 主路径;paid→failed
 //     如实留因;failed→activated 补偿(可重试激活);幂等重放零改写;
-//     pending 直达 activated 拒绝;activated 迟到失败不追溯;二次支付矛盾。
+//     pending 直达 activated 拒绝;activated 迟到失败不追溯;二次支付矛盾;
+//     统一契约 v1.1:activation_opening=FYI no-op ack(一切状态零改写)。
 
 package billing
 
@@ -102,6 +103,33 @@ func TestCheckoutStateMachineIdempotentReplays(t *testing.T) {
 	failed, _ := ApplyCheckoutEvent(paid, AuthorityEventInput{Type: EventActivationFailed, Payload: EventPayload{FailReason: "x"}})
 	if _, err := ApplyCheckoutEvent(failed, AuthorityEventInput{Type: EventPaymentPaid, Payload: EventPayload{PaymentRef: "pay_1"}}); err != nil {
 		t.Fatalf("failed 后同引用支付重放: %v", err)
+	}
+}
+
+func TestCheckoutStateMachineOpeningIsNoOpAck(t *testing.T) {
+	// 统一契约 v1.1:activation_opening 是 producer 的「开通中」FYI 信号,
+	// 对 checkout-ref 投影一律 no-op ack——四个状态都零改写、零错误;
+	// 真正推进 activated 的只有 activation_active(或本地制作工程确认)。
+	states := []CheckoutRefState{
+		checkoutStateForTest(), // checkout_pending
+		paidStateForTest(),     // paid
+		func() CheckoutRefState {
+			st := paidStateForTest()
+			st.State = CheckoutStateActivated
+			return st
+		}(), // activated
+		func() CheckoutRefState {
+			st := paidStateForTest()
+			st.State = CheckoutStateFailed
+			st.FailReason = "provider_timeout"
+			return st
+		}(), // failed
+	}
+	for _, st := range states {
+		next, err := ApplyCheckoutEvent(st, AuthorityEventInput{Type: EventActivationOpening})
+		if err != nil || next != st {
+			t.Fatalf("opening on %s must be a no-op ack: %+v %v", st.State, next, err)
+		}
 	}
 }
 

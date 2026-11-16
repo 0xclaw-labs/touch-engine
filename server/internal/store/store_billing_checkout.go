@@ -10,7 +10,9 @@
 //     URL),拒绝并保原行;同单金额/币种漂移 = 幂等冲突。
 //   - 状态推进唯一入口 ApplyBillingCheckoutEvent → billing.ApplyCheckoutEvent
 //     纯函数;payment_paid 先过 AdjudicatePaymentFact(金额/币种/引用逐字节
-//     比对,不匹配不推进)。同 payment_ref 重放零新增零改写。
+//     比对,不匹配不推进)。同 payment_ref 重放零新增零改写。唯一例外:
+//     MarkBillingCheckoutActivated(统一契约 v1.1 D3)——touch 制作工程本地
+//     事实(handoff 已提交任务)把 paid 推进 activated,幂等且只此一跃。
 //   - 租户全封闭:一切读取都带 tenant_id;他租户/不存在同答 ErrNotFound。
 
 package store
@@ -219,6 +221,51 @@ func (s *Store) ApplyBillingCheckoutEvent(tenantID, checkoutRef string, in billi
 	row.State = next.State
 	row.PaymentRef = next.PaymentRef
 	row.FailReason = next.FailReason
+	row.UpdatedAt = at
+	return row, false, nil
+}
+
+// MarkBillingCheckoutActivated advances one paid continuation reference to
+// activated on the TOUCH-LOCAL production fact (统一契约 v1.1 D3:制作 handoff
+// 已提交任务=制作工程确认开动;回发 activation_active 由 HTTP 层负责,本方法
+// 只落行)。幂等:已 activated = replay(read-back);paid 之外的状态拒绝
+// (checkout_pending 未有支付事实,failed 的生效只能走权威 activation_active
+// 补偿路径);并发推进以先落行为准,败者重读现状回答。
+func (s *Store) MarkBillingCheckoutActivated(tenantID, checkoutRef, at string) (BillingCheckoutRefRow, bool, error) {
+	row, err := s.GetBillingCheckoutRefByRef(tenantID, checkoutRef)
+	if err != nil {
+		return BillingCheckoutRefRow{}, false, err
+	}
+	if row.State == billing.CheckoutStateActivated {
+		return row, true, nil
+	}
+	if row.State != billing.CheckoutStatePaid {
+		return row, false, billing.ErrInvalidTransition
+	}
+	result, err := s.DB.Exec(
+		`UPDATE billing_checkout_refs SET state=?,fail_reason=?,updated_at=?
+		 WHERE tenant_id=? AND checkout_ref=? AND state=?`,
+		billing.CheckoutStateActivated, "", at, tenantID, checkoutRef, billing.CheckoutStatePaid)
+	if err != nil {
+		return row, false, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return row, false, err
+	}
+	if n == 0 {
+		// 并发败者:另一请求已推进本行;重读以现状回答(不伪造 replay)。
+		row2, gerr := s.GetBillingCheckoutRefByRef(tenantID, checkoutRef)
+		if gerr != nil {
+			return row, false, gerr
+		}
+		if row2.State == billing.CheckoutStateActivated {
+			return row2, true, nil
+		}
+		return row, false, billing.ErrInvalidTransition
+	}
+	row.State = billing.CheckoutStateActivated
+	row.FailReason = ""
 	row.UpdatedAt = at
 	return row, false, nil
 }

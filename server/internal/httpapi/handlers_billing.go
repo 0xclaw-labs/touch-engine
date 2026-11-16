@@ -290,7 +290,9 @@ func (s *Server) handleBillingSubscriptionOrder(w http.ResponseWriter, r *http.R
 	// may have committed this same intent after our first read.
 	recoverOriginal := func() bool {
 		original, lookup := s.St.GetBillingOrderByKey(c.Member.TenantID, body.IdempotencyKey)
-		if errors.Is(lookup, sql.ErrNoRows) {
+		// scanBillingOrder 现把 sql.ErrNoRows 映射为 ErrNotFound(统一契约
+		// v1.1 D4 同形掩蔽);两种形态都视为「无既有单」。
+		if errors.Is(lookup, sql.ErrNoRows) || errors.Is(lookup, store.ErrNotFound) {
 			return false
 		}
 		if lookup != nil {

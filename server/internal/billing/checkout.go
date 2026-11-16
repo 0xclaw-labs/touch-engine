@@ -12,6 +12,12 @@
 //     矛盾(一次接续只承认一次支付);引用不可漂移。
 //   - 金额/币种/payment_ref 逐字节比对(AdjudicatePaymentFact):不匹配不
 //     推进,宁可挂起不可错开;同形掩蔽不泄漏方向。
+//   - 统一契约 v1.1(ADV-9 FIX,2026-11-16 裁定):事件路由键=checkout_ref,
+//     分型 payment_paid(→paid)/activation_opening(FYI no-op ack,状态不变)/
+//     activation_active(→activated)/order_registered(Touch 单不收到,带
+//     checkout_ref 一律未知类型拒)。activation 语义:paid=付款完成可开工
+//    (制作任务发起时已提交),activated=制作工程确认开动(本地事实,见
+//     handlers_billing_checkout_callback.go 的自主激活+回发)。
 //   - 纯函数:取行归 store 层;无时钟无 IO。
 
 package billing
@@ -71,7 +77,8 @@ func AdjudicatePaymentFact(ref CheckoutRefState, fact PaymentFact) PaymentVerdic
 
 // ApplyCheckoutEvent judges one authoritative fact event against the current
 // checkout-ref projection and returns the next state. Pure: no clock, no
-// store, no HTTP. 只承认支付与开通事实;其它事件类型一律矛盾。
+// store, no HTTP. 承认支付事实、开通事实与开通中 FYI 信号(状态不变);
+// 其它事件类型一律矛盾(order_registered 对 Touch 单就是未知类型)。
 func ApplyCheckoutEvent(st CheckoutRefState, in AuthorityEventInput) (CheckoutRefState, error) {
 	next := st
 	switch in.Type {
@@ -94,6 +101,13 @@ func ApplyCheckoutEvent(st CheckoutRefState, in AuthorityEventInput) (CheckoutRe
 		next.PaymentRef = in.Payload.PaymentRef
 		next.FailReason = ""
 		return next, nil
+
+	case EventActivationOpening:
+		// 统一契约 v1.1:activation_opening 是 producer 在 payment_paid 之后
+		// 的显式「开通中」FYI 信号——对本投影一律 no-op ack,状态不变(store
+		// 层按零改写答 replayed)。真正推进 activated 的事实只有
+		// activation_active(producer 权威)或本地制作工程确认(回发前落行)。
+		return st, nil
 
 	case EventActivationActive:
 		switch st.State {

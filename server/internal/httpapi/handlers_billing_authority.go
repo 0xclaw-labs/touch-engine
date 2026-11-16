@@ -9,11 +9,15 @@
 //   - source+event_id 去重:同键同负载=幂等读回;同键异负载=409
 //     IDEMPOTENCY_CONFLICT;状态推进唯一入口(store.ApplyBillingOrderEvent →
 //     billing.ApplyOrderEvent 纯状态机)。
-//   - HUI-4664 原单收银接续(ADV-9 PR12):payment_paid/activation_active/
+//   - HUI-4664 原单收银接续(ADV-9 PR12;统一契约 v1.1):事件路由键=
+//     checkout_ref,payment_paid/activation_opening/activation_active/
 //     activation_failed 携带 checkout_ref 时落 checkout-ref 状态机
 //    (store.ApplyBillingCheckoutEvent → billing.ApplyCheckoutEvent 纯状态机;
 //     payment_paid 先过 AdjudicatePaymentFact 金额/币种/引用逐字节比对,
-//     同 payment_ref 重放零新增零改写)——同一缝、同一身份纪律,零新增写缝。
+//     同 payment_ref 重放零新增零改写;opening=FYI no-op ack)——同一缝、
+//     同一身份纪律,零新增写缝。payment_paid 落 paid 后制作任务已提交的
+//     单据由 touch 自主推进 activated 并回发 activation_active(见
+//     handlers_billing_checkout_callback.go,v1.1 D3)。
 //   - 目录/事件/退款/AI 用量/硬件步骤都是投影写入;本缝永不返回任何余额。
 package httpapi
 
@@ -203,14 +207,17 @@ func (s *Server) handleBillingAuthorityEvent(w http.ResponseWriter, r *http.Requ
 	switch body.Type {
 	case billing.EventOrderRegistered, billing.EventPaymentPaid, billing.EventActivationOpening,
 		billing.EventActivationActive, billing.EventActivationFailed, billing.EventOrderCancelled:
-		// HUI-4664:携带 checkout_ref 的事实(payment_paid/activation_active/
-		// activation_failed)= 原单接续引用事实,落 checkout-ref 状态机
-		//(同缝同纪律:同一 billing_authority 身份/角色、同一错误映射表;
-		// 幂等=同 payment_ref 重放零新增零改写)。订单事件路径字节不变。
+		// HUI-4664 统一契约 v1.1:事件路由键=checkout_ref。携带 checkout_ref
+		// 的事实(payment_paid/activation_opening/activation_active/
+		// activation_failed)落 checkout-ref 状态机(同缝同纪律:同一
+		// billing_authority 身份/角色、同一错误映射表;幂等=同 payment_ref
+		// 重放零新增零改写;activation_opening=FYI no-op ack,状态不变)。
+		// order_registered 对 Touch 单不出现,带 checkout_ref = 未知类型拒。
 		if checkoutRef := strings.TrimSpace(body.CheckoutRef); checkoutRef != "" {
-			if body.Type != billing.EventPaymentPaid && body.Type != billing.EventActivationActive && body.Type != billing.EventActivationFailed {
+			if body.Type != billing.EventPaymentPaid && body.Type != billing.EventActivationOpening &&
+				body.Type != billing.EventActivationActive && body.Type != billing.EventActivationFailed {
 				fail(w, http.StatusBadRequest, "bad_event_type",
-					"checkout_ref facts accept payment_paid, activation_active and activation_failed only")
+					"checkout_ref facts accept payment_paid, activation_opening, activation_active and activation_failed only")
 				return
 			}
 			row, replayed, err := s.St.ApplyBillingCheckoutEvent(tenantID, checkoutRef, billing.AuthorityEventInput{
@@ -224,6 +231,19 @@ func (s *Server) handleBillingAuthorityEvent(w http.ResponseWriter, r *http.Requ
 			status := http.StatusOK
 			if !replayed {
 				status = http.StatusCreated
+			}
+			// 统一契约 v1.1 D3:payment_paid 落 paid(或其重放命中
+			// paid/activated)后,若制作 handoff 已提交任务,本地自主推进
+			// activated 并回发 activation_active 给 producer;回发可重试失败
+			// 时本请求答 503,渠道重试的重放会再触发(桥式自愈,与 producer
+			// 侧统一姿态)。非 payment_paid 事件不触发。
+			if body.Type == billing.EventPaymentPaid &&
+				(row.State == billing.CheckoutStatePaid || row.State == billing.CheckoutStateActivated) {
+				var ok bool
+				row, ok = s.checkoutSelfActivation(w, tenantID, row)
+				if !ok {
+					return // 回发待重试:响应已写(503)
+				}
 			}
 			writeJSON(w, status, map[string]any{
 				"replayed": replayed, "checkout_ref": row.CheckoutRef,
@@ -240,6 +260,17 @@ func (s *Server) handleBillingAuthorityEvent(w http.ResponseWriter, r *http.Requ
 			Source: source, EventID: eventID, Type: body.Type, OccurredAt: occurredAt, Payload: body.Payload,
 		}, nowRFC3339())
 		if err != nil {
+			// 统一契约 v1.1 D2 防御:order_registered 对 Touch 侧未登记的
+			// 订单(续付单没有 billing_orders 行;producer 侧已裁定不再发)=
+			// no-op ack,不让 mint/replay 的该事实误入 404→Violation 大声
+			// 失败循环;其余事件类型对未知订单保持 404 同形掩蔽(D4)。
+			if body.Type == billing.EventOrderRegistered && errors.Is(err, store.ErrNotFound) {
+				s.auditServiceProducer("ignored", source, "order_registered_untracked_order")
+				writeJSON(w, http.StatusOK, map[string]any{
+					"replayed": true, "order_id": orderID, "ignored": "untracked_order",
+				})
+				return
+			}
 			writeAuthorityError(w, err)
 			return
 		}
