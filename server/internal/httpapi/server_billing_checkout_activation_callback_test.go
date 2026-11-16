@@ -1,13 +1,15 @@
 // server_billing_checkout_activation_callback_test.go: 统一契约 v1.1(ADV-9
-// FIX-B)touch 侧验收矩阵——
+// FIX-B 落地 + FIX-C/D5 回发通道收敛)touch 侧验收矩阵——
 //
 //   - v1.1 §1:activation_opening 携带 checkout_ref = FYI no-op ack(HTTP 面,
 //     状态零改写);order_registered 带 checkout_ref 仍 400 未知类型拒;
 //   - v1.1 §2/D3:payment_paid 落 paid + handoff 已提交任务 → 自主 activated
-//     + activation_active 回发 producer(authority-events 缝形状,
-//     source=touch-engine,event_id 确定性:重放/重试字节恒等);
-//     回发可重试失败 → 503(渠道重试→重放→再触发自愈);缝未配置 → 本地
-//     事实照落、诚实跳过;handoff 未提交 → 保持 paid(不伪造本地事实);
+//     + activation_active 回发 producer(§2b 冻结端点 POST /internal/v1/
+//     billing/touch-orders/activation-active,X-App-ID=touch-engine + app
+//     token;checkout_ref 主路由键,occurred_at/event_id 确定性:重放/重试
+//     字节恒等);回发可重试失败 → 503(渠道重试→重放→再触发自愈);404
+//     (producer 未知 checkout_ref)=照实留痕放行;缝未配置 → 本地事实照落、
+//     诚实跳过;handoff 未提交 → 保持 paid(不伪造本地事实);
 //   - v1.1 §3/D2 防御:order_registered 对未知订单 = no-op ack(旧订单分支);
 //   - v1.1 §4/D4:旧订单分支未知订单(非 checkout_ref)未找到 = 404 同形
 //     掩蔽(不再 500)。
@@ -25,15 +27,18 @@ import (
 	"testing"
 )
 
-// checkoutCallbackStub is a minimal producer-side authority-events receiver:
-// it records every request and answers 201 by default (status flips via code).
+// checkoutCallbackStub is a minimal producer-side §2b receiver
+// (/internal/v1/billing/touch-orders/activation-active): it records every
+// request (path/body/app identity/token) and answers 201 by default (status
+// flips via code).
 type checkoutCallbackStub struct {
 	ts     *httptest.Server
 	code   atomic.Int32
 	mu     sync.Mutex
 	bodies []string
 	paths  []string
-	svcIDs []string
+	appIDs []string
+	tokens []string
 }
 
 func newCheckoutCallbackStub(t *testing.T) *checkoutCallbackStub {
@@ -45,7 +50,8 @@ func newCheckoutCallbackStub(t *testing.T) *checkoutCallbackStub {
 		st.mu.Lock()
 		st.bodies = append(st.bodies, string(raw))
 		st.paths = append(st.paths, r.URL.Path)
-		st.svcIDs = append(st.svcIDs, r.Header.Get("X-Service-ID"))
+		st.appIDs = append(st.appIDs, r.Header.Get("X-App-ID"))
+		st.tokens = append(st.tokens, r.Header.Get("X-PilotSeaview-Internal-Token"))
 		st.mu.Unlock()
 		w.WriteHeader(int(st.code.Load()))
 		_, _ = w.Write([]byte(`{"replayed":false}`))
@@ -54,7 +60,7 @@ func newCheckoutCallbackStub(t *testing.T) *checkoutCallbackStub {
 	return st
 }
 
-func (st *checkoutCallbackStub) snapshot(t *testing.T) ([]string, []string, []string) {
+func (st *checkoutCallbackStub) snapshot(t *testing.T) ([]string, []string, []string, []string) {
 	t.Helper()
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -62,9 +68,11 @@ func (st *checkoutCallbackStub) snapshot(t *testing.T) ([]string, []string, []st
 	copy(out, st.bodies)
 	paths := make([]string, len(st.paths))
 	copy(paths, st.paths)
-	ids := make([]string, len(st.svcIDs))
-	copy(ids, st.svcIDs)
-	return out, paths, ids
+	appIDs := make([]string, len(st.appIDs))
+	copy(appIDs, st.appIDs)
+	tokens := make([]string, len(st.tokens))
+	copy(tokens, st.tokens)
+	return out, paths, appIDs, tokens
 }
 
 // callbackFixture = checkoutFixture pointed at a stub producer with a token
@@ -151,34 +159,44 @@ func TestAuthorityPaymentPaidSelfActivatesAndNotifiesProducer(t *testing.T) {
 	if status != 201 || out["state"] != "activated" {
 		t.Fatalf("self-activated payment = %d %v", status, out)
 	}
-	// 回发到达 producer:authority-events 缝形状,source=touch-engine。
-	bodies, paths, ids := stub.snapshot(t)
+	// 回发到达 producer:§2b 冻结端点 + app 身份闸(X-App-ID=touch-engine +
+	// app token;D5 收敛:不再打 authority-events 缝形状)。
+	bodies, paths, appIDs, tokens := stub.snapshot(t)
 	if len(bodies) != 1 {
 		t.Fatalf("exactly one send-back expected, got %d", len(bodies))
 	}
-	if paths[0] != "/api/v1/billing/authority/events" {
-		t.Fatalf("send-back path = %q", paths[0])
+	if paths[0] != "/internal/v1/billing/touch-orders/activation-active" {
+		t.Fatalf("send-back path = %q, want the frozen §2b endpoint", paths[0])
 	}
-	if ids[0] != "touch-engine" {
-		t.Fatalf("send-back X-Service-ID = %q, want touch-engine", ids[0])
+	if appIDs[0] != "touch-engine" {
+		t.Fatalf("send-back X-App-ID = %q, want touch-engine", appIDs[0])
 	}
+	if tokens[0] != "cb-secret-token" {
+		t.Fatalf("send-back app token = %q, want the configured PLATFORM_BILLING_TOKEN", tokens[0])
+	}
+	// §2b 冻结体(DisallowUnknownFields:恰好五字段;checkout_ref 主路由键,
+	// source_order_ref=原单引用回声,occurred_at=确定性回声)。
 	var wire struct {
-		Source      string `json:"source"`
-		EventID     string `json:"event_id"`
-		Type        string `json:"type"`
-		CheckoutRef string `json:"checkout_ref"`
-		TenantID    string `json:"tenant_id"`
-		Payload     struct {
-			PaymentRef string `json:"payment_ref"`
-		} `json:"payload"`
+		CheckoutRef     string `json:"checkout_ref"`
+		SourceOrderRef  string `json:"source_order_ref"`
+		OccurredAt      string `json:"occurred_at"`
+		SubscriptionRef string `json:"subscription_ref"`
+		PaidUntil       string `json:"paid_until"`
 	}
 	if err := json.Unmarshal([]byte(bodies[0]), &wire); err != nil {
 		t.Fatalf("send-back body: %v (%s)", err, bodies[0])
 	}
-	if wire.Source != "touch-engine" || wire.Type != "activation_active" ||
-		wire.EventID != "touch-act-"+ref || wire.CheckoutRef != ref ||
-		wire.TenantID != f.tenA || wire.Payload.PaymentRef != "pay_cb1" {
-		t.Fatalf("send-back wire wrong: %+v", wire)
+	if wire.CheckoutRef != ref || wire.SourceOrderRef == "" || wire.OccurredAt == "" ||
+		wire.SubscriptionRef != "" || wire.PaidUntil != "" {
+		t.Fatalf("send-back wire wrong: %+v (raw %s)", wire, bodies[0])
+	}
+	// 严格五字段(producer DisallowUnknownFields:多余字段即 400 不可回发)。
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(bodies[0]), &raw); err != nil {
+		t.Fatalf("send-back body not json: %v", err)
+	}
+	if len(raw) != 5 {
+		t.Fatalf("send-back body must carry exactly the five §2b fields, got %d: %s", len(raw), bodies[0])
 	}
 	// 商家读门:activated/not_awaiting_payment(本地事实落行)。
 	status, out = f.do2(t, "GET", path, "sess-owner-a", f.tenA, "")
@@ -192,7 +210,7 @@ func TestAuthorityPaymentPaidSelfActivatesAndNotifiesProducer(t *testing.T) {
 	if status != 200 || out["replayed"] != true || out["state"] != "activated" {
 		t.Fatalf("payment replay = %d %v", status, out)
 	}
-	bodies2, _, _ := stub.snapshot(t)
+	bodies2, _, _, _ := stub.snapshot(t)
 	if len(bodies2) != 2 {
 		t.Fatalf("replay must re-fire the send-back, got %d deliveries", len(bodies2))
 	}
@@ -232,12 +250,54 @@ func TestAuthorityCallbackRetryableFailureAnswers503AndHeals(t *testing.T) {
 	if status != 200 || out["replayed"] != true || out["state"] != "activated" {
 		t.Fatalf("healed replay = %d %v", status, out)
 	}
-	bodies, _, _ := stub.snapshot(t)
+	bodies, _, _, _ := stub.snapshot(t)
 	if len(bodies) != 2 {
 		t.Fatalf("two send-back attempts expected, got %d", len(bodies))
 	}
 	if bodies[1] != bodies[0] {
 		t.Fatalf("healed re-fire must be byte-identical:\n%s\n%s", bodies[0], bodies[1])
+	}
+}
+
+func TestAuthorityCallbackProducerUnknownRefIsLoudReleaseNotPending(t *testing.T) {
+	// D5 收敛后的 404 语义:producer 照实报告未知 checkout_ref(§2b 冻结错误
+	// 字典 touch_checkout_not_found)= 4xx 违例类,重试不可修复——大声留痕后
+	// 放行本请求(本地事实照落),绝不伪装成 503 activation_callback_pending
+	// 把已消费的支付事实拖进无限 FAIL。
+	f, stub := callbackFixture(t)
+	storeID, handoffID := seedContinuationHandoff(t, f, "q_cb_404", "idem-cb-404")
+	if _, err := f.s.St.MarkProductionHandoffSubmitted(f.tenA, handoffID, "task_cb_404"); err != nil {
+		t.Fatalf("mark submitted: %v", err)
+	}
+	path := "/api/v1/stores/" + storeID + "/content-production-handoffs/" + handoffID + "/checkout"
+	status, out := f.do2(t, "POST", path, "sess-owner-a", f.tenA, "")
+	ref := out["checkout"].(map[string]any)["checkout_ref"].(string)
+	stub.code.Store(http.StatusNotFound)
+	payEvent := fmt.Sprintf(
+		`{"tenant_id":%q,"checkout_ref":%q,"source":"pai-billing","event_id":"evt-paid-cb404","type":"payment_paid","payload":{"payment_ref":"pay_cb404"},"amount_minor":12345600,"currency":"CNY"}`,
+		f.tenA, ref)
+	status, out = f.doService(t, "POST", "/api/v1/billing/authority/events", payEvent)
+	if status != 201 || out["state"] != "activated" {
+		t.Fatalf("404 send-back must release the request loudly = %d %v", status, out)
+	}
+	// 重放(渠道重试姿态)同形放行:违例不进入重试通道,无退避风暴。
+	status, out = f.doService(t, "POST", "/api/v1/billing/authority/events", payEvent)
+	if status != 200 || out["replayed"] != true || out["state"] != "activated" {
+		t.Fatalf("404 replay must stay released = %d %v", status, out)
+	}
+	// 两次回发都打在 §2b 端点上(producer 404 是对正确端点的业务应答
+	// touch_checkout_not_found,不是路由 404;字节恒定纪律照旧)。
+	bodies, paths, _, _ := stub.snapshot(t)
+	if len(bodies) != 2 {
+		t.Fatalf("two send-backs expected, got %d", len(bodies))
+	}
+	for i, p := range paths {
+		if p != "/internal/v1/billing/touch-orders/activation-active" {
+			t.Fatalf("send-back #%d path = %q", i, p)
+		}
+	}
+	if bodies[1] != bodies[0] {
+		t.Fatalf("send-back must stay byte-stable across re-fires:\n%s\n%s", bodies[0], bodies[1])
 	}
 }
 
@@ -280,7 +340,7 @@ func TestAuthorityPaymentPaidWithoutCommittedTaskStaysPaid(t *testing.T) {
 	if status != 201 || out["state"] != "paid" {
 		t.Fatalf("no-task payment = %d %v", status, out)
 	}
-	bodies, _, _ := stub.snapshot(t)
+	bodies, _, _, _ := stub.snapshot(t)
 	if len(bodies) != 0 {
 		t.Fatalf("no send-back without a committed task, got %d", len(bodies))
 	}
