@@ -29,6 +29,10 @@ var ErrUnsupported = errors.New("publishhandoff: capability not supported by thi
 // short-TTL controlled URLs (3553 media-access) the platform/adapter can pull;
 // the adapter never receives file bytes or internal tokens.
 type PrepareRequest struct {
+	// FieldSupport comes from the original method admission record. Missing/
+	// unknown fields MUST NOT be automatically populated by a platform adapter.
+	FieldSupport map[string]string
+
 	Handoff     ActionHandoff
 	Plan        ActionPlan
 	Text        TextInput
@@ -116,3 +120,8 @@ func (s *Service) SetAdapter(a Adapter) { s.adapters.set(a) }
 // AdapterFor returns the registered adapter for a platform, or nil (nil =
 // every adapter method is honestly unsupported for that platform).
 func (s *Service) AdapterFor(platform string) Adapter { return s.adapters.get(platform) }
+
+// SetActionPrepareResolver connects original content/admission authorities.
+func (s *Service) SetActionPrepareResolver(resolve func(context.Context, ActionHandoff, PrepareRequest) (PrepareRequest, error)) {
+	s.opt.ActionPrepare = resolve
+}

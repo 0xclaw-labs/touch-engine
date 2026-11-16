@@ -37,6 +37,7 @@ func liveRef(actionID string) ActionRef {
 		StorefrontRevision: 5, ActionRevision: 12,
 		RuleVersion: 3, RuleSnapshot: `{"v":3}`,
 		ContentPackVersion: "cp_v7",
+		ContentCandidates:  []string{"cp_v7", "cp_customer_pick", "cp_v9"},
 		CampaignID:         "",
 		Enabled:            true,
 	}
@@ -250,5 +251,52 @@ func TestUpdateActionSessionContent(t *testing.T) {
 	}
 	if _, err := s.UpdateActionSessionContent(ctx, id, "visit_a", "cp_v11"); err != ErrSessionEnded {
 		t.Fatalf("ended update = %v, want ErrSessionEnded", err)
+	}
+}
+
+func TestActionSessionFrozenCandidatePoolRejectsInjectedVersion(t *testing.T) {
+	ctx := context.Background()
+	ref := liveRef("act_001")
+	ref.ContentCandidates = []string{"cp_v7", "cp_v9"}
+	dir := &stubDirectory{ref: ref, ok: true}
+	s := newSessionService(t, dir)
+	if _, err := s.StartActionSession(ctx, sessionStart("visit_x", "", "cp_unpublished")); err != ErrStaleVersion {
+		t.Fatalf("injected start=%v", err)
+	}
+	started, err := s.StartActionSession(ctx, sessionStart("visit_a", "", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir.ref.ContentPackVersion = "cp_later"
+	dir.ref.ContentCandidates = []string{"cp_later"}
+	if _, err := s.UpdateActionSessionContent(ctx, started.Session.ID, "visit_a", "cp_later"); err != ErrStaleVersion {
+		t.Fatalf("new adoption entered old session: %v", err)
+	}
+	if _, err := s.UpdateActionSessionContent(ctx, started.Session.ID, "visit_a", "cp_v9"); err != nil {
+		t.Fatalf("published frozen choice lost: %v", err)
+	}
+}
+
+func TestStartResumesOriginalAfterActionWithdrawnWithoutNewParticipation(t *testing.T) {
+	ctx := context.Background()
+	dir := &stubDirectory{ref: liveRef("act_001"), ok: true}
+	s := newSessionService(t, dir)
+	first, err := s.StartActionSession(ctx, sessionStart("visit_a", "one", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir.ok = false
+	restored, err := s.StartActionSession(ctx, sessionStart("visit_a", "new-page-key", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Created || restored.Session.ID != first.Session.ID || restored.Session.ContentPackVersion != first.Session.ContentPackVersion || restored.Session.ParticipationID != "" {
+		t.Fatal("changed frozen progress")
+	}
+	if _, err = s.StartActionSession(ctx, sessionStart("visit_other", "", "")); err != ErrNotFound {
+		t.Fatalf("unknown holder created after withdrawal: %v", err)
+	}
+	if _, err = s.AttachParticipation(ctx, AttachInput{SessionID: first.Session.ID, VisitorID: "visit_a"}); err == nil {
+		t.Fatal("restore must not allow new benefit upgrade after withdrawal")
 	}
 }

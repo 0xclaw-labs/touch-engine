@@ -67,7 +67,7 @@ describe("C6 状态诚实", () => {
 
   it("无 link code / 留资未开通 → 诚实待开态(不伪建表单)", () => {
     expect(view.includes("privacy-not-open")).toBe(true);
-    expect(view.includes("暂未开通在线联系与授权管理")).toBe(true);
+    expect(view.includes("当前无法接收新的在线咨询")).toBe(true);
   });
 });
 

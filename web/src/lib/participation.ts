@@ -16,6 +16,7 @@ export interface ParticipationView {
   content_pack_version?: string;
   rule_version?: number;
   benefit_reservation_state?: string;
+  reservation_required?: boolean;
   starts_at?: string;
   expires_at?: string;
   created_at?: string;
@@ -87,8 +88,8 @@ export function credentialLooksLive(
 }
 
 const BENEFIT_COPY_CONFIRMED = "奖励名额已保留，请继续发布";
-const BENEFIT_COPY_PENDING = "正在为你确认奖励名额…";
-const BENEFIT_COPY_FAILED = "奖励名额暂时没有确认，稍后重试即可，不影响这次参与";
+const BENEFIT_COPY_PENDING = "奖励名额结果待确认，请先恢复本次预留；未确认前不要先完成有奖励任务。";
+const BENEFIT_COPY_FAILED = "奖励名额没有确认，请先恢复本次预留；未确认前不要先完成有奖励任务。";
 const BENEFIT_COPY_NONE = "";
 
 /**

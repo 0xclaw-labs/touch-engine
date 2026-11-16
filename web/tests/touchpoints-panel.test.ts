@@ -39,22 +39,14 @@ describe("触点管理台:独占新页,不跳 /admin", () => {
   });
 });
 
-describe("B02 门店优先创建:先选有权门店,活动只作过滤,服务端从标签派生", () => {
-  it("创建表单有门店选择与活动过滤,且不把客户端活动/门店作为绑定输入", () => {
-    expect(panel).toContain("create-store");
-    expect(panel).toContain("create-campaign");
-    // provision 请求体只带标签/名称/摆位 —— 门店与活动由服务端从标签绑定派生
-    const from = panel.indexOf('"touchpoints", {');
-    const createCall = panel.slice(from, panel.indexOf("await load()", from));
-    expect(createCall).toContain("tag_id");
-    expect(createCall).not.toContain("store_id");
-    expect(createCall).not.toContain("campaign_id");
-  });
-
-  it("列表加载 stores 端点,选卡列表按店过滤并展示标签绑定的活动注记", () => {
-    expect(panel).toContain('"stores"');
-    expect(panel).toContain("createStoreId");
-    expect(panel).toContain("campaign_title");
+describe("门店稳定入口与旧卡兼容", () => {
+  it("默认门店入口不依赖活动或旧卡，并保留可选接续", () => {
+    expect(panel).toContain("新建本店稳定入口");
+    expect(panel).toContain("freezeEntryIntent");
+    expect(panel).toContain("恢复／查询本次入口");
+    expect(panel).toContain("另建一个入口");
+    expect(panel).toContain("接续已登记的旧卡");
+    expect(panel).not.toContain("先在「出库与写卡」里登记卡");
   });
 });
 

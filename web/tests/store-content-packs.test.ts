@@ -38,14 +38,14 @@ describe("门店内容包抽屉：真实上传、候选、采用、换版与受�
     expect(drawer).toMatch(/stores\/\$\{storeId\}\/content-packs/);
     expect(drawer).toContain("versions");
     expect(drawer).toContain("adoptions");
-    expect(drawer).toMatch(/未挂活动|门店根/);
+    expect(drawer).toContain("门店内容");
   });
 
   it("采用必须显式;换版 = 同包新候选再采用,旧版保留可追溯", () => {
     expect(drawer).toMatch(/content-packs\/\$\{packId\}\/versions\/\$\{versionId\}\/adopt/);
     expect(drawer).toMatch(/data-action="adopt"/);
     expect(drawer).toContain("采用这一版");
-    expect(drawer).toContain("换版:同一包新开一版");
+    expect(drawer).toContain("保存为新版本");
     expect(drawer).toMatch(/data-field="adopted-note"/);
   });
 
@@ -55,12 +55,12 @@ describe("门店内容包抽屉：真实上传、候选、采用、换版与受�
   });
 
   it("预览/下载只取已采用版本,走 media-access 短 TTL 受控 URL", () => {
-    expect(drawer).toMatch(/public\/content\/\$\{version\.id\}\/media-access/);
+    expect(drawer).toMatch(/stores\/\$\{storeId\}\/content-packs\/\$\{version\.pack_id\}\/versions\/\$\{version\.id\}\/media-access/);
     expect(drawer).toMatch(/purpose/);
     expect(drawer).toMatch(/"preview"/);
     expect(drawer).toMatch(/"download"/);
     // 预览/下载按钮只在已采用版本出现。
-    expect(drawer).toMatch(/isAdopted \?[\s\S]*data-action="preview"/);
+    expect(drawer).toMatch(/isAdopted && !isBlocked \?[\s\S]*data-action="preview"/);
   });
 
   it("下载按真实结果表述:已开始下载,不以「已保存」冒充结果", () => {
@@ -92,7 +92,7 @@ describe("门店内容包抽屉：真实上传、候选、采用、换版与受�
     expect(drawer).toMatch(/stores\/\$\{storeId\}\/content-packs/);
     expect(drawer).toMatch(/stores\/\$\{storeId\}\/content-media/);
     expect(drawer).toMatch(/content-packs\/\$\{packId\}\/versions/);
-    expect(drawer).toMatch(/public\/content\/\$\{version\.id\}\/media-access/);
+    expect(drawer).toMatch(/stores\/\$\{storeId\}\/content-packs\/\$\{version\.pack_id\}\/versions\/\$\{version\.id\}\/media-access/);
   });
 
   it("同控件可连续多次选择文件(每次上传互不影响,可重选同一文件)", () => {
@@ -112,12 +112,12 @@ describe("素材页挂载门店内容包抽屉", () => {
     expect(materials).toContain('from "@/components/work/store-content-drawer"');
     const mounts = materials.match(/<StoreContentDrawer/g) ?? [];
     expect(mounts.length).toBe(1);
-    expect(materials).toMatch(/<StoreContentDrawer storeId=\{storeID\} \/>/);
+    expect(materials).toMatch(/<StoreContentDrawer[^>]+storeId=\{storeID\}/);
     expect(materials).toMatch(/aria-label="选择门店"/);
   });
 
   it("门店内容包不需要先建活动(文案明示)", () => {
-    expect(materials).toContain("门店内容包(不需要先建活动)");
+    expect(read(drawerRel)).toContain("可直接用于门店");
   });
 
   it("无门店时如实提示,不渲染空抽屉", () => {
@@ -125,8 +125,7 @@ describe("素材页挂载门店内容包抽屉", () => {
   });
 
   it("既有三入口(上传/素材库/帮我制作)保持不回退", () => {
-    expect(materials).toMatch(/entry="upload"/);
-    expect(materials).toMatch(/entry="library"/);
-    expect(materials).toMatch(/data-entry="produce"/);
+    const editor=read(drawerRel);
+    for (const source of ["upload", "library", "produce"]) expect(editor).toContain(`id: "${source}"`);
   });
 });

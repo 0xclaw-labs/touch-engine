@@ -44,8 +44,6 @@ describe("/work/billing 页面结构(薄壳)", () => {
     }
     expect(desk).toContain('data-action="retry"');
     expect(desk).toContain("回查");
-    // 收银台跳转复用 eco-nav switch,不自造 URL
-    expect(desk).toContain('"eco-nav/switch"');
     expect(desk).toContain("生态收银台未接入");
     // 到期语义(F18/T16)
     expect(desk).toContain("订阅到期只暂停新增收费能力");

@@ -8,7 +8,7 @@
 //   - 发布/下架不改历史订单:订单钉自己的价格快照(页面明示该纪律)。
 
 import { useCallback, useEffect, useState } from "react";
-import { useMerchantSession, type MerchantSession } from "@/components/work/merchant-session";
+import { useSession, type MerchantSession } from "@/components/work/merchant-session";
 import {
   OperationFeedback,
   OpsReasonForm,
@@ -21,7 +21,7 @@ import { formatAmount, type OpsPlanView } from "@/lib/ops-console";
 type Phase = "loading" | "error" | "ready";
 
 export function PlansDesk() {
-  const session = useMerchantSession();
+  const session = useSession();
   const [phase, setPhase] = useState<Phase>("loading");
   const [error, setError] = useState("");
   const [plans, setPlans] = useState<OpsPlanView[]>([]);

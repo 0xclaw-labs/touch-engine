@@ -214,8 +214,8 @@ type VersionSpec struct {
 	Body             string
 	Topics           []string
 	StoreName        string // 实际门店
-	PriceNote        string // 实际价格
-	ValidNote        string // 实际有效期
+	PriceNote        string // 有价格说明时如实填写；普通门店内容可为空，非权益权威
+	ValidNote        string // 有展示期限时如实填写；不替代活动/权益/素材授权期限
 	PlatformVersions []PlatformVersion
 	GrantRefs        []string // 授权引用快照
 	GrantUntil       string   // 授权有效期(RFC3339,空=未声明到期)
@@ -246,8 +246,9 @@ func NormalizeTopics(topics []string) []string {
 }
 
 // ValidateVersionSpec enforces the creation matrix: kind in enum; video needs
-// video+cover snapshots; imagetext needs ≥1 snapshot; title/body/store/price/
-// validity each mandatory with independent reason codes; platform adaptations
+// video+cover snapshots; imagetext needs ≥1 snapshot; title/body/store are
+// mandatory. Price/validity display notes are optional; campaign reward rules
+// and asset grant expiry remain the respective authorities. Platform adaptations
 // must each carry platform + same-source traceability; grant_until (when set)
 // must be RFC3339; the idempotency key (when set) must fit its cap.
 func ValidateVersionSpec(in VersionSpec) error {
@@ -305,14 +306,8 @@ func ValidateVersionSpec(in VersionSpec) error {
 	if len(in.StoreName) > MaxStoreName {
 		return invalid(ReasonBadStoreName, "store_name")
 	}
-	if in.PriceNote == "" {
-		return invalid(ReasonMissingPriceNote, "price_note")
-	}
 	if len(in.PriceNote) > MaxPriceNote {
 		return invalid(ReasonBadPriceNote, "price_note")
-	}
-	if in.ValidNote == "" {
-		return invalid(ReasonMissingValidNote, "valid_note")
 	}
 	if len(in.ValidNote) > MaxValidNote {
 		return invalid(ReasonBadValidNote, "valid_note")

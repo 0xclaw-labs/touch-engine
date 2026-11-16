@@ -14,6 +14,7 @@ export interface CustomerParticipation {
   id?: string;
   status?: string;
   benefit_reservation_state?: string;
+  reservation_required?: boolean;
   content_pack_version?: string;
   rule_version?: number;
   starts_at?: string;
@@ -37,6 +38,28 @@ export interface AdmissionView {
 export interface AttemptRef {
   id?: string;
   status?: string;
+}
+
+export interface RewardEntryFacts {
+  participationEnabled: boolean;
+  availability?: { can_start?: boolean; label?: string };
+  promise?: { enabled?: boolean; available_qty?: number; allowed_evidence?: string[] };
+}
+
+// The activity window alone does not establish an enabled, funded reward.
+// Missing promise/stock/verification facts stay unknown after the summary arrives.
+export function rewardEntryState(facts: RewardEntryFacts): { canStart: boolean; closedReason?: string; conditionsConfirmed: boolean } {
+  const conditionsConfirmed = facts.promise?.enabled === true && Boolean(facts.promise.allowed_evidence?.length);
+  const closed = (closedReason: string) => ({ canStart: false, closedReason, conditionsConfirmed });
+  if (!facts.participationEnabled) return closed("这家店暂未开放在线参与，请向门店确认办理方式。");
+  if (facts.availability?.can_start === false) return closed(facts.availability.label || "本次活动暂时不能开始新的参与，请向门店确认。");
+  if (facts.promise?.enabled !== true) return closed(facts.promise?.enabled === false ? "本次优惠尚未启用，请先向门店确认。" : "本次优惠条件尚未确认，请先向门店咨询。");
+  if (!conditionsConfirmed) return closed("本次优惠的核验方式尚未确认，请先向门店咨询。");
+  if (facts.availability?.can_start !== true) return closed("活动当前是否可以办理尚未确认，请稍后重试或向门店咨询。");
+  const quantity = facts.promise.available_qty;
+  if (typeof quantity !== "number" || !Number.isFinite(quantity) || quantity < 0) return closed("本次优惠库存尚未确认，请稍后重试或向门店咨询。");
+  if (quantity === 0) return closed("本次优惠名额已用完，暂时不能开始新的参与。");
+  return { canStart: true, conditionsConfirmed };
 }
 
 // 参与阶段:三屏按此渐进呈现(屏1 常驻;started 起显示屏2;发布后屏3 突出)。
@@ -133,7 +156,7 @@ export function admissionLines(admission: AdmissionView | null | undefined): str
 
 export function stockLine(availableQty: number | undefined): string {
   if (availableQty == null || !Number.isFinite(availableQty)) return "";
-  if (availableQty <= 0) return "本档奖励已用完。可以先参与，发放以门店现场安排为准。";
+  if (availableQty <= 0) return "本档奖励已用完，暂时不能开始新的有奖励参与。";
   if (availableQty === 1) return "本档奖励只剩最后一份，先到先得，领完即止。";
   return `本档奖励余量 ${availableQty} 份，领完即止。`;
 }
@@ -263,9 +286,9 @@ export async function startParticipation(code: string, contentPackVersion: strin
     content_pack_version: contentPackVersion,
     idempotency_key: idempotencyKeyFor(code),
   });
-  if (status === 0) return { error: "network" };
+  if (status === 0 || status >= 500) return { error: "network" };
   if (status === 200 || status === 201) {
-    return asParticipation(data) ?? { error: "start_failed", message: messageOf(data) };
+    return asParticipation(data) ?? { error: "network" };
   }
   return { error: "start_failed", message: messageOf(data) };
 }
@@ -303,4 +326,18 @@ export async function resumeCredential(id: string, purpose: "staff_verify" | "cu
   });
   if (status !== 201 || !data) return null;
   return data as ResumeCredential;
+}
+
+/** A reward task is available only after the original authority confirms its hold.
+ * Explicit legacy contracts have no reservation promise; unknown facts stay closed. */
+export function canContinueReservedParticipation(p: CustomerParticipation | null | undefined): boolean {
+  return Boolean(p?.id && p.status !== "canceled" && (p.reservation_required === false || p.benefit_reservation_state === "confirmed"));
+}
+
+/** Recover the original participation; never create a replacement on an unknown result. */
+export async function retryParticipationReservation(id: string): Promise<ParticipationResult> {
+  const { status, data } = await postJson(`/api/participations/${encodeURIComponent(id)}/reservation`, {});
+  if (status === 0) return { error: "network" };
+  if (status === 200) return asParticipation(data) ?? { error: "network" };
+  return { error: "start_failed", message: messageOf(data) };
 }

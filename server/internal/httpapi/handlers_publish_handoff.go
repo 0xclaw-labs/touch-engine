@@ -100,11 +100,14 @@ func mediaView(refs []publishhandoff.MediaRef) []map[string]any {
 
 // versionSnapshot converts an adopted contentpack version into the handoff
 // input snapshot (媒体+文案;文件字节零过本服务).
-func versionSnapshot(v store.ContentPackVersion) (publishhandoff.TextInput, []publishhandoff.MediaItem) {
+func versionSnapshot(v store.CampaignContentVersion) (publishhandoff.TextInput, []publishhandoff.MediaItem) {
 	text := publishhandoff.TextInput{
 		Title: v.Title, Body: v.Body, Topics: v.Topics, StoreName: v.StoreName,
 	}
 	var media []publishhandoff.MediaItem
+	if v.StoreMedia != nil {
+		return text, storeHandoffMedia(*v.StoreMedia)
+	}
 	shaOf := func(a contentpack.AssetSnapshot) string { return a.SHA256 }
 	if v.ContentKind == contentpack.ContentKindVideo {
 		if !v.Video.IsEmpty() {
@@ -151,6 +154,50 @@ func (s *Server) handlePublicPublishHandoffRoutes(w http.ResponseWriter, r *http
 		return
 	}
 	tenantID := res.Campaign.TenantID
+	if _, e := s.St.GetPublishConfig(tenantID, res.Campaign.ID); e == nil {
+		scenario = s.legacyPublishScenario(tenantID, res.Campaign.ID)
+	}
+	selectedVersion := ""
+	if r.URL.Query().Get("adapter_mode") == "1" {
+		scenario = s.legacyPublishScenario(tenantID, res.Campaign.ID)
+		visitor := requireVisitor404(w, r)
+		if visitor == "" {
+			return
+		}
+		if pid := r.URL.Query().Get("participation_id"); pid != "" {
+			p, e := s.Participation.GetForVisitor(r.Context(), pid, visitor)
+			if e != nil || p.CampaignID != res.Campaign.ID {
+				fail(w, 404, "not_found", "resource not found")
+				return
+			}
+			selectedVersion = p.ContentPackVersion
+			if h, e := s.PublishHandoff.FindLegacyAdapter(r.Context(), p.ID, platform, visitor); e == nil {
+				if h.Method == "" {
+					v, verr := s.St.GetCampaignContentVersion(tenantID, res.Campaign.ID, h.ContentPackVersionID)
+					if verr != nil {
+						fail(w, 404, "not_found", "original content unavailable")
+						return
+					}
+					env := r.URL.Query().Get("environment")
+					if !isAdmissionEnvironment(env) {
+						fail(w, 400, "param_invalid", "environment required")
+						return
+					}
+					rec, _ := s.resolveLegacyAdapter(tenantID, platform, string(v.ContentKind), env, scenario)
+					h, e = s.PublishHandoff.AdaptLegacy(r.Context(), h.ID, visitor, rec, s.actionGateQuery(rec, env))
+					if e != nil {
+						s.writeActionHandoffError(w, e)
+						return
+					}
+				}
+				writeJSON(w, 200, map[string]any{"handoff": actionHandoffView(h), "plan": actionPlanView(s.PublishHandoff.FrozenPlanOf(h))})
+				return
+			} else if !errors.Is(e, publishhandoff.ErrNotFound) {
+				s.writeActionHandoffError(w, e)
+				return
+			}
+		}
+	}
 	records, err := s.St.ListChannelAdmissions(tenantID)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "internal", "channel admission lookup failed")
@@ -199,9 +246,16 @@ func (s *Server) handlePublicPublishHandoffRoutes(w http.ResponseWriter, r *http
 			writeJSON(w, http.StatusOK, out)
 			return
 		}
-		v, err := s.St.GetAdoptedVersion(tenantID, res.Campaign.ID, platform)
+		v, err := s.campaignPublicVersion(tenantID, res.Campaign.ID, platform, packFilter)
+		if selectedVersion != "" {
+			v, err = s.St.GetCampaignContentVersion(tenantID, res.Campaign.ID, selectedVersion)
+		}
 		if err != nil || (packFilter != "" && v.PackID != packFilter) {
 			fail(w, http.StatusNotFound, "not_found", "no adopted content for this pack/platform")
+			return
+		}
+		if pack, perr := s.St.GetCampaignContentPack(tenantID, res.Campaign.ID, v.PackID); perr != nil || pack.CampaignID != res.Campaign.ID {
+			fail(w, 404, "not_found", "content not found")
 			return
 		}
 		if err := contentpack.Distributable(v.Status, v.GrantUntil, time.Now()); err != nil {
@@ -211,6 +265,19 @@ func (s *Server) handlePublicPublishHandoffRoutes(w http.ResponseWriter, r *http
 			return
 		}
 		text, media := versionSnapshot(v)
+		if r.URL.Query().Get("adapter_mode") == "1" {
+			environment := r.URL.Query().Get("environment")
+			if !isAdmissionEnvironment(environment) {
+				fail(w, 400, "param_invalid", "environment required")
+				return
+			}
+			rec, plan := s.resolveLegacyAdapter(tenantID, platform, string(v.ContentKind), environment, scenario)
+			if plan.Allowed {
+				plan = publishhandoff.JudgeActionPlan(s.actionGateQuery(rec, environment), rec, publishhandoff.ActionPlanInput{Text: text, Media: media})
+				out["confirmation_required"] = publishhandoff.ContentFingerprint(text, media)
+			}
+			out["plan"] = actionPlanView(plan)
+		}
 		out["snapshot"] = map[string]any{
 			"pack_id": v.PackID, "version_id": v.ID, "content_kind": string(v.ContentKind),
 			"title": text.Title, "body": text.Body, "topics": text.Topics,
@@ -237,6 +304,8 @@ func (s *Server) handlePublicPublishHandoffStart(w http.ResponseWriter, r *http.
 		PackID                  string `json:"pack_id"`
 		IdempotencyKey          string `json:"idempotency_key"`
 		ConfirmedContentVersion string `json:"confirmed_content_version"`
+		AdapterMode             bool   `json:"adapter_mode"`
+		Environment             string `json:"environment"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		fail(w, http.StatusBadRequest, "bad_json", "request body must be JSON")
@@ -265,7 +334,14 @@ func (s *Server) handlePublicPublishHandoffStart(w http.ResponseWriter, r *http.
 		writeParticipationError(w, err)
 		return
 	}
+	if p.CampaignID != res.Campaign.ID || p.TenantID != res.Campaign.TenantID || p.StoreID != res.Campaign.StoreID {
+		fail(w, 404, "not_found", "resource not found")
+		return
+	}
 	tenantID := p.TenantID
+	if _, e := s.St.GetPublishConfig(tenantID, p.CampaignID); e == nil || body.AdapterMode {
+		body.Scenario = s.legacyPublishScenario(tenantID, p.CampaignID)
+	}
 
 	// 1) 渠道裁决先行(拒绝路径零内容探测:不给未准入路线任何信息面)。
 	// 3535 合同 §6 指令②:pending_external(资格未知)与 refused 同样零落行——
@@ -289,10 +365,38 @@ func (s *Server) handlePublicPublishHandoffStart(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// A previously frozen attempt is not proof of a current reward hold. This
+	// also covers handed_off reuse, which does not call BeginHandoff again.
+	if s.participationReservationRequired(p) {
+		p, err = s.Participation.RetryReservation(r.Context(), p.ID, visitor)
+		if err != nil {
+			writeParticipationError(w, err)
+			return
+		}
+		if p.ReservationState != participation.ReservationConfirmed {
+			writeParticipationError(w, participation.ErrReservationUnconfirmed)
+			return
+		}
+	}
+
+	if p.ContentPackVersion == "" {
+		if _, e := s.St.GetPublishConfig(tenantID, res.Campaign.ID); e == nil {
+			fail(w, 409, "version_mismatch", "原参与未选择此活动内容，请核对原记录")
+			return
+		}
+	}
+
 	// 2) 已采用内容快照(只读;blocked/授权过期=409 拒新分发)。
-	v, err := s.St.GetAdoptedVersion(tenantID, res.Campaign.ID, body.Platform)
+	v, err := s.campaignPublicVersion(tenantID, res.Campaign.ID, body.Platform, strings.TrimSpace(body.PackID))
+	if p.ContentPackVersion != "" {
+		v, err = s.St.GetCampaignContentVersion(tenantID, res.Campaign.ID, p.ContentPackVersion)
+	}
 	if err != nil || (strings.TrimSpace(body.PackID) != "" && v.PackID != strings.TrimSpace(body.PackID)) {
 		fail(w, http.StatusNotFound, "not_found", "no adopted content for this platform")
+		return
+	}
+	if pack, perr := s.St.GetCampaignContentPack(tenantID, res.Campaign.ID, v.PackID); perr != nil || pack.CampaignID != res.Campaign.ID {
+		fail(w, 404, "not_found", "content not found")
 		return
 	}
 	if err := contentpack.Distributable(v.Status, v.GrantUntil, time.Now()); err != nil {
@@ -316,6 +420,19 @@ func (s *Server) handlePublicPublishHandoffStart(w http.ResponseWriter, r *http.
 		return
 	}
 
+	var adapterRec channeladmission.ActionCapability
+	if body.AdapterMode {
+		if !isAdmissionEnvironment(body.Environment) {
+			fail(w, 400, "param_invalid", "environment required")
+			return
+		}
+		var plan publishhandoff.ActionPlan
+		adapterRec, plan = s.resolveLegacyAdapter(tenantID, body.Platform, string(v.ContentKind), body.Environment, body.Scenario)
+		if !plan.Allowed {
+			s.writeActionHandoffError(w, &publishhandoff.HandoffRefusedError{Reason: plan.Reason, ReasonText: plan.ReasonText, PendingExternal: plan.PendingExternal})
+			return
+		}
+	}
 	// 4) 参与尝试:给定 attempt 必须可交接;未给定则同平台补建(3546 语义:
 	//    交接时冻结内容与规则版本,并铸造短时单用途恢复凭据)。
 	attemptID, recovery, herr := s.prepareAttempt(r, p, visitor, body.Platform, entryMode, strings.TrimSpace(body.AttemptID))
@@ -343,6 +460,23 @@ func (s *Server) handlePublicPublishHandoffStart(w http.ResponseWriter, r *http.
 	}, record)
 	if err != nil {
 		s.writePublishHandoffError(w, err)
+		return
+	}
+	if body.AdapterMode {
+		h, e := s.PublishHandoff.AdaptLegacy(r.Context(), out.Handoff.ID, visitor, adapterRec, s.actionGateQuery(adapterRec, body.Environment))
+		if e != nil {
+			s.writeActionHandoffError(w, e)
+			return
+		}
+		response := map[string]any{"handoff": actionHandoffView(h), "plan": actionPlanView(s.PublishHandoff.FrozenPlanOf(h))}
+		if recovery != nil {
+			response["recovery"] = recovery
+		}
+		status := http.StatusOK
+		if out.Created {
+			status = http.StatusCreated
+		}
+		writeJSON(w, status, response)
 		return
 	}
 	resp := map[string]any{
@@ -451,6 +585,11 @@ func (s *Server) prepareAttempt(r *http.Request, p participation.Participation, 
 
 // writePublishHandoffError maps domain errors onto honest HTTP codes.
 func (s *Server) writePublishHandoffError(w http.ResponseWriter, err error) {
+	var ve *contentpack.ValidationError
+	if errors.As(err, &ve) && (ve.Reason == contentpack.ReasonNotDistributable || ve.Reason == contentpack.ReasonGrantExpired) {
+		invalidPack409(w, err)
+		return
+	}
 	var refused *publishhandoff.HandoffRefusedError
 	switch {
 	case errors.As(err, &refused):
@@ -488,6 +627,11 @@ func (s *Server) ownHandoff(w http.ResponseWriter, r *http.Request) (publishhand
 	h, err := s.PublishHandoff.GetForVisitor(r.Context(), r.PathValue("id"), visitor)
 	if err != nil {
 		s.writePublishHandoffError(w, err)
+		return publishhandoff.Handoff{}, false
+	}
+	var linked int
+	if err := s.St.DB.QueryRow(`SELECT COUNT(1) FROM publish_handoffs h JOIN campaign_links l ON l.campaign_id=h.campaign_id AND l.tenant_id=h.tenant_id WHERE h.id=? AND h.tenant_id=? AND l.code=?`, h.ID, h.TenantID, r.PathValue("code")).Scan(&linked); err != nil || linked != 1 {
+		fail(w, 404, "not_found", "publish handoff not found")
 		return publishhandoff.Handoff{}, false
 	}
 	return h, true

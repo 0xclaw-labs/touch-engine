@@ -654,7 +654,6 @@ func TestLeadsSubmitNegativeMatrix(t *testing.T) {
 		{"no consent", `{"name":"张三","phone":"13800138000","consent_version":"v1","consent":false}`, "consent_required", 400},
 		{"notice version mismatch", `{"name":"张三","phone":"13800138000","consent_version":"v9","consent":true}`, "notice_version_mismatch", 400},
 		{"bad phone", `{"name":"张三","phone":"12345","consent_version":"v1","consent":true}`, "bad_phone", 400},
-		{"missing name", `{"phone":"13800138000","consent_version":"v1","consent":true}`, "bad_request", 400},
 		{"forged target_tenant", `{"name":"张三","phone":"13800138000","consent_version":"v1","consent":true,"target_tenant":"tnt_evil"}`, "bad_request", 400},
 		{"forged tenant_id", `{"name":"张三","phone":"13800138000","consent_version":"v1","consent":true,"tenant_id":"tnt_evil"}`, "bad_request", 400},
 		{"forged source_app", `{"name":"张三","phone":"13800138000","consent_version":"v1","consent":true,"source_app":"other-app"}`, "bad_request", 400},

@@ -6,7 +6,7 @@ import {
 } from "../src/lib/publish-adapters/kuaishou";
 
 const authorizeUrl =
-  "https://open.kuaishou.com/oauth2/authorize?client_id=cid&response_type=code&scope=user_video_publish&state=st1&redirect_uri=https%3A%2F%2Fpub.example%2Foauth%2Fkuaishou%2Fcallback";
+  "https://open.kuaishou.com/oauth2/authorize?app_id=cid&response_type=code&scope=user_video_publish&state=st1&redirect_uri=https%3A%2F%2Fpub.example%2Fapi%2Fpublic%2Fhandoff-callbacks%2Fkuaishou%2Foauth";
 
 describe("kuaishou oauth model (HUI-4587)", () => {
   it("renders the authorize phase with state and no secret", () => {

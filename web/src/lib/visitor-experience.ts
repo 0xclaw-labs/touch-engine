@@ -75,6 +75,8 @@ export function leadOutcomeCopy(input: {
   if (confirmed > 0) {
     return `销售已收到 ${confirmed}`;
   }
+  if (input.state === "revoked") return "本服务已停止使用这次许可。接收方的撤回处理请查询原记录。";
+  if (input.state === "rejected") return `${merchant}的客户系统未接受这次提交。请联系门店，或撤回本次许可。`;
   if (input.duplicate || input.state === "duplicate") {
     return `你已经把联系方式交给${merchant}。这次没有再记一条。`;
   }

@@ -169,11 +169,12 @@ func startInputV2(rec channeladmission.ActionCapability, payloadKind, confirmati
 // ---- T3: Adapter 接口契约 ------------------------------------------------------
 
 type stubAdapter struct {
-	platform string
-	prep     PrepareResult
-	submitOK bool
-	query    QueryOutcome
-	receipt  *Receipt
+	platform  string
+	prep      PrepareResult
+	submitOK  bool
+	submitErr error
+	query     QueryOutcome
+	receipt   *Receipt
 }
 
 func (a *stubAdapter) Platform() string { return a.platform }
@@ -181,6 +182,9 @@ func (a *stubAdapter) Prepare(_ context.Context, _ PrepareRequest) (PrepareResul
 	return a.prep, nil
 }
 func (a *stubAdapter) Submit(_ context.Context, _ Handoff, _ PrepareResult) error {
+	if a.submitErr != nil {
+		return a.submitErr
+	}
 	if !a.submitOK {
 		return ErrUnsupported
 	}
@@ -556,5 +560,94 @@ func TestStaffConfirmOnV2Row(t *testing.T) {
 	// 人工事实到不了 platform_confirm:同一交接只能等官方回执。
 	if next.Status == StatePlatformConfirmed {
 		t.Fatal("staff observation must never confirm")
+	}
+}
+
+type unknownSubmitError struct{}
+
+func (unknownSubmitError) Error() string          { return "platform create result unknown" }
+func (unknownSubmitError) RequiredAction() string { return "query_original" }
+func TestSubmitUnknownPersistsAndOnlyQueriesOriginal(t *testing.T) {
+	s, _ := newV2Service(t)
+	h := startReadyV2(t, s, &stubAdapter{platform: "wechat", submitErr: unknownSubmitError{}, query: QueryOutcome{State: "pending"}})
+	_, err := s.SubmitAction(context.Background(), h.ID, "vis_v2")
+	if err == nil {
+		t.Fatal("unknown error must be returned")
+	}
+	got, _ := s.GetActionForVisitor(context.Background(), h.ID, "vis_v2")
+	if got.Status != StateUnknown {
+		t.Fatalf("unknown submit persisted %s, want unknown", got.Status)
+	}
+	if _, err := s.SubmitAction(context.Background(), h.ID, "vis_v2"); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("must not resend: %v", err)
+	}
+	queried, err := s.QueryAction(context.Background(), h.ID, "vis_v2")
+	if err != nil || queried.ID != h.ID || queried.QueryCount != 1 {
+		t.Fatalf("query original: %#v %v", queried, err)
+	}
+}
+func TestSubmitPrerequisiteErrorDoesNotBecomeInFlight(t *testing.T) {
+	s, _ := newV2Service(t)
+	h := startReadyV2(t, s, &stubAdapter{platform: "wechat", submitErr: errors.New("OAuth required")})
+	s.SubmitAction(context.Background(), h.ID, "vis_v2")
+	got, _ := s.GetActionForVisitor(context.Background(), h.ID, "vis_v2")
+	if got.Status != StateHandoffReady {
+		t.Fatalf("prerequisite advanced to %s", got.Status)
+	}
+}
+
+type prepareCaptureAdapter struct {
+	stubAdapter
+	requests []PrepareRequest
+}
+
+func (a *prepareCaptureAdapter) Prepare(_ context.Context, r PrepareRequest) (PrepareResult, error) {
+	a.requests = append(a.requests, r)
+	return a.prep, nil
+}
+func TestRefreshPrepareRetainsHandoffAndReadsCurrentAuthority(t *testing.T) {
+	s, _ := newV2Service(t)
+	a := &prepareCaptureAdapter{stubAdapter: stubAdapter{platform: "wechat", prep: PrepareResult{ClientAction: ClientAction{Type: ClientActionOAuthConsent, Params: map[string]string{"phase": "authorize"}}}}}
+	s.SetAdapter(a)
+	rec := linkShareAction(t)
+	rec.FieldSupport = map[string]string{"title": "supported"}
+	in := startInputV2(rec, PayloadKindLinkShare, "https://store.example.com/page")
+	started, err := s.StartAction(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.requests[0].FieldSupport["title"] != "supported" {
+		t.Fatal("start must pass original field authority")
+	}
+	calls := 0
+	s.SetActionPrepareResolver(func(_ context.Context, h ActionHandoff, r PrepareRequest) (PrepareRequest, error) {
+		calls++
+		if h.ID != started.Handoff.ID || h.SessionID != in.SessionID {
+			t.Fatal("changed identity")
+		}
+		r.FieldSupport = map[string]string{"title": "unsupported"}
+		r.MediaRefs = map[string]string{"m": "https://fresh.example/media"}
+		return r, nil
+	})
+	a.prep = PrepareResult{ClientAction: ClientAction{Type: ClientActionOAuthConsent, Params: map[string]string{"phase": "confirm_submit", "account_ref": "trusted-openid"}}}
+	restored, err := s.RefreshActionPrepare(context.Background(), started.Handoff.ID, "vis_v2")
+	if err != nil || calls != 1 {
+		t.Fatalf("refresh: %v calls %d", err, calls)
+	}
+	if restored.ID != started.Handoff.ID || restored.ClientAction.Params["account_ref"] != "trusted-openid" {
+		t.Fatal("did not restore same handoff with trusted account")
+	}
+	got, _ := s.GetActionForVisitor(context.Background(), restored.ID, "vis_v2")
+	if got.ClientAction.Params["phase"] != "confirm_submit" {
+		t.Fatal("refresh was not persisted")
+	}
+	if a.requests[1].FieldSupport["title"] != "unsupported" || a.requests[1].MediaRefs["m"] == "" {
+		t.Fatal("fresh authority/ref not passed")
+	}
+	s.SetActionPrepareResolver(func(context.Context, ActionHandoff, PrepareRequest) (PrepareRequest, error) {
+		return PrepareRequest{}, ErrMediaPreparation
+	})
+	if _, err := s.RefreshActionPrepare(context.Background(), restored.ID, "vis_v2"); !errors.Is(err, ErrMediaPreparation) {
+		t.Fatalf("must honor current veto: %v", err)
 	}
 }

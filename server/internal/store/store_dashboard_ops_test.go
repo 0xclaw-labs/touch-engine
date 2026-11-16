@@ -305,11 +305,11 @@ func TestDashboardOpsFilters(t *testing.T) {
 		t.Fatalf("nfc filter: visits=%d started=%d, want 12/2", facts.VisitTotal, facts.StartedTotal)
 	}
 
-	// 内容版本 v3:参与 part-1/part-3/part-5=3;不适用于访问级(无关联)→访问不筛=17。
+	// 内容版本 v3:只筛冻结尝试；开始事实没有冻结内容版本,不适用→仍为5。
 	facts, _, err = w.s.DashboardOps(w.tenA, "", start, end, OpsFilter{ContentPackVersion: "v3"})
 	must(t, err)
-	if facts.StartedTotal != 3 {
-		t.Fatalf("cpversion filter started = %d, want 3", facts.StartedTotal)
+	if facts.StartedTotal != 5 {
+		t.Fatalf("cpversion not applicable to started = %d, want 5", facts.StartedTotal)
 	}
 	if facts.VisitTotal != 17 {
 		t.Fatalf("cpversion must not pretend to filter visits: %d", facts.VisitTotal)
@@ -353,8 +353,8 @@ func TestDashboardOpsStoreScopeManager(t *testing.T) {
 	if facts.StartedTotal != 1 || facts.IssuedTotal != 0 {
 		t.Fatalf("manager scope store2: started=%d issued=%d, want 1/0", facts.StartedTotal, facts.IssuedTotal)
 	}
-	if len(facts.Inventory) != 1 { // 租户级批次对全店可见(store_id='')
-		t.Fatalf("tenant-wide batch must stay visible to manager")
+	if len(facts.Inventory) != 0 { // 空store批次所属活动为store1,不授予store2共享权限。
+		t.Fatalf("other store campaign batch must not be visible to manager")
 	}
 	// 空租户 fail-closed。
 	empty, _, err := w.s.DashboardOps("", "", start, end, OpsFilter{})
@@ -514,6 +514,11 @@ func (w *opsWorld) seedLayerFactSet(t *testing.T) {
 	w.rawBillingOrder(t, "sub-2", "subscription", "renew", 29900, "failed", "2026-10-14T06:05:00Z")
 	w.rawBillingOrder(t, "hw-1", "hardware", "purchase", 120000, "active", "2026-10-14T06:10:00Z")
 	w.rawBillingOrder(t, "sub-9", "subscription", "new", 99900, "active", "2026-10-13T06:00:00Z") // 窗外
+	// 费用夹具必须包含原付款事实；active 状态本身不证明支付。
+	for _, row := range []struct{ id, at string }{{"sub-1", "2026-10-14T06:00:00Z"}, {"hw-1", "2026-10-14T06:10:00Z"}, {"sub-9", "2026-10-13T06:00:00Z"}} {
+		must(t, w.exec(`INSERT INTO billing_order_events(id,tenant_id,order_id,source,event_id,event_type,payload,occurred_at,created_at)
+		 VALUES(?,?,?,'engineering-authority',?,'payment_paid','{}',?,?)`, "event-"+row.id, w.tenA, row.id, "event-"+row.id, row.at, row.at))
+	}
 	w.rawRefund(t, "ref-1", "hw-1", 20000, "2026-10-14T07:00:00Z")
 	w.rawAIUsage(t, "ai-1", "q-1", "consumed", 100, "2026-10-14T07:10:00Z")
 	w.rawAIUsage(t, "ai-2", "q-2", "confirmed", 120, "2026-10-14T07:11:00Z")
@@ -806,8 +811,8 @@ func TestDashboardOpsCostReconciliationFacts(t *testing.T) {
 	if cr.HardwarePaidMinor == nil || *cr.HardwarePaidMinor != 120000 {
 		t.Fatalf("hardware paid = %v, want 120000", cr.HardwarePaidMinor)
 	}
-	if cr.HardwareRefundMinor != 20000 || cr.HardwareRefunds != 1 {
-		t.Fatalf("hardware refunds = %d/%d, want 20000/1 分列不冲销", cr.HardwareRefundMinor, cr.HardwareRefunds)
+	if cr.HardwareRefundMinor == nil || *cr.HardwareRefundMinor != 20000 || cr.HardwareRefunds != 1 {
+		t.Fatalf("hardware refunds = %v/%d, want 20000/1 分列不冲销", cr.HardwareRefundMinor, cr.HardwareRefunds)
 	}
 	// 跨租户零。
 	facts, _, err = w.s.DashboardOps(w.tenB, "", start, end, OpsFilter{})

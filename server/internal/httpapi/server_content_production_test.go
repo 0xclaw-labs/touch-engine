@@ -837,7 +837,7 @@ func TestContentProductionFullLoopEmptyStoreToAdoptedMedia(t *testing.T) {
 		t.Fatalf("candidate must carry the real video media: %+v", version)
 	}
 	prevBody := fmt.Sprintf(`{"media_ids":["%s"],"purpose":"preview"}`, videoMediaID)
-	prevCode, prevOut := f.do(t, "POST", "/api/v1/public/content/"+versionID+"/media-access", "", "", prevBody)
+	prevCode, prevOut := f.do(t, "POST", "/api/v1/stores/"+f.storeA+"/content-packs/"+f.packA+"/versions/"+versionID+"/media-access", "sess-owner-a", f.tenA, prevBody)
 	if prevCode != 200 {
 		t.Fatalf("candidate preview: %d %+v", prevCode, prevOut)
 	}
@@ -899,7 +899,7 @@ func TestContentProductionFullLoopEmptyStoreToAdoptedMedia(t *testing.T) {
 	// B05 公共读面按 action binding 解析;绑定写端点归 4584——此处验证采用
 	// 指针权威:pack 当前采用=回流版本(GetStoreAdoptedPackVersion 语义)。
 	if contentCode != http.StatusNotFound {
-		t.Fatalf("unbound action must stay 404 (adoption is the only distribution path), got %d", contentCode)
+		t.Fatalf("unbound action must stay 404 (adoption alone does not publish content), got %d", contentCode)
 	}
 	_, afterAdopt := f.do(t, "GET", "/api/v1/stores/"+f.storeA+"/content-packs", "sess-owner-a", f.tenA, "")
 	for _, p := range mustItems(t, afterAdopt) {

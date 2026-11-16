@@ -6,7 +6,7 @@
 //     (见 server.go Handler 的条件注册);
 //   - 口径:窗口参数必填且 RFC3339,非法一律 400 invalid_window
 //     (绝不静默落到"默认窗口"这种隐式口径);
-//   - 作用域:服务端单点裁决——org_owner/staff 租户级;store_manager 一律
+//   - 作用域:服务端单点裁决——总部成员租户级;store_manager 与带范围店员一律
 //     收窄到 members.store_scope,空作用域的畸形经理 fail-closed 403。
 //     客户端输入(查询参数/请求体)永不参与"能看哪些数据"的裁决。
 package httpapi
@@ -16,7 +16,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bianjiefilm/touch-engine/server/internal/authz"
 	"github.com/bianjiefilm/touch-engine/server/internal/dashboard"
 )
 
@@ -37,17 +36,9 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := callerFrom(r)
-	if !s.allowScopedList(c, w) {
+	_, scope, ok := s.opsScope(w, r)
+	if !ok {
 		return
-	}
-	// 作用域:门店经理收窄到其 store_scope;空作用域畸形经理 fail-closed。
-	scope := ""
-	if callerIsStoreManager(c) {
-		scope = callerStoreScope(c)
-		if scope == "" {
-			fail(w, http.StatusForbidden, authz.ReasonOutOfScope, "store manager has no store scope")
-			return
-		}
 	}
 	win, err := dashboard.ParseWindow(r.URL.Query().Get("window_start"), r.URL.Query().Get("window_end"))
 	if err != nil {

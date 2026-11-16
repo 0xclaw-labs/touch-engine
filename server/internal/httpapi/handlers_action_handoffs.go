@@ -26,8 +26,10 @@ package httpapi
 //   - fixture 回执只进测试;回调未配 adapter/验签失败一律拒绝(NOT_VERIFIED)。
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -150,6 +152,9 @@ func (s *Server) resolveMediaPayload(w http.ResponseWriter, sess participation.A
 			"该动作没有已选内容；请先在内容面选择已采用版本，或改用纯链接交接")
 		return store.StoreContentPackVersion{}, publishhandoff.TextInput{}, nil, false
 	}
+	if !s.checkMediaAccessSession(w, sess.ID, sess.TenantID, "", sess.ContentPackVersion) {
+		return store.StoreContentPackVersion{}, publishhandoff.TextInput{}, nil, false
+	}
 	v, err := s.St.GetStoreContentPackVersion(sess.ContentPackVersion, sess.TenantID)
 	if err != nil {
 		fail(w, http.StatusNotFound, "not_found", "selected content not found")
@@ -168,13 +173,8 @@ func (s *Server) resolveMediaPayload(w http.ResponseWriter, sess participation.A
 // resolveShareURL builds the link_share target from the PUBLISHED action's
 // TargetRef (4584 已发布动作;公网 https 已在其可见性门校验)。无目标 = 422
 // target_missing(绝不伪建链接)。
-func (s *Server) resolveShareURL(w http.ResponseWriter, actionID string) (string, bool) {
-	tenantID, storeID, err := s.St.StoreActionScope(actionID)
-	if err != nil {
-		fail(w, http.StatusNotFound, "not_found", "resource not found")
-		return "", false
-	}
-	a, err := s.St.GetStoreActionByID(tenantID, storeID, actionID)
+func (s *Server) resolveShareURL(w http.ResponseWriter, sess participation.ActionSession) (string, bool) {
+	a, err := s.St.SessionPublishedAction(sess.TenantID, sess.StoreID, sess.ActionID, sess.StorefrontRevision, sess.ActionRevision, time.Now().UTC())
 	if err != nil {
 		fail(w, http.StatusNotFound, "not_found", "resource not found")
 		return "", false
@@ -208,6 +208,16 @@ func (s *Server) mintActionMediaRefs(r *http.Request, h publishhandoff.ActionHan
 		return []map[string]any{}
 	}
 	purpose := actionMediaPurpose(h.PlanKind)
+	v, err := s.St.GetStoreContentPackVersion(h.ContentPackVersionID, h.TenantID)
+	if err != nil || contentpack.Distributable(v.Status, v.GrantUntil, time.Now()) != nil {
+		return []map[string]any{}
+	}
+	for _, m := range media {
+		claim := contentpack.MediaAccessClaim{VersionID: v.ID, MediaID: m.AssetID, Purpose: purpose, SessionRef: h.SessionID, SourceKind: contentpack.MediaSourceActionHandoff, SourceRef: h.ID}
+		if s.validateMediaExportSource(r.Context(), v, claim) != nil {
+			return []map[string]any{}
+		}
+	}
 	now := time.Now()
 	base := strings.TrimRight(s.Cfg.PublicBaseURL, "/")
 	out := make([]map[string]any, 0, len(media))
@@ -216,6 +226,7 @@ func (s *Server) mintActionMediaRefs(r *http.Request, h publishhandoff.ActionHan
 		if cerr != nil {
 			continue
 		}
+		claim.SourceKind, claim.SourceRef = contentpack.MediaSourceActionHandoff, h.ID
 		token, terr := contentpack.MintMediaAccess(s.Cfg.InternalToken, claim)
 		if terr != nil {
 			continue
@@ -234,7 +245,7 @@ func (s *Server) mintActionMediaRefs(r *http.Request, h publishhandoff.ActionHan
 
 // mintAdapterMediaRefs pre-mints platform_fetch refs for the Start payload so
 // adapter Prepare (4585-4588) receives pullable URLs; read 面按计划 kind 重铸。
-func (s *Server) mintAdapterMediaRefs(tenantID, versionID, sessionID string, media []publishhandoff.MediaItem) map[string]string {
+func (s *Server) mintAdapterMediaRefs(tenantID, versionID, sessionID string, media []publishhandoff.MediaItem, sourceKind, sourceRef string) map[string]string {
 	if versionID == "" {
 		return map[string]string{}
 	}
@@ -246,6 +257,7 @@ func (s *Server) mintAdapterMediaRefs(tenantID, versionID, sessionID string, med
 		if cerr != nil {
 			continue
 		}
+		claim.SourceKind, claim.SourceRef = sourceKind, sourceRef
 		token, terr := contentpack.MintMediaAccess(s.Cfg.InternalToken, claim)
 		if terr != nil {
 			continue
@@ -424,6 +436,12 @@ func (s *Server) handlePublicActionHandoffPlan(w http.ResponseWriter, r *http.Re
 		})
 		return
 	}
+	if payloadKind != "" {
+		if err := publishhandoff.ValidateActionPayloadKind(rec, payloadKind); err != nil {
+			s.writeActionHandoffError(w, err)
+			return
+		}
+	}
 	payload, pok := s.actionPlanPayload(w, sess, payloadKind, actionID)
 	if !pok {
 		return
@@ -471,7 +489,7 @@ func (s *Server) actionPlanPayload(w http.ResponseWriter, sess participation.Act
 		}
 		return publishhandoff.ActionPlanInput{Text: text, Media: media}, true
 	case publishhandoff.PayloadKindLinkShare:
-		share, ok := s.resolveShareURL(w, actionID)
+		share, ok := s.resolveShareURL(w, sess)
 		if !ok {
 			return publishhandoff.ActionPlanInput{}, false
 		}
@@ -571,13 +589,14 @@ func (s *Server) handlePublicActionHandoffStart(w http.ResponseWriter, r *http.R
 			return
 		}
 		in.ContentPackVersionID = v.ID
-		// adapter Prepare 的拉取引用(platform_fetch);响应/读面按冻结计划 kind 重铸。
-		in.PlanPayload = publishhandoff.ActionPlanInput{
-			Text: text, Media: media,
-			MediaRefs: s.mintAdapterMediaRefs(sess.TenantID, v.ID, sess.ID, media),
+		// Manual export gets its download references only after the original
+		// handoff exists. Never embed adapter-only platform_fetch URLs in its instructions.
+		in.PlanPayload = publishhandoff.ActionPlanInput{Text: text, Media: media}
+		if pre.Kind != publishhandoff.PlanManualOnly {
+			in.PlanPayload.MediaRefs = s.mintAdapterMediaRefs(sess.TenantID, v.ID, sess.ID, media, contentpack.MediaSourceActionStart, body.IdempotencyKey)
 		}
 	case publishhandoff.PayloadKindLinkShare:
-		share, sok := s.resolveShareURL(w, actionID)
+		share, sok := s.resolveShareURL(w, sess)
 		if !sok {
 			return
 		}
@@ -588,11 +607,7 @@ func (s *Server) handlePublicActionHandoffStart(w http.ResponseWriter, r *http.R
 		s.writeActionHandoffError(w, err)
 		return
 	}
-	resp := map[string]any{
-		"handoff": actionHandoffView(res.Handoff),
-		"plan":    actionPlanView(res.Plan),
-		"media":   s.mintActionMediaRefs(r, res.Handoff),
-	}
+	resp := s.currentActionHandoffResponse(r, res.Handoff, nil)
 	status := http.StatusOK
 	if res.Created {
 		status = http.StatusCreated
@@ -611,11 +626,13 @@ func (s *Server) handlePublicActionHandoffGet(w http.ResponseWriter, r *http.Req
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"handoff": actionHandoffView(h),
-		"plan":    actionPlanView(s.PublishHandoff.FrozenPlanOf(h)),
-		"media":   s.mintActionMediaRefs(r, h),
-	})
+	refreshed, err := s.PublishHandoff.RefreshActionPrepare(r.Context(), h.ID, mustVisitor(r))
+	if err == nil {
+		h = refreshed
+	}
+	// History remains readable when live execution is refused. Never project
+	// a frozen allowed plan or its stale executable params as current consent.
+	writeJSON(w, http.StatusOK, s.currentActionHandoffResponse(r, h, err))
 }
 
 func (s *Server) ownActionHandoff(w http.ResponseWriter, r *http.Request) (publishhandoff.ActionHandoff, bool) {
@@ -772,4 +789,165 @@ func (s *Server) handlePublicHandoffCallback(w http.ResponseWriter, r *http.Requ
 			"accepted": false, "reason": err.Error(),
 		})
 	}
+}
+
+// Refresh short-lived references from the frozen version, honoring current block/grant vetoes.
+func (s *Server) refreshActionPrepareRequest(ctx context.Context, h publishhandoff.ActionHandoff, req publishhandoff.PrepareRequest) (publishhandoff.PrepareRequest, error) {
+	if h.PayloadKind == "" {
+		return s.refreshLegacyAdapterRequest(ctx, h, req)
+	}
+	live, ok, err := s.ResolveAction(ctx, h.ActionID)
+	if err != nil {
+		return req, err
+	}
+	if !ok || live.TenantID != h.TenantID || live.StoreID != h.StoreID {
+		return req, &publishhandoff.HandoffRefusedError{Reason: "action_unavailable", ReasonText: "这个动作已停用。原记录保留，不能继续交接。"}
+	}
+	rec := s.resolveActionCapability(h.TenantID, h.CatalogCode, h.Platform, h.Method, h.Scenario)
+	plan := publishhandoff.JudgeActionPlan(s.actionGateQuery(rec, h.Environment), rec, publishhandoff.ActionPlanInput{Text: req.Text, Media: req.Media, ShareURL: req.ShareURL})
+	if !plan.Allowed {
+		return req, &publishhandoff.HandoffRefusedError{Reason: plan.Reason, ReasonText: plan.ReasonText, PendingExternal: plan.PendingExternal}
+	}
+
+	req.FieldSupport = rec.FieldSupport
+	if h.PayloadKind == publishhandoff.PayloadKindMedia {
+		v, err := s.St.GetStoreContentPackVersion(h.ContentPackVersionID, h.TenantID)
+		if err != nil {
+			return req, publishhandoff.ErrNotFound
+		}
+		if err := contentpack.Distributable(v.Status, v.GrantUntil, time.Now()); err != nil {
+			return req, fmt.Errorf("%w: content blocked or expired", publishhandoff.ErrMediaPreparation)
+		}
+		req.MediaRefs = s.mintAdapterMediaRefs(h.TenantID, h.ContentPackVersionID, h.SessionID, req.Media, contentpack.MediaSourceActionHandoff, h.ID)
+		if len(req.MediaRefs) != len(req.Media) {
+			return req, publishhandoff.ErrMediaPreparation
+		}
+	}
+	return req, nil
+}
+
+func (s *Server) handleSessionActionHandoff(w http.ResponseWriter, r *http.Request) {
+	if !s.publishHandoffGate(w) {
+		return
+	}
+	sess, ok := s.actionSessionFor(w, r, "", r.PathValue("sessionId"))
+	if !ok {
+		return
+	}
+	h, err := s.PublishHandoff.FindActionForSession(r.Context(), sess.ID, mustVisitor(r))
+	if err != nil && h.ID == "" {
+		s.writeActionHandoffError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.currentActionHandoffResponse(r, h, err))
+}
+
+// currentActionHandoffResponse separates immutable history from executable
+// parameters. Even without an adapter, current admission is evaluated before
+// returning an SDK action or minting a new media credential.
+func (s *Server) currentActionHandoffResponse(r *http.Request, h publishhandoff.ActionHandoff, denied error) map[string]any {
+	if denied == nil {
+		denied = s.currentActionExecution(r.Context(), h)
+	}
+	view := actionHandoffView(h)
+	plan := s.PublishHandoff.FrozenPlanOf(h)
+	execution := map[string]any{"allowed": denied == nil}
+	media := []map[string]any{}
+	if denied == nil {
+		media = s.mintActionMediaRefs(r, h)
+		if h.PlanKind == publishhandoff.PlanManualOnly && plan.ClientAction != nil && plan.ClientAction.Type == publishhandoff.ClientActionManualExport {
+			// Project the same authorized download refs the response exposes, in
+			// frozen snapshot order. Never mutate or reuse persisted expired /
+			// adapter-only media params as the browser's file source.
+			action := *plan.ClientAction
+			action.Params = map[string]string{}
+			for key, value := range plan.ClientAction.Params {
+				if !strings.HasPrefix(key, "media_") {
+					action.Params[key] = value
+				}
+			}
+			order := []string{}
+			for i, item := range media {
+				key := fmt.Sprintf("media_%02d", i)
+				action.Params[key] = item["kind"].(string) + ":" + item["url"].(string)
+				order = append(order, key)
+			}
+			if len(order) > 0 {
+				action.Params["media_order"] = strings.Join(order, ",")
+			}
+			plan.ClientAction = &action
+			view["client_action"] = clientActionView(action)
+		}
+	} else {
+		reason, reasonText := "execution_unavailable", "当前路线不可执行，原交接记录保留。"
+		var coded *mediaExportError
+		var refused *publishhandoff.HandoffRefusedError
+		switch {
+		case errors.As(denied, &coded):
+			reason, reasonText = coded.code, coded.message
+		case errors.As(denied, &refused):
+			reason, reasonText = refused.Reason, refused.ReasonText
+			plan.PendingExternal = refused.PendingExternal
+		}
+		execution["reason"], execution["reason_text"] = reason, reasonText
+		plan.Allowed = false
+		plan.Kind = publishhandoff.PlanRefused
+		plan.Reason = reason
+		plan.ReasonText = reasonText
+		plan.ClientAction = nil
+		if plan.PendingExternal {
+			plan.Kind = publishhandoff.PlanPendingExternal
+		}
+		delete(view, "client_action")
+	}
+	return map[string]any{"handoff": view, "plan": actionPlanView(plan), "execution": execution, "media": media}
+}
+
+func (s *Server) currentActionExecution(ctx context.Context, h publishhandoff.ActionHandoff) error {
+	if h.Status != publishhandoff.StateHandoffReady && h.Status != publishhandoff.StateEditorOpened {
+		return &mediaExportError{http.StatusConflict, "invalid_state", "原交接当前为进行中或已结束状态，只能查原记录，不能重新执行发布。"}
+	}
+	if h.PayloadKind == publishhandoff.PayloadKindMedia {
+		v, err := s.St.GetStoreContentPackVersion(h.ContentPackVersionID, h.TenantID)
+		if err != nil {
+			return &mediaExportError{http.StatusNotFound, "not_found", "原冻结内容不存在。"}
+		}
+		if err := contentpack.Distributable(v.Status, v.GrantUntil, time.Now()); err != nil {
+			var ve *contentpack.ValidationError
+			if errors.As(err, &ve) {
+				return &mediaExportError{http.StatusConflict, ve.Reason, "原冻结内容已停止分发或授权已到期，不能继续取材。"}
+			}
+			return err
+		}
+		_, media, err := s.PublishHandoff.SnapshotOf(ctx, h.ID, h.TenantID)
+		if err != nil {
+			return err
+		}
+		if len(media) == 0 {
+			return &mediaExportError{http.StatusConflict, "media_missing", "原交接没有可取素材。"}
+		}
+		for _, m := range media {
+			claim := contentpack.MediaAccessClaim{VersionID: v.ID, MediaID: m.AssetID, Purpose: actionMediaPurpose(h.PlanKind), SessionRef: h.SessionID, SourceKind: contentpack.MediaSourceActionHandoff, SourceRef: h.ID}
+			if err := s.validateMediaExportSource(ctx, v, claim); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if s.Participation == nil {
+		return &mediaExportError{http.StatusServiceUnavailable, "action_directory_unavailable", "会话权威暂不可用。"}
+	}
+	ref, err := s.Participation.LookupSessionRef(h.SessionID)
+	if err != nil || ref.TenantID != h.TenantID || ref.StoreID != h.StoreID || ref.ActionID != h.ActionID {
+		return &mediaExportError{http.StatusNotFound, "not_found", "原动作会话不可继续。"}
+	}
+	if ok, err := s.St.SessionActionAvailable(h.TenantID, h.StoreID, h.ActionID, time.Now()); err != nil || !ok {
+		return &mediaExportError{http.StatusNotFound, "action_unavailable", "这个动作当前已不可用，原记录保留。"}
+	}
+	rec := s.resolveActionCapability(h.TenantID, h.CatalogCode, h.Platform, h.Method, h.Scenario)
+	plan := publishhandoff.JudgeActionPlan(s.actionGateQuery(rec, h.Environment), rec, publishhandoff.ActionPlanInput{ShareURL: h.ShareURL})
+	if !plan.Allowed {
+		return &publishhandoff.HandoffRefusedError{Reason: plan.Reason, ReasonText: plan.ReasonText, PendingExternal: plan.PendingExternal}
+	}
+	return nil
 }

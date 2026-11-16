@@ -6,10 +6,39 @@ package contentpack
 // 具体媒体+用途+TTL;续签只续同一合法版本;不复用 B08 单用途恢复码。
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestMediaAccessSourceIsSignedAndSessionRemainsIndependent(t *testing.T) {
+	claim, err := NewMediaAccessClaim("version", "media", MediaPurposePlatformFetch, "session", time.Now(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim.SourceKind, claim.SourceRef = MediaSourceActionHandoff, "original-handoff"
+	token, err := MintMediaAccess("secret", claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := VerifyMediaAccess("secret", token, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verified.SourceKind != MediaSourceActionHandoff || verified.SourceRef != "original-handoff" || verified.SessionRef != "session" {
+		t.Fatalf("source/session lost: %+v", verified)
+	}
+	parts := strings.Split(token, ".")
+	raw, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts[0] = base64.RawURLEncoding.EncodeToString([]byte(strings.ReplaceAll(string(raw), "original-handoff", "another-handoff")))
+	if _, err := VerifyMediaAccess("secret", strings.Join(parts, "."), time.Now()); err == nil {
+		t.Fatal("source mutation retained a valid signature")
+	}
+}
 
 func TestNewMediaAccessClaimBasics(t *testing.T) {
 	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)

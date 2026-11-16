@@ -29,15 +29,20 @@ interface DisplayCode {
   benefitId: string;
 }
 
-export function BenefitsView() {
+interface BenefitsReturn {
+  returnHref?: string;
+  returnLabel?: string;
+}
+
+export function BenefitsView(props: BenefitsReturn) {
   return (
     <Suspense fallback={<main className="tk-public" data-state="loading"><p className="tk-note">正在读取权益</p></main>}>
-      <BenefitsViewInner />
+      <BenefitsViewInner {...props} />
     </Suspense>
   );
 }
 
-function BenefitsViewInner() {
+function BenefitsViewInner({ returnHref, returnLabel }: BenefitsReturn) {
   const params = useParams<{ storeCode: string }>();
   const storeCode = params?.storeCode ?? "";
 
@@ -200,7 +205,7 @@ function BenefitsViewInner() {
         )}
 
         <footer className="tk-row tk-gap">
-          <a className="tk-quiet" href={`/s/${encodeURIComponent(storeCode)}`} data-testid="back-to-store">返回门店</a>
+          <a className="tk-quiet" href={returnHref ?? `/s/${encodeURIComponent(storeCode)}`} data-testid={returnHref ? "back-to-activity" : "back-to-store"}>{returnLabel ?? "返回门店"}</a>
         </footer>
       </div>
     </main>

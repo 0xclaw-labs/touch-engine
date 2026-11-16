@@ -61,6 +61,7 @@ describe("loginFailureText（登录面专用口径）", () => {
       expect(text, String(status)).not.toContain("登录");
     }
     expect(failureText(403, {})).toContain("权限");
+    expect(failureText(403, {})).not.toContain("重新登录");
     expect(failureText(401, {})).toContain("重新登录");
   });
 });

@@ -34,10 +34,26 @@ var ErrNotConfirmed = errors.New("production: quote is not confirmed")
 // ErrUnavailable means the authority cannot be asked at all (not configured
 // or transport failure). Callers must not treat this as confirmation.
 var ErrUnavailable = errors.New("production: authority unavailable")
+var ErrOfferChanged = errors.New("production: offer changed")
+var ErrOfferExpired = errors.New("production: offer expired")
+
+type AuthorityError struct {
+	Status int
+	Code   string
+}
+
+func (e *AuthorityError) Unwrap() error { return ErrUnavailable }
+func (e *AuthorityError) Error() string {
+	return fmt.Sprintf("production: authority http %d", e.Status)
+}
 
 // Quote is the authoritative answer about one declared quote reference.
 type Quote struct {
 	Ref            string `json:"quote_ref"`
+	UsageID        string `json:"usage_id,omitempty"`
+	PricingVersion string `json:"pricing_version,omitempty"`
+	ExpiresAt      string `json:"expires_at,omitempty"`
+	Deliverables   string `json:"deliverables,omitempty"`
 	AmountMinor    int64  `json:"amount_minor"`
 	Currency       string `json:"currency"`
 	Status         string `json:"status"`
@@ -87,7 +103,10 @@ type billingQuoteResponse struct {
 	Quote Quote `json:"quote"`
 }
 
-// ConfirmedQuote returns the quote only when the authority confirms it
+// Deprecated: ConfirmedQuote is the legacy 4595 seam retained for existing
+// adapters/tests. The current public-ai source protocol uses usage_id/quote_id;
+// merchant quoting uses RequestQuote + ConfirmOffer, never this legacy shape.
+// ConfirmedQuote returns the quote only when the legacy adapter confirms it
 // (status=confirmed with a positive amount); everything else is
 // ErrNotConfirmed or ErrUnavailable — never a silent pass.
 func (c *BillingQuoteAuthority) ConfirmedQuote(ctx context.Context, quoteRef string) (Quote, error) {
@@ -132,7 +151,11 @@ func (c *BillingQuoteAuthority) post(ctx context.Context, url string, payload an
 		return fmt.Errorf("%w: %s", ErrUnavailable, err.Error())
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return fmt.Errorf("%w: http %d", ErrUnavailable, res.StatusCode)
+		var failure struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(body, &failure)
+		return &AuthorityError{Status: res.StatusCode, Code: failure.Error}
 	}
 	if err := json.Unmarshal(body, dest); err != nil {
 		return fmt.Errorf("%w: bad json", ErrUnavailable)

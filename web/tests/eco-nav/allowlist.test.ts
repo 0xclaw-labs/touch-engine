@@ -21,12 +21,13 @@ describe("已登记允许列表", () => {
 
   // HUI-2227 残差②：登记真源=public-ai production-manifest.json（生产实况）。
   // 生产表没有的行诚实缺失（null），不再引用 PROVISIONAL .invalid 样例。
-  it("登记真源是生产注册表：aicut/dhuman 真实地址可解析，样例行缺失", () => {
+  it("登记真源是生产注册表：已登记的 Leads 可解析，未登记的 Touch 仍缺失", () => {
     expect(resolveRegisteredLaunch("ti-aicut-web", {})).toBe("https://aicut.modelxing.com/");
-    expect(resolveRegisteredLaunch("ti-dhuman-web", {})).toBe("https://dhuman.modelxing.com/");
-    expect(resolveRegisteredLaunch("ti-orders-web", {})).toBeNull();
+    expect(resolveRegisteredLaunch("ti-dhuman-web", {})).toBe("https://dhuman.modelxing.com/studio/");
+    expect(resolveRegisteredLaunch("ti-orders-web", {})).toBe("https://order.modelxing.com/workbench");
     expect(resolveRegisteredLaunch("ti-touch-engine-web", {})).toBeNull();
-    expect(resolveRegisteredLaunch("ti-leads-engine-web", {})).toBeNull();
+    expect(resolveRegisteredLaunch("ti-leads-engine-web", {})).toBe("https://leads.modelxing.com/");
+    expect(resolveRegisteredLaunch("ti-cashier-web", {})).toBeNull();
     expect(resolveRegisteredLaunch("ti-agentbuddy-web", {})).toBe("https://agentbuddy.modelxing.com/");
     // PROVISIONAL 样例（.example.invalid）永不出现在允许列表
     expect(JSON.stringify(resolveRegisteredLaunch("ti-touch-engine-web", {})) ?? "").not.toContain("invalid");

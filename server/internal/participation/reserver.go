@@ -8,9 +8,8 @@ import "context"
 // request into "create a participation for me".
 //
 // 纪律:
-//   - Production wiring lands with HUI-1671 (root-arranged). Until then a nil
-//     Reserver is legal: participations still start, reservation stays
-//     pending, and the customer is NEVER told 已保留.
+//   - The production server connects the original reward ledger. A nil port
+//     is retained for legacy contracts/tests and never reports a reservation.
 //   - This port does not carry stock, prices, or coupon payloads: no second
 //     inventory lives in this package.
 //   - Reserve must be idempotent on ref.BenefitSlot: replays and re-handoffs
@@ -30,6 +29,8 @@ type ParticipationRef struct {
 	BenefitSlot        string
 	RuleVersion        int
 	ContentPackVersion string
+	CreatedAt          string
+	ExpiresAt          string
 }
 
 // Reservation outcome reasons when Reserved is false.
@@ -43,7 +44,31 @@ const (
 // non-empty ReservationRef; anything else leaves the participation's
 // reservation state pending/failed — never confirmed.
 type ReserveResult struct {
+	// NotRequested applies only to legacy participations without a configured reward promise.
+	NotRequested bool
+
 	Reserved       bool
 	ReservationRef string
 	Reason         string
 }
+
+// StartResolver is an optional trusted preparation stage. It resolves the
+// published reward promise before a new participation is stored. It runs only
+// after the caller's original idempotent participation has been checked.
+type StartResolver interface {
+	ResolveStart(context.Context, StartInput) (StartInput, error)
+}
+
+// ReservationReader projects the current original reward fact without writing
+// or renewing it. Stored participation state is not proof of an unexpired hold.
+type ReservationReader interface {
+	ReadReservation(context.Context, ParticipationRef) (ReserveResult, error)
+}
+
+// StartRefusedError carries a public-safe refusal from the published authority.
+type StartRefusedError struct {
+	Reason, Field, Message string
+	Status                 int
+}
+
+func (e *StartRefusedError) Error() string { return "participation: " + e.Reason }

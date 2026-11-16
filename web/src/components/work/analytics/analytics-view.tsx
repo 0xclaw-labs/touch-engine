@@ -16,14 +16,17 @@
 //   - 空窗口是真实 0,不是未知,不是失败;
 //   - 移动优先(tk- 体系,无固定像素宽);本组件只渲染,不发裸 fetch。
 
-import { useEffect, useState } from "react";
-import { failureText, useSession } from "@/components/work/merchant-session";
+import React, { useEffect, useState } from "react";
+import { useSession, type MerchantSession } from "@/components/work/merchant-session";
 import {
   ANALYTICS_NOT_ENABLED_COPY,
   ENVIRONMENT_OPTIONS,
   FILTER_LABELS,
   LAYER_TITLES,
   buildAnalyticsQuery,
+  countDisplay,
+  readAnalytics,
+  type AnalyticsRead,
   emptyWindowCopy,
   evidenceRowList,
   formatMinor,
@@ -33,9 +36,8 @@ import {
   stageNotAppliedLabels,
   type AnalyticsFilters,
   type CatalogMetric,
-  type EvidenceLayer,
-  type FunnelStage,
   type OperationsResponse,
+  type EvidenceLayer,
 } from "@/lib/analytics";
 
 const TOUCHPOINT_OPTIONS = ["nfc", "qr", "shorturl", "manual"] as const;
@@ -45,87 +47,73 @@ const EMPTY_FILTERS: AnalyticsFilters = {};
 
 export function AnalyticsView() {
   const session = useSession();
-  const [phase, setPhase] = useState<"loading" | "error" | "disabled" | "ready">("loading");
-  const [loadError, setLoadError] = useState("");
-  const [attempt, setAttempt] = useState(0);
-  const [data, setData] = useState<OperationsResponse | null>(null);
-  // PR#7 汇总指标目录(留资/CRM 单列;null=没有读到,保持未知)。
-  const [catalog, setCatalog] = useState<CatalogMetric[] | null>(null);
+  // 切组织或角色时卸载旧读面，连未应用筛选和迟到响应都不能跨范围复用。
+  return <ScopedAnalyticsView key={`${session.tenantId}:${session.role}`} session={session} />;
+}
 
+function ScopedAnalyticsView({ session }: { session: MerchantSession }) {
+  const [attempt, setAttempt] = useState(0);
+  const [snapshot, setSnapshot] = useState<{ key: string; result: AnalyticsRead } | null>(null);
   const [draft, setDraft] = useState<AnalyticsFilters>(EMPTY_FILTERS);
   const [applied, setApplied] = useState<AnalyticsFilters>(EMPTY_FILTERS);
 
+  const requestKey = JSON.stringify([applied, attempt]);
   useEffect(() => {
     let alive = true;
-    setPhase("loading");
+    setSnapshot(null);
     const query = buildAnalyticsQuery(localDayWindow(new Date()), applied);
-    void Promise.all([
-      session.api("GET", `dashboard/operations?${query}`),
-      // PR#7 目录端点同开关同窗口;留资/CRM 继续单列,未接入不是 0。
-      session.api("GET", `dashboard?${query}`),
-    ])
-      .then(([opsRes, catRes]) => {
-        if (!alive) return;
-        // 未开通(路由未注册 + gate 统一 404)不是空数据:缺失保持未知。
-        if (opsRes.status === 404) {
-          setPhase("disabled");
-          return;
-        }
-        if (!opsRes.ok) {
-          setLoadError(failureText(opsRes.status, opsRes.data));
-          setPhase("error");
-          return;
-        }
-        setData(opsRes.data as unknown as OperationsResponse);
-        const items = (catRes.data as Record<string, unknown>).metrics;
-        setCatalog(Array.isArray(items) ? (items as CatalogMetric[]) : null);
-        setPhase("ready");
-      })
-      .catch(() => {
-        if (!alive) return;
-        setLoadError("没有连上服务。没有读到任何统计，请检查网络后重试。");
-        setPhase("error");
-      });
-    return () => {
-      alive = false;
-    };
-  }, [session, applied, attempt]);
+    void readAnalytics(session.api, session.tenantId, query).then((result) => {
+      if (alive) setSnapshot({ key: requestKey, result });
+    });
+    return () => { alive = false; };
+  }, [session.api, session.tenantId, applied, requestKey]);
 
-  if (phase === "loading") {
+  useEffect(() => {
+    const refresh = () => setAttempt(value => value + 1);
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, []);
+
+  // 筛选变化的第一次 render 即隐藏旧结果；不等 effect 执行才清理。
+  const result = snapshot?.key === requestKey ? snapshot.result : null;
+  if (!result) {
+    return <main><h1 className="tk-title">经营看板</h1><p className="tk-state" data-state="loading">正在读取当前范围…</p></main>;
+  }
+  if (result.phase !== "ready") {
     return (
       <main>
         <h1 className="tk-title">经营看板</h1>
-        <p className="tk-state" data-state="loading">正在读取…</p>
+        {result.phase === "error" ? (
+          <p className="tk-state tk-danger" data-state="error">{result.message}</p>
+        ) : (
+          <p className="tk-state tk-unknown" data-state={result.phase}>
+            {result.phase === "disabled" ? ANALYTICS_NOT_ENABLED_COPY : result.message}
+          </p>
+        )}
+        <button className="tk-quiet" type="button" data-action="retry" onClick={() => setAttempt(value => value + 1)}>重试</button>
+			<p><a href="/">返回工作台</a></p>
       </main>
     );
   }
+  const { data, catalog, catalogNote } = result;
 
-  if (phase === "error") {
-    return (
-      <main>
-        <h1 className="tk-title">经营看板</h1>
-        <p className="tk-state tk-danger" data-state="error">
-          {loadError || "没有读到统计数据。"}
-          <button className="tk-quiet" type="button" data-action="retry" onClick={() => setAttempt((a) => a + 1)}>
-            重试
-          </button>
-        </p>
-      </main>
-    );
-  }
+  return <AnalyticsReport data={data} catalog={catalog} catalogNote={catalogNote} draft={draft}
+    onDraft={setDraft} onApply={() => setApplied({ ...draft })}
+    onReset={() => { setDraft(EMPTY_FILTERS); setApplied(EMPTY_FILTERS); }}
+    onRefresh={() => setAttempt(value => value + 1)} />;
+}
 
-  if (phase === "disabled") {
-    return (
-      <main>
-        <h1 className="tk-title">经营看板</h1>
-        <p className="tk-state tk-unknown" data-state="disabled">{ANALYTICS_NOT_ENABLED_COPY}</p>
-      </main>
-    );
-  }
-
-  if (!data) return null;
-
-  const windowAllZero = data.funnel.length > 0 && data.funnel.every((stage) => stage.value === 0);
+export function AnalyticsReport({ data, catalog, catalogNote, draft, onDraft, onApply, onReset, onRefresh }: {
+  data: OperationsResponse;
+  catalog: CatalogMetric[] | null;
+  catalogNote: string;
+  draft: AnalyticsFilters;
+  onDraft: (value: AnalyticsFilters) => void;
+  onApply: () => void;
+  onReset: () => void;
+  onRefresh: () => void;
+}) {
+  const windowAllZero = data.funnel.length > 0 && data.funnel.every((stage) => stage.available && stage.value === 0);
   const campaigns = data.dimensions.campaigns ?? [];
   const stores = data.dimensions.stores ?? [];
   const actions = data.dimensions.actions ?? [];
@@ -133,12 +121,22 @@ export function AnalyticsView() {
     (data.evidence_layers.layers ?? []).map((l) => [l.key, l]),
   );
 
+  const serviceCount = (layerKey: string, countKey: string) => {
+    const layer = layerByKey.get(layerKey);
+    return countDisplay(layer?.available ? layer.counts.find(row => row.key === countKey)?.value : undefined);
+  };
+  const filterLimit = (supported: string[], field: string) => {
+    const labels = stageNotAppliedLabels({ applied_filters: supported }, data.filter_echo);
+    return labels.length > 0 ? <p className="tk-note tk-danger" data-field={field}>本区块未生效：{labels.join("、")}。此项事实没有这些维度，不能与已收窄项作转化比较。</p> : null;
+  };
   const setField = (field: keyof AnalyticsFilters) => (value: string) =>
-    setDraft((prev) => ({ ...prev, [field]: value }));
+    onDraft({ ...draft, [field]: value });
 
   return (
     <main>
       <h1 className="tk-title">经营看板</h1>
+      <p className="tk-lead">按办理结果分别看门店服务、内容交接、权益、授权线索与费用。各项不相加为“成功总数”。</p>
+      <p><button className="tk-quiet" type="button" data-action="refresh" onClick={onRefresh}>刷新统计</button> <a href="/">返回工作台</a></p>
       <p className="tk-lead">
         {data.scope.store_scope ? `统计范围:本店(${data.scope.store_scope})。` : "统计范围:全部门店。"}
         只统计已经发生的真实事实;拿不到的就是未知,未知不写成 0。
@@ -265,7 +263,7 @@ export function AnalyticsView() {
           className="tk-button"
           type="button"
           data-action="apply-filters"
-          onClick={() => setApplied({ ...draft })}
+          onClick={onApply}
         >
           应用筛选
         </button>
@@ -273,17 +271,23 @@ export function AnalyticsView() {
           className="tk-quiet"
           type="button"
           data-action="reset-filters"
-          onClick={() => {
-            setDraft(EMPTY_FILTERS);
-            setApplied(EMPTY_FILTERS);
-          }}
+          onClick={onReset}
         >
           重置
         </button>
       </section>
 
+      <section aria-label="门店服务" data-section="store-service">
+        <h2 className="tk-subtitle">门店服务记录</h2>
+        {filterLimit(["store_id", "action_id", "environment"], "service-filter-limit")}
+        <p>服务卡片打开：<strong data-field="service-opens">{serviceCount("action_clicked", "service_opens")}</strong></p>
+        <p>服务跳转或唤起尝试：<strong data-field="service-jumps">{serviceCount("invoke_attempt", "service_jump_attempts")}</strong></p>
+        <p className="tk-note">仅表示本地已记录的打开或尝试，不证明服务办理完成、到店或成交。来源、去重与筛选适用范围见下方对应证据层口径。</p>
+        {stores.length === 0 ? <p><a href="/work/stores">查看或建立门店</a>，门店可独立运营，无需先建活动。</p> : null}
+      </section>
+
       <section aria-label="漏斗" data-section="funnel">
-        <h2 className="tk-subtitle">漏斗七级</h2>
+        <h2 className="tk-subtitle">活动参与与权益事实（七项独立口径）</h2>
         {data.funnel.length === 0 ? (
           <p className="tk-note">没有读到漏斗事实。缺失保持未知,不显示 0。</p>
         ) : (
@@ -293,7 +297,7 @@ export function AnalyticsView() {
               return (
                 <li key={stage.key} data-stage={stage.key}>
                   <span data-field="stage-title">{stage.title}</span>
-                  <strong data-field="stage-value">{stage.available ? stage.value : "未知"}</strong>
+                  <strong data-field="stage-value">{stage.available ? countDisplay(stage.value) : "未知"}</strong>
                   {(stage.applied_filters ?? []).length > 0 ? (
                     <span className="tk-note" data-field="stage-applied">
                       本级按 {(stage.applied_filters ?? []).map((key) => FILTER_LABELS[key] ?? key).join("、")} 收窄
@@ -321,7 +325,8 @@ export function AnalyticsView() {
       </section>
 
       <section aria-label="核验证据" data-section="evidence">
-        <h2 className="tk-subtitle">发布核验证据</h2>
+        <h2 className="tk-subtitle">内容发布核验证据</h2>
+        {filterLimit(["campaign_id", "store_id", "touchpoint"], "evidence-filter-limit")}
         <ul className="tk-list" data-field="evidence-list">
           {evidenceRowList(data.evidence).map((row) => (
             <li key={row.key} data-evidence={row.key}>
@@ -331,12 +336,14 @@ export function AnalyticsView() {
         </ul>
         <p>
           总体覆盖(distinct 参与数):
-          <strong data-field="evidence-distinct">{data.evidence.distinct_participations}</strong>
+          <strong data-field="evidence-distinct">{countDisplay(data.evidence.distinct_participations)}</strong>
         </p>
+        {filterLimit(["campaign_id", "store_id", "platform"], "official-filter-limit")}
         <p>
-          官方确认发布(按可信尝试):
-          <strong data-field="evidence-official">{data.evidence.official_attempts}</strong>
+          本地已持久化的官方确认记录(按可信尝试):
+          <strong data-field="evidence-official">{countDisplay(data.evidence.official_attempts)}</strong>
         </p>
+        <details className="tk-note" data-field="evidence-definition"><summary>来源与口径</summary><p>三类记录来自 reward_benefits 的核验证据类别，按权益账本行分别计数；总体覆盖按 distinct participation_id 去重，同参与多份证据不重复算覆盖。官方确认尝试来自 reward_official_facts，按可信 attempt_id 去重，各项不可相加。权益证据以 issued_at、官方事实以 created_at 在上方窗口落窗。</p></details>
         <p className="tk-note" data-field="evidence-note">{data.evidence.note}</p>
       </section>
 
@@ -348,7 +355,7 @@ export function AnalyticsView() {
           <ol className="tk-list" data-field="layers-list">
             {LAYER_TITLES.map(({ key, label }) => {
               const layer = layerByKey.get(key);
-              if (!layer) {
+              if (!layer || !layer.available) {
                 return (
                   <li key={key} data-layer={key}>
                     <span data-field="layer-title">{label}</span>
@@ -362,10 +369,15 @@ export function AnalyticsView() {
                   <ul className="tk-list" data-field="layer-counts">
                     {layer.counts.map((c) => (
                       <li key={c.key} data-line={c.key}>
-                        {c.label}:<strong data-field="line-value">{c.value}</strong>
+                        {c.label}:<strong data-field="line-value">{countDisplay(c.value)}</strong>
+                        {c.applied_filters && c.applied_filters.length > 0 ? <p className="tk-note" data-field="line-applied">本项按 {c.applied_filters.map(key => FILTER_LABELS[key] ?? key).join("、")} 收窄</p> : null}
+                        {stageNotAppliedLabels({ applied_filters: c.applied_filters ?? layer.applied_filters }, data.filter_echo).length > 0 ? <p className="tk-note tk-danger" data-field="line-not-applied">本项未生效：{stageNotAppliedLabels({ applied_filters: c.applied_filters ?? layer.applied_filters }, data.filter_echo).join("、")}。该来源不能证明此维度。</p> : null}
                       </li>
                     ))}
                   </ul>
+                  {stageNotAppliedLabels(layer, data.filter_echo).length > 0 ? (
+                    <p className="tk-note tk-danger" data-field="layer-not-applied">本层并非所有计数均按 {stageNotAppliedLabels(layer, data.filter_echo).join("、")} 收窄，适用范围见各项说明，不能与已收窄项作转化比较。</p>
+                  ) : null}
                   {layer.note ? <span className="tk-note" data-field="layer-note">{layer.note}</span> : null}
                   <details className="tk-note" data-field="layer-definition">
                     <summary>口径</summary>
@@ -380,11 +392,13 @@ export function AnalyticsView() {
             })}
           </ol>
         )}
+        <p className="tk-note" data-field="platform-availability">平台证实只展示本地已经接收的可信回执。0 条回执不证明平台已授权或实际零发布；未授权、未同步的外部结果不可计。</p>
         <p className="tk-note" data-field="layers-note">{data.evidence_layers.note}</p>
       </section>
 
       <section aria-label="真实线索口径" data-section="leads">
         <h2 className="tk-subtitle">真实线索(接收状态口径)</h2>
+        {filterLimit(["campaign_id", "store_id"], "leads-filter-limit")}
         <ul className="tk-list" data-field="leads-list">
           {leadsPanelRows(data.leads).map((row) => (
             <li key={row.key} data-lead={row.key}>
@@ -405,99 +419,140 @@ export function AnalyticsView() {
 
       <section aria-label="奖励库存" data-section="inventory">
         <h2 className="tk-subtitle">奖励库存(账本口径)</h2>
+        {filterLimit(["campaign_id", "store_id"], "inventory-filter-limit")}
         {data.inventory.length === 0 ? (
-          <p className="tk-note" data-field="inventory-empty">统计范围内没有库存批次。没有事实不写 0。</p>
+          <p className="tk-note" data-field="inventory-empty">统计范围内没有库存批次。该范围批次记录为 0，不代表其他未接入事实为 0。</p>
         ) : (
           <ul className="tk-list" data-field="inventory-list">
             {data.inventory.map((line) => (
               <li key={line.inventory_id} data-inventory={line.inventory_id}>
-                <span data-field="inventory-name">{line.name} · {line.benefit_slot} · 规则 v{line.rule_version}</span>
+                <span data-field="inventory-name">{line.name} · {line.benefit_slot} · 规则 v{countDisplay(line.rule_version)}</span>
                 <span data-field="inventory-counts">
-                  可用 {line.available} · 预留 {line.reserved} · 已发 {line.issued} · 已核销 {line.redeemed}
-                  {line.reversed > 0 ? ` · 撤销 ${line.reversed}` : ""}
-                  {line.expired > 0 ? ` · 过期 ${line.expired}` : ""}
+                  可用 {countDisplay(line.available_unknown ? undefined : line.available)} · 预留 {countDisplay(line.reserved)} · 已发 {countDisplay(line.issued)} · 已核销 {countDisplay(line.redeemed)}
+                  {(line.reversed ?? 0) > 0 ? ` · 撤销 ${line.reversed}` : ""}
+                  {(line.expired ?? 0) > 0 ? ` · 过期 ${line.expired}` : ""}
                 </span>
+                {line.available_unknown ? <p className="tk-note" data-field="inventory-available-unknown">当前门店范围无法证明全批次占用，可用量未知；以上领取和核销仅统计本店事实，办理时以权益账本裁决为准。</p> : null}
                 <span className="tk-note" data-field="inventory-face">
                   面额 {formatMinor(line.face_value_minor)}{line.currency ? ` ${line.currency}` : ""}
-                  {line.store_id ? "" : " · 租户级批次(全店共享)"}
+                  {line.store_id ? "" : " · 批次未显式绑定门店，按活动归属核定可见范围"}
                 </span>
               </li>
             ))}
           </ul>
         )}
+        <details className="tk-note" data-field="inventory-definition"><summary>来源与口径</summary><p>来源 reward_inventory 与 reward_benefits，按 inventory_id 去重；批次及占用为当前快照，不是上方窗口内新增。总部全量可用数量 = 总量 − 预留 − 已发 − 已核销。门店视图仅计本店权益，无法证明全批次占用时可用量保持未知。空门店字段不代表共享授权，批次须结合活动归属确定可见范围。</p></details>
       </section>
 
       <section aria-label="成本" data-section="cost">
-        <h2 className="tk-subtitle">成本三分</h2>
+        <h2 className="tk-subtitle">权益成本、内容费用与券面额</h2>
+        {filterLimit(["campaign_id", "store_id", "touchpoint"], "reward-cost-filter-limit")}
         <p data-field="cost-reward">
-          奖励实际兑现成本(已发):{formatMinor(data.cost.reward_cost_minor)};其中已核销:
-          {formatMinor(data.cost.reward_redeemed_cost_minor)}
+          奖励实际兑现成本(已发):{data.cost.reward_cost_unrecorded === 0 ? formatMinor(data.cost.reward_cost_minor) : "未知（本期已发权益包含未录成本，或完整性尚未读到）"};其中已核销:
+          {data.cost.redeemed_cost_unrecorded === 0 ? formatMinor(data.cost.reward_redeemed_cost_minor) : "未知（本期已核销权益包含未录成本，或完整性尚未读到）"}
         </p>
         <p data-field="cost-face-total">
           券面额合计(营销面值,不是支出):{formatMinor(data.cost.reward_face_minor)}
         </p>
+        <p className="tk-note">内容生成费用按活动当前归属门店筛选，未归属门店的费用不作分摊，不代表门店完整总费用；其他上方筛选未生效。未录成本批次按当前批次快照披露。</p>
         {data.cost.content_generation_available && data.cost.content_generation_amount_minor != null ? (
           <p data-field="cost-content">
             内容实际生成费用:{formatMinor(data.cost.content_generation_amount_minor)}
-            ({data.cost.content_generation_runs} 次已结算)
+            ({countDisplay(data.cost.content_generation_runs)} 次已结算)
           </p>
         ) : (
           <p className="tk-unknown" data-field="cost-content-unknown">
-            内容实际生成费用:未录入{data.cost.content_generation_note ? `。${data.cost.content_generation_note}` : ""}
+            内容实际生成费用:未知{data.cost.content_generation_note ? `。${data.cost.content_generation_note}` : ""}
           </p>
         )}
-        {data.cost.unrecorded_batches > 0 ? (
+        {(data.cost.unrecorded_batches ?? 0) > 0 ? (
           <p className="tk-note" data-field="cost-unrecorded">
             未录成本的批次:{data.cost.unrecorded_batches} 个,按未录入展示,不冒充 0。
           </p>
         ) : null}
+        <details className="tk-note" data-field="cost-definition"><summary>来源与口径</summary>
+          <p>权益金额来自 reward_benefits 的冻结面额、成本；以权益账本唯一参与与权益槽去重。已发金额按 issued_at、已核销成本按 redeemed_at 落在上方窗口，撤销及过期权益不算当前有效兑现。</p>
+          <p>内容实际生成费用来自 copy_jobs 的已结算 trace.amount_minor，按生成任务与 created_at 落窗。任一匹配记录缺失有效结算金额时，合计保持未知；此项与 AI 用量投影可能有关联，不叠加计为总支出。</p>
+        </details>
         <p className="tk-note" data-field="cost-face">{data.cost.face_note}</p>
       </section>
 
       <section aria-label="费用对账" data-section="cost_reconciliation">
         <h2 className="tk-subtitle">费用对账(订阅 / AI / 硬件,只读投影)</h2>
-        {data.cost_reconciliation.subscription_available && data.cost_reconciliation.subscription_paid_minor != null ? (
+        {data.cost_reconciliation.availability === "forbidden" ? (
+          <p className="tk-unknown" data-field="recon-forbidden">{data.cost_reconciliation.note || "当前账号没有账单查看权限。请联系组织管理员查看费用。"}</p>
+        ) : <>
+        <p className="tk-note" data-field="recon-scope">组织范围账单投影，不能按门店或活动分摊；上方业务筛选对此区块未生效。0 仅表示本地投影无相应记录，不证明外部账已同步齐全。</p>
+        {data.cost_reconciliation.subscription_available && data.cost_reconciliation.subscription_paid_minor != null && data.cost_reconciliation.subscription_paid_currency && !(data.cost_reconciliation.subscription_paid_time_unknown ?? 0) ? (
           <p data-field="recon-subscription">
             订阅实付(支付事实订单投影):{formatMinor(data.cost_reconciliation.subscription_paid_minor)}
-            ({data.cost_reconciliation.subscription_paid_orders} 单)
+            ({countDisplay(data.cost_reconciliation.subscription_paid_orders)} 单，币种：{data.cost_reconciliation.subscription_paid_currency})
           </p>
         ) : (
           <p className="tk-unknown" data-field="recon-subscription-unknown">
-            订阅实付:窗口内没有支付事实,保持未知,不显示 0。
+            订阅实付:没有读到完整的单一币种支付金额，缺付款事实、发生时间、金额、币种或币种混合均保持未知。请到账单页核对。
           </p>
         )}
-        {data.cost_reconciliation.subscription_failed_orders > 0 ? (
+        {(data.cost_reconciliation.subscription_failed_orders ?? 0) > 0 ? (
           <p className="tk-note" data-field="recon-subscription-failed">
-            失败订阅单:{data.cost_reconciliation.subscription_failed_orders} 单(失败不是支出,是待处理)。
+            开通失败订阅单:{data.cost_reconciliation.subscription_failed_orders} 单，需处理开通结果；已付款金额仍按付款事实保留。
+          </p>
+        ) : null}
+        {(data.cost_reconciliation.subscription_paid_time_unknown ?? 0) > 0 ? (
+          <p className="tk-unknown" data-field="recon-subscription-paid-time-unknown">
+            有 {data.cost_reconciliation.subscription_paid_time_unknown} 单付款无法确认发生时间，本窗口付款合计未知；
+            已确认落在本窗口的付款为 {countDisplay(data.cost_reconciliation.subscription_paid_orders)} 单。请到账单页核对。
+          </p>
+        ) : null}
+        {(data.cost_reconciliation.subscription_refund_time_unknown ?? 0) > 0 ? (
+          <p className="tk-unknown" data-field="recon-subscription-refund-time-unknown">
+            有 {data.cost_reconciliation.subscription_refund_time_unknown} 笔退款无法确认发生时间，本窗口退款合计未知；
+            已确认落在本窗口的退款为 {countDisplay(data.cost_reconciliation.subscription_refunds)} 笔。请到账单页核对。
+          </p>
+        ) : (data.cost_reconciliation.subscription_refunds ?? 0) > 0 ? (
+          <p className="tk-note" data-field="recon-subscription-refunds">
+            订阅退款:{data.cost_reconciliation.subscription_refund_currency ? formatMinor(data.cost_reconciliation.subscription_refund_minor) : "未知（金额或币种不完整）"}
+            ({data.cost_reconciliation.subscription_refunds} 笔{data.cost_reconciliation.subscription_refund_currency ? `，币种：${data.cost_reconciliation.subscription_refund_currency}` : ""})——分列对账，不冲销原付款金额。
           </p>
         ) : null}
         <p data-field="recon-ai">
           AI 实际费用:已消费 {formatMinor(data.cost_reconciliation.ai_consumed_minor)}
-          ({data.cost_reconciliation.ai_consumed_count} 笔)·已确认未消费{" "}
+          ({countDisplay(data.cost_reconciliation.ai_consumed_count)} 笔)·已确认未消费{" "}
           {formatMinor(data.cost_reconciliation.ai_confirmed_minor)}
-          ({data.cost_reconciliation.ai_confirmed_count} 笔)
+          ({countDisplay(data.cost_reconciliation.ai_confirmed_count)} 笔)
         </p>
-        {data.cost_reconciliation.ai_refunded_minor > 0 || data.cost_reconciliation.ai_failed_minor > 0 ? (
+        {(data.cost_reconciliation.ai_refunded_minor ?? 0) > 0 || (data.cost_reconciliation.ai_failed_minor ?? 0) > 0 ? (
           <p className="tk-note" data-field="recon-ai-exceptions">
             AI 退款 {formatMinor(data.cost_reconciliation.ai_refunded_minor)}({data.cost_reconciliation.ai_refunded_count} 笔)·
             失败 {formatMinor(data.cost_reconciliation.ai_failed_minor)}({data.cost_reconciliation.ai_failed_count} 笔)
             ——单列披露,不计入支出。
           </p>
         ) : null}
-        {data.cost_reconciliation.hardware_available && data.cost_reconciliation.hardware_paid_minor != null ? (
+        {data.cost_reconciliation.hardware_available && data.cost_reconciliation.hardware_paid_minor != null && data.cost_reconciliation.hardware_paid_currency && !(data.cost_reconciliation.hardware_paid_time_unknown ?? 0) ? (
           <p data-field="recon-hardware">
             硬件支出(支付事实订单投影):{formatMinor(data.cost_reconciliation.hardware_paid_minor)}
-            ({data.cost_reconciliation.hardware_paid_orders} 单)
+            ({countDisplay(data.cost_reconciliation.hardware_paid_orders)} 单，币种：{data.cost_reconciliation.hardware_paid_currency})
           </p>
         ) : (
           <p className="tk-unknown" data-field="recon-hardware-unknown">
-            硬件支出:窗口内没有支付事实,保持未知,不显示 0。
+            硬件支出:没有读到完整的单一币种支付金额，缺付款事实、发生时间、金额、币种或币种混合均保持未知。请到账单页核对。
           </p>
         )}
-        {data.cost_reconciliation.hardware_refunds > 0 ? (
+        {(data.cost_reconciliation.hardware_paid_time_unknown ?? 0) > 0 ? (
+          <p className="tk-unknown" data-field="recon-hardware-paid-time-unknown">
+            有 {data.cost_reconciliation.hardware_paid_time_unknown} 单付款无法确认发生时间，本窗口付款合计未知；
+            已确认落在本窗口的付款为 {countDisplay(data.cost_reconciliation.hardware_paid_orders)} 单。请到账单页核对。
+          </p>
+        ) : null}
+        {(data.cost_reconciliation.hardware_refund_time_unknown ?? 0) > 0 ? (
+          <p className="tk-unknown" data-field="recon-hardware-refund-time-unknown">
+            有 {data.cost_reconciliation.hardware_refund_time_unknown} 笔退款无法确认发生时间，本窗口退款合计未知；
+            已确认落在本窗口的退款为 {countDisplay(data.cost_reconciliation.hardware_refunds)} 笔。请到账单页核对。
+          </p>
+        ) : (data.cost_reconciliation.hardware_refunds ?? 0) > 0 ? (
           <p className="tk-note" data-field="recon-hardware-refunds">
-            硬件退款:{formatMinor(data.cost_reconciliation.hardware_refund_minor)}
-            ({data.cost_reconciliation.hardware_refunds} 笔)——分列对账,不冲销原订单金额。
+            硬件退款:{data.cost_reconciliation.hardware_refund_currency ? formatMinor(data.cost_reconciliation.hardware_refund_minor) : "未知（金额或币种不完整）"}
+            ({data.cost_reconciliation.hardware_refunds} 笔{data.cost_reconciliation.hardware_refund_currency ? `，币种：${data.cost_reconciliation.hardware_refund_currency}` : ""})——分列对账,不冲销原付款金额。
           </p>
         ) : null}
         <details className="tk-note" data-field="recon-definition">
@@ -509,25 +564,30 @@ export function AnalyticsView() {
           <p>窗口:{data.cost_reconciliation.definition.window}</p>
         </details>
         <p className="tk-note" data-field="recon-face">{data.cost_reconciliation.face_note}</p>
+        </>}
       </section>
 
       <section aria-label="异常待处理" data-section="anomalies">
         <h2 className="tk-subtitle">异常待处理</h2>
+        {filterLimit(["campaign_id", "store_id"], "anomalies-filter-limit")}
         <ul className="tk-list" data-field="anomaly-list">
-          <li data-anomaly="pending_review">待人工确认(顾客自报):{data.anomalies.pending_review}</li>
-          <li data-anomaly="reservation_failed">预留失败:{data.anomalies.reservation_failed}</li>
-          <li data-anomaly="reversed_in_window">窗口内撤销:{data.anomalies.reversed_in_window}</li>
-          <li data-anomaly="expired_in_window">窗口内过期:{data.anomalies.expired_in_window}</li>
+          <li data-anomaly="pending_review">待人工确认(顾客自报):{countDisplay(data.anomalies.pending_review)}</li>
+          <li data-anomaly="reservation_failed">预留失败:{countDisplay(data.anomalies.reservation_failed)}</li>
+          <li data-anomaly="reversed_in_window">窗口内撤销:{countDisplay(data.anomalies.reversed_in_window)}</li>
+          <li data-anomaly="expired_in_window">窗口内过期:{countDisplay(data.anomalies.expired_in_window)}</li>
         </ul>
       </section>
+
+      <p className="tk-note" data-field="anomaly-definition">待人工确认来自 customer_publish_attempts，按尝试唯一记录计算当前待办；预留失败来自 participations 当前状态。撤销与过期来自 reward_operations 的唯一流水，按事件时间落在上方窗口。不以异常条数推算失败人数。</p>
 
       <section aria-label="授权留资与其他汇总指标" data-section="catalog">
         <h2 className="tk-subtitle">授权留资与其他汇总指标(单列)</h2>
         <p className="tk-note" data-field="catalog-note">
           授权留资与 CRM 接收单独计数;碰触或领券不自动算成获客联系人。
         </p>
+        <p className="tk-note" data-field="catalog-scope">此目录按当前账号受信门店范围和同一时间窗口读取。上方活动、门店等筛选未应用到此目录，不可与已筛选的经营事实作转化比较。</p>
         {catalog === null ? (
-          <p className="tk-unknown" data-field="catalog-unknown">汇总指标没有读到,保持未知,不显示 0。</p>
+          <p className="tk-unknown" data-field="catalog-unknown">{catalogNote || "汇总指标没有读到,保持未知,不显示 0。"}</p>
         ) : (
           <ul className="tk-list" data-field="catalog-list">
             {catalog.map((metric) => {
@@ -538,6 +598,10 @@ export function AnalyticsView() {
                   {known && typeof metric.unique_contacts === "number" ? (
                     <span className="tk-note"> · 唯一联系人 {metric.unique_contacts}</span>
                   ) : null}
+                  {metric.definition ? <details className="tk-note" data-field="catalog-definition"><summary>来源与口径</summary>
+                    <p>来源：{metric.definition.source}</p><p>去重：{metric.definition.dedup_key}</p>
+                    <p>分母：{metric.definition.denominator}</p><p>事件时间：{metric.definition.event_time}</p><p>窗口：{metric.definition.window}</p>
+                  </details> : null}
                   {!known ? (
                     <span className="tk-note" data-field="metric-unknown">
                       未知{metric.reason ? `。${metric.reason}` : "。没有接入的事实来源"}
@@ -550,6 +614,11 @@ export function AnalyticsView() {
         )}
       </section>
 
+      <section aria-label="经营效果边界" data-section="outcomes">
+        <h2 className="tk-subtitle">成交与经营回报</h2>
+        <p className="tk-unknown">真实成交收入、完整费用和因果归因证据尚未接入，当前不能计算完整 ROI 或宣称增长效果。没有一致分母，不计算转化率。</p>
+        <p>费用为既有订单及用量来源的只读投影，可前往<a href="/work/billing">账单与用量</a>核对；回执与核销可前往原业务记录查看。</p>
+      </section>
       <p className="tk-note" data-field="note-entry">{data.notes.entry_marker}</p>
       <p className="tk-note" data-field="note-visitor">{data.notes.visitor}</p>
       <p className="tk-gap">

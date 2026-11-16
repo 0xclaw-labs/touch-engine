@@ -280,3 +280,18 @@ func TestNotifyDeliveredAuditRecordedOnce(t *testing.T) {
 		t.Fatalf("transport delivered must stay 待同步: %q", lead.SyncState)
 	}
 }
+
+func TestLeadNameOptionalBothCaptureLanes(t *testing.T) {
+	f := newLeadsFixture(t)
+	body := `{"phone":"13800138000","consent_version":"v1","consent":true}`
+	if status, out := f.submitLead(t, f.code, body); status != 201 {
+		t.Fatalf("campaign optional name = %d %v", status, out)
+	}
+	code, storeID := storeLane(t, f)
+	if _, err := f.s.St.UpsertLeadFormForStore(f.tenA, storeID, "v1", true, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if status, _, out := f.guest(t, "POST", "/api/v1/public/storefronts/"+code+"/lead-submissions", body); status != 201 {
+		t.Fatalf("store optional name = %d %v", status, out)
+	}
+}

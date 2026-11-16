@@ -2,9 +2,9 @@
 //
 // 裁定书语义:
 //   - 短 TTL(默认 10 分钟,上限 1 小时,同 handoff 纪律);
-//   - 不依赖商家 cookie:凭据自证(签名+过期),匿名顾客与平台抓取同权;
+//   - 兑换不依赖商家/访客cookie；非预览需HTTP层沿签名source核原交接或商家权限;
 //   - 凭据非一次性(平台重复取材,TTL 窗口内可 HEAD/Range/重试),但绑定
-//     具体版本+媒体+用途+TTL;不复用 B08 单用途恢复码语义;
+//     具体版本+媒体+用途+来源+TTL;不复用 B08 单用途恢复码语义;
 //   - 用途白名单 preview|download|platform_fetch;download 走 attachment,
 //     其余 inline;续签只续同一合法版本(HTTP 层重验采用与撤权)。
 
@@ -38,12 +38,23 @@ func ValidMediaPurpose(p string) bool {
 // MediaAccessClaim is the payload bound into a signed, expiring media-access
 // token: one version, one media, one purpose, one TTL.
 type MediaAccessClaim struct {
-	VersionID  string    `json:"v"`
-	MediaID    string    `json:"m"`
-	Purpose    string    `json:"p"`
-	SessionRef string    `json:"sr,omitempty"`
+	VersionID  string `json:"v"`
+	MediaID    string `json:"m"`
+	Purpose    string `json:"p"`
+	SessionRef string `json:"sr,omitempty"`
+	// SourceKind/SourceRef are server-assigned, signed provenance for exports.
+	// SessionRef retains its original action-session identity; it is not an authorization.
+	SourceKind string    `json:"source_kind,omitempty"`
+	SourceRef  string    `json:"source_ref,omitempty"`
 	ExpiresAt  time.Time `json:"exp"`
 }
+
+const (
+	MediaSourceActionHandoff   = "action_handoff"
+	MediaSourceActionStart     = "action_start" // exact session+tenant idempotency key; row exists before adapter fetch
+	MediaSourceCampaignHandoff = "campaign_handoff"
+	MediaSourceMerchant        = "merchant_member"
+)
 
 // NewMediaAccessClaim validates and fills a claim; ttl zero = default.
 func NewMediaAccessClaim(versionID, mediaID, purpose, sessionRef string, now time.Time, ttl time.Duration) (MediaAccessClaim, error) {

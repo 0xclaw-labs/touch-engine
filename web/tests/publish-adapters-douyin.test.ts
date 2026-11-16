@@ -9,9 +9,9 @@ describe("douyin handoff model (HUI-4585)", () => {
         params: {
           sdk: "douyin_h5",
           client_key: "ck_1",
-          share_id: "dshare_1",
+          share_id: "official_share_1", state: "official_share_1", signature: "fixture-sign", nonce_str: "fixture-nonce", timestamp: String(Math.floor(Date.now()/1000)), video_path: "https://media.example/v",
           media_url: "https://media.example/v",
-          share_expires_at: "2026-11-11T10:00:00Z",
+          share_expires_at: new Date(Date.now()+60000).toISOString(),
         },
         steps: ["确认后由你本人主动唤起抖音"],
         note: "官方获准前提下放行",
@@ -20,13 +20,13 @@ describe("douyin handoff model (HUI-4585)", () => {
     );
     expect(model.kind).toBe("js_invoke");
     if (model.kind === "js_invoke") {
-      expect(model.shareId).toBe("dshare_1");
+      expect(model.shareId).toBe("official_share_1");
       expect(model.mediaUrl).toBe("https://media.example/v");
       expect(model.signingGap).toEqual([]);
     }
   });
 
-  it("surfaces the honest signing gap when the server reports one", () => {
+  it("refuses an unsigned handoff even when a signing-gap notice exists", () => {
     const model = buildDouyinHandoff(
       {
         type: "js_media_handoff",
@@ -35,11 +35,7 @@ describe("douyin handoff model (HUI-4585)", () => {
       },
       null,
     );
-    expect(model.kind).toBe("js_invoke");
-    if (model.kind === "js_invoke") {
-      expect(model.signingGap).toHaveLength(1);
-      expect(model.signingGap[0]).toContain("签名");
-    }
+    expect(model.kind).toBe("unavailable");
   });
 
   it("refuses generic param shapes (不拼通用 media/title/body query)", () => {

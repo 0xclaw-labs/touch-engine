@@ -89,11 +89,12 @@ func (s *Server) buildPublicStorefront(code string) (map[string]any, int) {
 			// 停店：动作清单清空（与 4584 默认投影同一收口），版本指针仍如实。
 			payload["actions"] = []any{}
 			payload["sections"] = []any{}
+			payload["services"] = []any{}
 		}
 		return payload, http.StatusOK
 	}
 
-	actions, err := s.St.ListPublicStoreActions(pub.StoreID, now)
+	actions, err := s.St.ListPublishedStoreActions(pub.StoreID, now)
 	if err != nil {
 		return map[string]any{"error": "internal", "message": "storefront lookup failed"}, http.StatusInternalServerError
 	}
@@ -146,7 +147,7 @@ func (s *Server) buildPublicStorefront(code string) (map[string]any, int) {
 // 活动卡片只带 campaign_code + state（白名单），不复制活动配置。
 func (s *Server) storefrontPublicPayload(rec store.StoreRecord, version store.StorefrontVersion, openingHours string, now time.Time) map[string]any {
 	visible := map[string]bool{}
-	if live, err := s.St.ListPublicStoreActions(rec.ID, now); err == nil {
+	if live, err := s.St.ActionsForStorefrontVersion(version, now); err == nil {
 		for _, item := range live {
 			visible[item.ID] = true
 		}
@@ -215,7 +216,19 @@ func (s *Server) storefrontPublicPayload(rec store.StoreRecord, version store.St
 		}
 	}
 
+	services := make([]map[string]any, 0)
+	if actionRows, err := s.St.ActionsForStorefrontVersion(version, now); err == nil {
+		for _, action := range actionRows {
+			if item, ok := s.publicActionServiceItem(action, version.TenantID, ""); ok {
+				services = append(services, item)
+			}
+		}
+	}
+	for _, svc := range store.ServicesFromSnapshots(version.Services) {
+		services = append(services, publicStoreServiceItem(svc))
+	}
 	return map[string]any{
+		"services":            services,
 		"schema_version":      storefrontSchemaVersion,
 		"store_code":          version.StoreCode,
 		"storefront_revision": version.Revision,

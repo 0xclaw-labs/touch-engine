@@ -20,6 +20,7 @@ import { useCallback, useEffect, useState } from "react";
 import { statusLabel } from "@/lib/participation";
 import {
   credentialIssueNotice,
+  canContinueReservedParticipation,
   exceptionCopy,
   resumeCredential,
   staffFulfilledCopy,
@@ -108,7 +109,8 @@ export function RewardStatus({ code, participation, benefit, externalPublish, be
 
   const status = participation.status ?? "";
   const fulfilledWithoutRecord = status === "fulfilled" && !benefit;
-  const rewardLine = fulfilledWithoutRecord ? staffFulfilledCopy() : rewardCardCopy(benefit ?? null, { externalPublish: externalPublish ?? "unknown" });
+  const rewardLine = fulfilledWithoutRecord ? staffFulfilledCopy() : benefit ? rewardCardCopy(benefit, { externalPublish: externalPublish ?? "unknown" }) : !canContinueReservedParticipation(participation) ? "名额尚未确认，请先恢复原参与的预留。已取得的权益仍可按原记录查看。" : rewardCardCopy(null, { externalPublish: externalPublish ?? "unknown" });
+  const ready = canContinueReservedParticipation(participation);
   const redeemed = (benefit?.status ?? "") === "redeemed";
   const slot = summary?.slots?.[0];
   const stock = stockLine(slot?.available_qty);
@@ -124,12 +126,12 @@ export function RewardStatus({ code, participation, benefit, externalPublish, be
 
       <div data-testid="reward-card">
         <p className={rewardLine.includes("已发放") || rewardLine.includes("已兑现") ? "tk-ok" : "tk-note"}>{rewardLine}</p>
-        {!redeemed && (
+        {!redeemed && ready && (
           <p className="tk-note">领取条件:店员确认完成后由门店发放;发放前不会先展示券码。</p>
         )}
       </div>
 
-      {!redeemed && (
+      {!redeemed && ready && (
         <div className="tk-row tk-gap">
           <button type="button" className="tk-quiet" disabled={busy} data-testid="reward-verify" onClick={requestVerify}>
             我已完成

@@ -3,7 +3,7 @@
 // 纪律(与 store_dashboard.go 同一纪律,零改动):
 //   - 只读:本文件没有任何写路径;汇总按需计算,不落任何汇总表;
 //   - 租户隔离:所有查询以 tenant_id 为必选绑定参数;storeScope 非空时进一步
-//     收窄(参与/权益按自身 store 列,批次含租户级批次 store_id=”,访问按
+//     收窄(参与/权益按自身 store 列,批次核对明确门店及活动归属,访问按
 //     campaigns.store_id 绑定);跨租户/跨店行从不进入聚合(fail-closed 0 行);
 //   - 窗口语义:RFC3339(Nano) UTC 列用 datetime(col) 与 datetime(?) 比较
 //     (整秒粒度,边界含);public_view_stats.day 用日期字符串比较(日粒度);
@@ -48,23 +48,33 @@ type OpsLeadsFacts struct {
 	UniqueContacts          int64
 }
 
-// OpsCostReconFacts: 4591 投影只读。指针 = 窗口内没有该类支付事实(未录入,不冒充 0)。
+// OpsCostReconFacts: 4591 投影只读。nil 金额表示缺付款事实或金额/币种不完整；不冒充 0。
 type OpsCostReconFacts struct {
-	SubscriptionPaidMinor    *int64
-	SubscriptionPaidOrders   int64
-	SubscriptionFailedOrders int64
-	AIConfirmedMinor         int64
-	AIConfirmedCount         int64
-	AIConsumedMinor          int64
-	AIConsumedCount          int64
-	AIRefundedMinor          int64
-	AIRefundedCount          int64
-	AIFailedMinor            int64
-	AIFailedCount            int64
-	HardwarePaidMinor        *int64
-	HardwarePaidOrders       int64
-	HardwareRefundMinor      int64
-	HardwareRefunds          int64
+	SubscriptionPaidMinor         *int64
+	SubscriptionPaidOrders        int64
+	SubscriptionPaidCurrency      string
+	SubscriptionPaidTimeUnknown   int64
+	SubscriptionFailedOrders      int64
+	SubscriptionRefundMinor       *int64
+	SubscriptionRefunds           int64
+	SubscriptionRefundCurrency    string
+	SubscriptionRefundTimeUnknown int64
+	AIConfirmedMinor              int64
+	AIConfirmedCount              int64
+	AIConsumedMinor               int64
+	AIConsumedCount               int64
+	AIRefundedMinor               int64
+	AIRefundedCount               int64
+	AIFailedMinor                 int64
+	AIFailedCount                 int64
+	HardwarePaidMinor             *int64
+	HardwarePaidOrders            int64
+	HardwarePaidCurrency          string
+	HardwarePaidTimeUnknown       int64
+	HardwareRefundMinor           *int64
+	HardwareRefunds               int64
+	HardwareRefundCurrency        string
+	HardwareRefundTimeUnknown     int64
 }
 
 // OpsTodoFacts is the store-side to-do digest fact set (当前态队列+准入到期)。
@@ -125,22 +135,23 @@ type DashboardOpsFacts struct {
 
 // InventoryFactLine is one reward_inventory batch with its benefit counts.
 type InventoryFactLine struct {
-	InventoryID    string
-	CampaignID     string
-	StoreID        string
-	Name           string
-	Kind           string
-	BenefitSlot    string
-	RuleVersion    int
-	Currency       string
-	TotalQty       int64
-	Reserved       int64
-	Issued         int64
-	Redeemed       int64
-	Reversed       int64
-	Expired        int64
-	FaceValueMinor int64
-	CostMinor      int64
+	InventoryID      string
+	CampaignID       string
+	StoreID          string
+	Name             string
+	Kind             string
+	BenefitSlot      string
+	RuleVersion      int
+	Currency         string
+	TotalQty         int64
+	Reserved         int64
+	Issued           int64
+	Redeemed         int64
+	Reversed         int64
+	Expired          int64
+	FaceValueMinor   int64
+	CostMinor        int64
+	AvailableUnknown bool // 门店视图不掌握跨范围占用,不能推断全批次可用量
 }
 
 // OpsAnomalyFacts: pending review / failed reservation are current-state
@@ -160,6 +171,8 @@ type OpsCostFacts struct {
 	RewardRedeemedCostMinor      int64
 	RewardFaceMinor              int64
 	CostUnrecordedBatches        int64
+	RewardCostUnrecorded         int64
+	RedeemedCostUnrecorded       int64
 }
 
 // opsWindow carries both granularities: second-granular UTC bounds for
@@ -262,9 +275,6 @@ func (s *Store) DashboardOps(tenantID, storeScope string, start, end time.Time, 
 	if f.Touchpoint != "" {
 		pCond = pCond.with(" AND p.touchpoint_source=?", f.Touchpoint)
 	}
-	if f.ContentPackVersion != "" {
-		pCond = pCond.with(" AND p.content_pack_version=?", f.ContentPackVersion)
-	}
 	if facts.StartedTotal, err = s.opsScalar("started_total",
 		`SELECT COUNT(DISTINCT p.id) FROM participations p WHERE `+pCond.clause+
 			fmt.Sprintf(inWin, "p.created_at", "p.created_at"),
@@ -275,6 +285,10 @@ func (s *Store) DashboardOps(tenantID, storeScope string, start, end time.Time, 
 	// ---- 漏斗第 3 级:内容选择(attempt 冻结版本,MIN 事件时间落窗)----
 	selExtra := ""
 	selArgs := []any{}
+	if f.ContentPackVersion != "" {
+		selExtra += " AND a.content_pack_version=?"
+		selArgs = append(selArgs, f.ContentPackVersion)
+	}
 	if f.Platform != "" {
 		selExtra += " AND a.platform=?"
 		selArgs = append(selArgs, f.Platform)
@@ -297,16 +311,23 @@ func (s *Store) DashboardOps(tenantID, storeScope string, start, end time.Time, 
 	}
 
 	// ---- 漏斗第 4 级:发起平台交接(凭据铸发,MIN 事件时间落窗)----
+	// 只有该凭据准确绑定的 attempt 可证明历史内容版本；不能按参与当前选择推断。
+	hCond := pCond
+	if f.ContentPackVersion != "" {
+		hCond = hCond.with(` AND EXISTS (SELECT 1 FROM participation_attempts ha
+			WHERE ha.id=h.attempt_id AND ha.tenant_id=h.tenant_id
+			AND ha.participation_id=h.participation_id AND ha.content_pack_version=?)`, f.ContentPackVersion)
+	}
 	if facts.HandoffInitiatedTotal, err = s.opsScalar("handoff_initiated_total",
 		`SELECT COUNT(*) FROM (
 			SELECT h.participation_id
 			FROM handoff_credentials h
 			JOIN participations p ON p.id=h.participation_id AND p.tenant_id=h.tenant_id
-			WHERE `+pCond.clause+`
+			WHERE `+hCond.clause+`
 			GROUP BY h.participation_id
 			HAVING datetime(MIN(h.created_at))>=datetime(?) AND datetime(MIN(h.created_at))<=datetime(?)
 		)`,
-		append(append([]any{}, pCond.args...), w.startTS, w.endTS)); err != nil {
+		append(append([]any{}, hCond.args...), w.startTS, w.endTS)); err != nil {
 		return facts, dims, err
 	}
 
@@ -323,9 +344,7 @@ func (s *Store) DashboardOps(tenantID, storeScope string, start, end time.Time, 
 	if f.Touchpoint != "" {
 		evCond = evCond.with(" AND p.touchpoint_source=?", f.Touchpoint)
 	}
-	if f.ContentPackVersion != "" {
-		evCond = evCond.with(" AND p.content_pack_version=?", f.ContentPackVersion)
-	}
+	// 权益没有不可变的内容版本绑定；版本筛选不适用,不能借当前参与选择追认。
 	evWhere := evCond.clause + fmt.Sprintf(inWin, "rb.issued_at", "rb.issued_at")
 	evArgs := append(append([]any{}, evCond.args...), w.startTS, w.endTS)
 	if facts.EvidenceByClass, err = s.opsGrouped("evidence_by_class",
@@ -398,10 +417,11 @@ func (s *Store) DashboardOps(tenantID, storeScope string, start, end time.Time, 
 		return facts, dims, err
 	}
 
-	// 发布域(1670/自报):publish_handoffs/事件流经 campaigns 挂店与活动维度。
-	phJoin := ` FROM publish_handoffs ph JOIN campaigns c ON c.id=ph.campaign_id`
+	// 门店是交接自身的冻结归属；活动可选，不能靠活动内连接丢弃门店根事实，
+	// 也不能因后来移动活动而将历史交接归到另一家店。
+	phJoin := ` FROM publish_handoffs ph`
 	phCond := opsCond{clause: "ph.tenant_id=?", args: []any{tenantID}}
-	if cond := storeRef("c.store_id"); cond != "" {
+	if cond := storeRef("ph.store_id"); cond != "" {
 		phCond = phCond.with(" AND "+cond, storeArg()...)
 	}
 	if f.CampaignID != "" {
@@ -417,6 +437,9 @@ func (s *Store) DashboardOps(tenantID, storeScope string, start, end time.Time, 
 	}
 	if f.Environment != "" {
 		phCond = phCond.with(" AND ph.environment=?", f.Environment)
+	}
+	if f.ContentPackVersion != "" {
+		phCond = phCond.with(" AND ph.content_pack_version_id=?", f.ContentPackVersion)
 	}
 	phArgs := append([]any{}, phCond.args...)
 
@@ -448,8 +471,7 @@ func (s *Store) DashboardOps(tenantID, storeScope string, start, end time.Time, 
 	phEventLine := func(kind string) (int64, error) {
 		return s.opsScalar("layer_phe_"+kind,
 			`SELECT COUNT(DISTINCT e.handoff_id) FROM publish_handoff_events e
-			 JOIN publish_handoffs ph ON ph.id=e.handoff_id
-			 JOIN campaigns c ON c.id=ph.campaign_id
+			 JOIN publish_handoffs ph ON ph.id=e.handoff_id AND ph.tenant_id=e.tenant_id
 			 WHERE `+phCond.clause+` AND e.kind=?`+
 				fmt.Sprintf(inWin, "e.created_at", "e.created_at"),
 			append(append(append([]any{}, phArgs...), kind), w.startTS, w.endTS))
@@ -470,8 +492,7 @@ func (s *Store) DashboardOps(tenantID, storeScope string, start, end time.Time, 
 	// 按 distinct handoff;幂等=(tenant,handoff,source,event_id) UNIQUE/ receipt UNIQUE)。
 	if facts.LayerCustomerClick, err = s.opsScalar("layer_phe_customer_click",
 		`SELECT COUNT(*) FROM publish_handoff_events e
-		 JOIN publish_handoffs ph ON ph.id=e.handoff_id
-		 JOIN campaigns c ON c.id=ph.campaign_id
+		 JOIN publish_handoffs ph ON ph.id=e.handoff_id AND ph.tenant_id=e.tenant_id
 		 WHERE `+phCond.clause+` AND e.kind='customer_click'`+
 			fmt.Sprintf(inWin, "e.created_at", "e.created_at"),
 		append(append([]any{}, phArgs...), w.startTS, w.endTS)); err != nil {
@@ -479,8 +500,7 @@ func (s *Store) DashboardOps(tenantID, storeScope string, start, end time.Time, 
 	}
 	if facts.LayerWakeAttempt, err = s.opsScalar("layer_phe_wake_attempt",
 		`SELECT COUNT(*) FROM publish_handoff_events e
-		 JOIN publish_handoffs ph ON ph.id=e.handoff_id
-		 JOIN campaigns c ON c.id=ph.campaign_id
+		 JOIN publish_handoffs ph ON ph.id=e.handoff_id AND ph.tenant_id=e.tenant_id
 		 WHERE `+phCond.clause+` AND e.kind='wake_attempt'`+
 			fmt.Sprintf(inWin, "e.created_at", "e.created_at"),
 		append(append([]any{}, phArgs...), w.startTS, w.endTS)); err != nil {
@@ -562,22 +582,16 @@ func (s *Store) DashboardOps(tenantID, storeScope string, start, end time.Time, 
 	}
 
 	// ---- 费用对账(4591 投影只读):订阅/AI/硬件分明细,退款分列不冲销 ----
-	// 订阅:支付事实订单(active)金额投影;failed 单列(失败不是支出)。
+	// 订阅付款按 payment_paid 权威事实；开通失败与已经支付可同时存在。
 	subCond := opsCond{clause: "o.tenant_id=? AND o.kind='subscription'", args: []any{tenantID}}
-	var subAmount sql.NullInt64
-	if err = s.opsScanRow("cost_subscription",
-		`SELECT COUNT(*), SUM(o.amount_minor) FROM billing_orders o WHERE `+subCond.clause+
-			` AND o.status='active'`+fmt.Sprintf(inWin, "o.created_at", "o.created_at"),
-		append(append([]any{}, subCond.args...), w.startTS, w.endTS),
-		func(scan func(dest ...any) error) error {
-			return scan(&facts.CostRecon.SubscriptionPaidOrders, &subAmount)
-		}); err != nil {
+	subPaid, err := s.opsPaidOrders(tenantID, "subscription", w)
+	if err != nil {
 		return facts, dims, err
 	}
-	if subAmount.Valid {
-		v := subAmount.Int64
-		facts.CostRecon.SubscriptionPaidMinor = &v
-	}
+	facts.CostRecon.SubscriptionPaidOrders = subPaid.Count
+	facts.CostRecon.SubscriptionPaidMinor = subPaid.Amount
+	facts.CostRecon.SubscriptionPaidCurrency = subPaid.Currency
+	facts.CostRecon.SubscriptionPaidTimeUnknown = subPaid.TimeUnknown
 	if facts.CostRecon.SubscriptionFailedOrders, err = s.opsScalar("cost_subscription_failed",
 		`SELECT COUNT(*) FROM billing_orders o WHERE `+subCond.clause+` AND o.status='failed'`+
 			fmt.Sprintf(inWin, "o.created_at", "o.created_at"),
@@ -619,35 +633,31 @@ func (s *Store) DashboardOps(tenantID, storeScope string, start, end time.Time, 
 	}
 	aiRows.Close()
 
-	// 硬件:支付事实订单(active)投影;退款分列对账,不冲销。
-	hwCond := opsCond{clause: "o.tenant_id=? AND o.kind='hardware'", args: []any{tenantID}}
-	var hwAmount sql.NullInt64
-	if err = s.opsScanRow("cost_hardware",
-		`SELECT COUNT(*), SUM(o.amount_minor) FROM billing_orders o WHERE `+hwCond.clause+
-			` AND o.status='active'`+fmt.Sprintf(inWin, "o.created_at", "o.created_at"),
-		append(append([]any{}, hwCond.args...), w.startTS, w.endTS),
-		func(scan func(dest ...any) error) error {
-			return scan(&facts.CostRecon.HardwarePaidOrders, &hwAmount)
-		}); err != nil {
+	// 硬件付款不等待出库/写卡/开通；退款按类型分列，均不冲销原付款。
+	hwPaid, err := s.opsPaidOrders(tenantID, "hardware", w)
+	if err != nil {
 		return facts, dims, err
 	}
-	if hwAmount.Valid {
-		v := hwAmount.Int64
-		facts.CostRecon.HardwarePaidMinor = &v
-	}
-	// 退款金额与单数分开查:SUM 为 0 时也要如实报 0 元/0 单。
-	if facts.CostRecon.HardwareRefundMinor, err = s.opsScalar("cost_hardware_refunds",
-		`SELECT COALESCE(SUM(r.amount_minor),0) FROM billing_refunds r WHERE r.tenant_id=?`+
-			fmt.Sprintf(inWin, "r.created_at", "r.created_at"),
-		append([]any{tenantID}, w.startTS, w.endTS)); err != nil {
+	facts.CostRecon.HardwarePaidOrders = hwPaid.Count
+	facts.CostRecon.HardwarePaidMinor = hwPaid.Amount
+	facts.CostRecon.HardwarePaidCurrency = hwPaid.Currency
+	facts.CostRecon.HardwarePaidTimeUnknown = hwPaid.TimeUnknown
+	subRefunds, err := s.opsRefunds(tenantID, "subscription", w)
+	if err != nil {
 		return facts, dims, err
 	}
-	if facts.CostRecon.HardwareRefunds, err = s.opsScalar("cost_hardware_refund_count",
-		`SELECT COUNT(*) FROM billing_refunds r WHERE r.tenant_id=?`+
-			fmt.Sprintf(inWin, "r.created_at", "r.created_at"),
-		append([]any{tenantID}, w.startTS, w.endTS)); err != nil {
+	facts.CostRecon.SubscriptionRefundMinor = subRefunds.Amount
+	facts.CostRecon.SubscriptionRefunds = subRefunds.Count
+	facts.CostRecon.SubscriptionRefundCurrency = subRefunds.Currency
+	facts.CostRecon.SubscriptionRefundTimeUnknown = subRefunds.TimeUnknown
+	hwRefunds, err := s.opsRefunds(tenantID, "hardware", w)
+	if err != nil {
 		return facts, dims, err
 	}
+	facts.CostRecon.HardwareRefundMinor = hwRefunds.Amount
+	facts.CostRecon.HardwareRefunds = hwRefunds.Count
+	facts.CostRecon.HardwareRefundCurrency = hwRefunds.Currency
+	facts.CostRecon.HardwareRefundTimeUnknown = hwRefunds.TimeUnknown
 
 	// ---- 漏斗第 6 级:奖励发放(granted;面额/成本分列)----
 	if err = s.opsScanRow("issued_total",
@@ -671,17 +681,17 @@ func (s *Store) DashboardOps(tenantID, storeScope string, start, end time.Time, 
 		return facts, dims, err
 	}
 
-	// ---- 库存面板(批次 × 权益状态计数;租户级批次对店经理可见)----
+	// ---- 库存面板(明确归属批次 × 受信门店权益状态计数)----
 	invCond := opsCond{clause: "i.tenant_id=?", args: []any{tenantID}}
 	if f.CampaignID != "" {
 		invCond = invCond.with(" AND i.campaign_id=?", f.CampaignID)
 	}
-	if storeScope != "" {
-		invCond = invCond.with(" AND (i.store_id=? OR i.store_id='')", storeScope)
-	} else if f.StoreID != "" {
-		invCond = invCond.with(" AND (i.store_id=? OR i.store_id='')", f.StoreID)
+	inventoryStore := storeScope
+	if inventoryStore == "" {
+		inventoryStore = f.StoreID
 	}
-	facts.Inventory, err = s.opsInventory(invCond)
+	invCond = opsInventoryScope(invCond, inventoryStore)
+	facts.Inventory, err = s.opsInventory(invCond, inventoryStore)
 	if err != nil {
 		return facts, dims, err
 	}
@@ -742,16 +752,24 @@ func (s *Store) DashboardOps(tenantID, storeScope string, start, end time.Time, 
 	if f.CampaignID != "" {
 		costCond = costCond.with(" AND j.campaign_id=?", f.CampaignID)
 	}
+	// Generation records belong to their campaign. A scoped reader may only
+	// see costs attributable to that store; unassigned jobs are not apportioned.
+	if cond := storeRef("cc.store_id"); cond != "" {
+		costCond = costCond.with(" AND EXISTS (SELECT 1 FROM campaigns cc WHERE cc.id=j.campaign_id AND cc.tenant_id=j.tenant_id AND "+cond+")", storeArg()...)
+	}
 	var contentAmount sql.NullInt64
+	var knownAmounts int64
 	err = s.DB.QueryRow(
-		`SELECT COUNT(*), SUM(CAST(json_extract(j.payload,'$.trace.amount_minor') AS INTEGER))
+		`SELECT COUNT(*), SUM(CAST(json_extract(j.payload,'$.trace.amount_minor') AS INTEGER)),
+		 COUNT(CASE WHEN json_type(j.payload,'$.trace.amount_minor')='integer'
+		   AND json_extract(j.payload,'$.trace.amount_minor')>=0 THEN 1 END)
 		 FROM copy_jobs j
 		 WHERE `+costCond.clause+fmt.Sprintf(inWin, "j.created_at", "j.created_at"),
-		append(append([]any{}, costCond.args...), w.startTS, w.endTS)...).Scan(&facts.Cost.ContentGenerationBilledRuns, &contentAmount)
+		append(append([]any{}, costCond.args...), w.startTS, w.endTS)...).Scan(&facts.Cost.ContentGenerationBilledRuns, &contentAmount, &knownAmounts)
 	if err != nil {
 		return facts, dims, fmt.Errorf("dashboard_ops[content_cost]: %w", err)
 	}
-	if contentAmount.Valid {
+	if contentAmount.Valid && knownAmounts == facts.Cost.ContentGenerationBilledRuns {
 		v := contentAmount.Int64
 		facts.Cost.ContentGenerationAmountMinor = &v
 	}
@@ -767,21 +785,23 @@ func (s *Store) DashboardOps(tenantID, storeScope string, start, end time.Time, 
 			fmt.Sprintf(inWin, "rb.redeemed_at", "rb.redeemed_at"), evArgs); err != nil {
 		return facts, dims, err
 	}
+	if facts.Cost.RewardCostUnrecorded, err = s.opsScalar("reward_cost_unrecorded", `SELECT COUNT(*)`+rbJoinP+` WHERE `+evCond.clause+` AND rb.cost_recorded=0 AND rb.status IN ('issued','redeemed')`+fmt.Sprintf(inWin, "rb.issued_at", "rb.issued_at"), evArgs); err != nil {
+		return facts, dims, err
+	}
+	if facts.Cost.RedeemedCostUnrecorded, err = s.opsScalar("redeemed_cost_unrecorded", `SELECT COUNT(*)`+rbJoinP+` WHERE `+evCond.clause+` AND rb.cost_recorded=0 AND rb.status='redeemed'`+fmt.Sprintf(inWin, "rb.redeemed_at", "rb.redeemed_at"), evArgs); err != nil {
+		return facts, dims, err
+	}
 	if facts.Cost.RewardFaceMinor, err = s.opsScalar("reward_face",
 		`SELECT COALESCE(SUM(rb.face_value_minor),0)`+rbJoinP+
 			` WHERE `+evCond.clause+` AND rb.status IN ('issued','redeemed')`+
 			fmt.Sprintf(inWin, "rb.issued_at", "rb.issued_at"), evArgs); err != nil {
 		return facts, dims, err
 	}
-	unrecCond := opsCond{clause: "i.tenant_id=? AND i.face_value_minor>0 AND i.cost_minor=0", args: []any{tenantID}}
+	unrecCond := opsCond{clause: "i.tenant_id=? AND i.cost_recorded=0", args: []any{tenantID}}
 	if f.CampaignID != "" {
 		unrecCond = unrecCond.with(" AND i.campaign_id=?", f.CampaignID)
 	}
-	if storeScope != "" {
-		unrecCond = unrecCond.with(" AND (i.store_id=? OR i.store_id='')", storeScope)
-	} else if f.StoreID != "" {
-		unrecCond = unrecCond.with(" AND (i.store_id=? OR i.store_id='')", f.StoreID)
-	}
+	unrecCond = opsInventoryScope(unrecCond, inventoryStore)
 	if facts.Cost.CostUnrecordedBatches, err = s.opsScalar("unrecorded_batches",
 		`SELECT COUNT(*) FROM reward_inventory i WHERE `+unrecCond.clause, unrecCond.args); err != nil {
 		return facts, dims, err
@@ -1029,7 +1049,25 @@ func (s *Store) opsScanRow(label, q string, args []any, use func(scan func(dest 
 	return nil
 }
 
-func (s *Store) opsInventory(cond opsCond) ([]InventoryFactLine, error) {
+// 空门店不是共享授权：批次有显式门店时核对活动归属无冲突；
+// 批次无门店时必须由同租户活动明确归属本店。缺失/冲突归属拒绝。
+func opsInventoryScope(cond opsCond, storeID string) opsCond {
+	if storeID == "" {
+		return cond
+	}
+	return cond.with(` AND EXISTS (SELECT 1 FROM campaigns ic
+		WHERE ic.id=i.campaign_id AND ic.tenant_id=i.tenant_id
+		AND ((i.store_id=? AND (ic.store_id=? OR COALESCE(ic.store_id,'')=''))
+		 OR (i.store_id='' AND ic.store_id=?)))`, storeID, storeID, storeID)
+}
+
+func (s *Store) opsInventory(cond opsCond, storeID string) ([]InventoryFactLine, error) {
+	benefitJoin := "b.inventory_id=i.id AND b.tenant_id=i.tenant_id AND b.campaign_id=i.campaign_id"
+	args := []any{}
+	if storeID != "" {
+		benefitJoin += " AND b.store_id=?"
+		args = append(args, storeID)
+	}
 	rows, err := s.DB.Query(`
 		SELECT i.id, i.campaign_id, COALESCE(i.store_id,''), i.name, i.kind, i.benefit_slot,
 		       i.rule_version, i.currency, i.total_qty, i.face_value_minor, i.cost_minor,
@@ -1039,10 +1077,10 @@ func (s *Store) opsInventory(cond opsCond) ([]InventoryFactLine, error) {
 		       COALESCE(SUM(CASE WHEN b.status='reversed' THEN 1 ELSE 0 END),0),
 		       COALESCE(SUM(CASE WHEN b.status='expired'  THEN 1 ELSE 0 END),0)
 		FROM reward_inventory i
-		LEFT JOIN reward_benefits b ON b.inventory_id=i.id
+		LEFT JOIN reward_benefits b ON `+benefitJoin+`
 		WHERE `+cond.clause+`
 		GROUP BY i.id
-		ORDER BY i.created_at, i.id`, cond.args...)
+		ORDER BY i.created_at, i.id`, concat(args, cond.args)...)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard_ops[inventory]: %w", err)
 	}
@@ -1055,6 +1093,7 @@ func (s *Store) opsInventory(cond opsCond) ([]InventoryFactLine, error) {
 			&l.Reserved, &l.Issued, &l.Redeemed, &l.Reversed, &l.Expired); err != nil {
 			return nil, fmt.Errorf("dashboard_ops[inventory]: %w", err)
 		}
+		l.AvailableUnknown = storeID != ""
 		out = append(out, l)
 	}
 	return out, rows.Err()

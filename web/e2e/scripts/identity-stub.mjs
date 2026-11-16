@@ -11,11 +11,19 @@ import http from "node:http";
 
 const port = Number(process.argv[2] || 18461);
 
+// Explicit original Identity fixture records for commercial member journeys.
+// These are engineering substitutes, never proof of a real Identity deployment.
+const commercialPeople = {
+  "member-commercial@e2e.test": { user_id: "usr_commercial_member_original", account_id: "acct_commercial_member", status: "active" },
+  "agent-commercial@e2e.test": { user_id: "usr_commercial_agent_original", account_id: "acct_commercial_agent", status: "active" },
+};
+
 // HUI-2222：principal 从 email 确定性派生（usr_e2e_ + 本地段）。
 // owner@e2e.test -> usr_e2e_owner（与历史默认一致）；multi@e2e.test ->
 // usr_e2e_multi（双成员）、nobody@e2e.test -> usr_e2e_nobody（零成员=无权限场景）。
 // 单一固定 principal 会把所有登录折叠成同一个成员集，多组织链就无法真实验证。
 function principalFor(email) {
+  if (commercialPeople[email]) return commercialPeople[email].user_id;
   const local = String(email || "").split("@")[0].replace(/[^a-z0-9_]/gi, "") || "unknown";
   return "usr_e2e_" + local;
 }
@@ -50,6 +58,15 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ ok: true, stub: "touch-identity", port }));
     return;
+  }
+  if (req.method === "GET" && url.startsWith("/internal/v1/identity/users/exists?")) {
+    if (req.headers["x-pilotseaview-internal-token"] !== "e2e-identity-token" || req.headers["x-app-id"] !== "touch-engine") {
+      res.writeHead(403, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "forbidden" })); return;
+    }
+    const email = new URL(url,"http://127.0.0.1").searchParams.get("email");
+    const person = commercialPeople[email];
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    res.end(JSON.stringify(person ? { exists: true, ...person } : { exists: false })); return;
   }
   const body = await readBody(req);
   if (req.method === "POST" && url === "/internal/v1/identity/login") {

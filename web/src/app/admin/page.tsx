@@ -16,6 +16,7 @@ import { acceptTenantPayload } from "@/lib/eco-nav/touch-shell";
 import { failureText } from "@/lib/failure-copy";
 import { SharedLogin, createBffSignIn } from "@/components/login/SharedLogin";
 import { toJsonBody } from "@/lib/http-json";
+import { observeSsoAccountChanges, resetWorkspaceAfterSso, resetWorkspaceForAccountChange } from "@/lib/sso-workspace-reset";
 import {
   beginTenantOp,
   currentTenantOp,
@@ -130,6 +131,15 @@ function yuanFromMinor(amountMinor: unknown): string {
 }
 
 export default function AdminPage() {
+  const [accountRevision, setAccountRevision] = useState(0);
+  const reinitialize = useCallback(() => setAccountRevision((value) => value + 1), []);
+  useEffect(() => observeSsoAccountChanges(reinitialize), [reinitialize]);
+  // Keep the compatibility URL, but discard all old-account lists and drafts
+  // when this tab or another tab changes the shared session.
+  return <AdminWorkspace key={accountRevision} onAccountChanged={reinitialize} />;
+}
+
+function AdminWorkspace({ onAccountChanged }: { onAccountChanged: () => void }) {
   const [taskNotice, setTaskNotice] = useState("");
   const [tenantId, setTenantId] = useState("");
   const [role, setRole] = useState("");
@@ -260,6 +270,7 @@ export default function AdminPage() {
   }, []);
 
   const loadMemberships = useCallback(async () => {
+    resetWorkspaceAfterSso();
     const seq = beginTenantOp();
     const remembered = window.localStorage.getItem(TENANT_STORAGE_KEY);
     const res = await fetch("/api/session/memberships");
@@ -539,9 +550,19 @@ export default function AdminPage() {
   }
 
   async function logout() {
-    await fetch("/api/auth/logout", { method: "POST" });
-    setRole("");
-    setEmailMasked("");
+    let result: Response;
+    try {
+      result = await fetch("/api/auth/logout", { method: "POST" });
+    } catch {
+      setError("没有连上退出服务，当前身份仍需核验。请重试。");
+      return;
+    }
+    if (!result.ok) {
+      setError("退出没有完成，请重试。当前身份仍需核验。");
+      return;
+    }
+    resetWorkspaceForAccountChange(window.localStorage);
+    onAccountChanged();
   }
 
   // ---- HUI-1665 NFC 标签操作(全部 owner-only,服务端裁决) -----------------
@@ -768,7 +789,10 @@ export default function AdminPage() {
         <p hidden data-state="empty">还没有记录</p>
         <p hidden data-state="error">没有读到，请重试</p>
         <h1>商家后台登录</h1>
-        <SharedLogin signIn={adminSignIn} onAuthenticated={() => void loadMemberships()} />
+        <SharedLogin signIn={adminSignIn} onAuthenticated={() => {
+          resetWorkspaceForAccountChange(window.localStorage);
+          onAccountChanged();
+        }} />
       </main>
     );
   }

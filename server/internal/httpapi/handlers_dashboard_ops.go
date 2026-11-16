@@ -6,7 +6,7 @@
 //     (同一开关名,不新建);
 //   - 口径:窗口参数必填且 RFC3339,非法一律 400;筛选值白名单校验(未知
 //     touchpoint/handoff_method 400,绝不静默匹配空集冒充真实零);
-//   - 作用域:服务端单点裁决——org_owner/staff 租户级;store_manager 一律
+//   - 作用域:服务端单点裁决——总部成员租户级;store_manager 与带范围店员
 //     收窄到 members.store_scope,空作用域的畸形经理 fail-closed 403;店经理
 //     传越店 store_id 筛选一律 403(不静默收窄)。客户端输入永不参与授权。
 package httpapi
@@ -21,19 +21,23 @@ import (
 )
 
 // opsScope resolves the server-side scope for the operations read surface,
-// mirroring handleDashboard: store managers are narrowed to their store
-// scope; a deformed manager (empty scope) fails closed.
+// shared with handleDashboard. Both managers and scoped staff use the trusted
+// member scope. A deformed manager (empty scope) fails closed.
 func (s *Server) opsScope(w http.ResponseWriter, r *http.Request) (tenantID, scope string, ok bool) {
 	c := callerFrom(r)
-	if !s.allowScopedList(c, w) {
-		return "", "", false
-	}
-	if callerIsStoreManager(c) {
+	if callerIsStoreManager(c) || callerStoreLimited(c) {
 		scope = callerStoreScope(c)
 		if scope == "" {
 			fail(w, http.StatusForbidden, authz.ReasonOutOfScope, "store manager has no store scope")
 			return "", "", false
 		}
+		d := authz.Authorize(s.authzMember(c), authz.ActionReadList, authz.RecordScope{TenantID: c.Member.TenantID, StoreID: scope})
+		if !d.Allowed {
+			fail(w, http.StatusForbidden, d.Reason, "action not allowed for this member")
+			return "", "", false
+		}
+	} else if !s.allowScopedList(c, w) {
+		return "", "", false
 	}
 	return c.Member.TenantID, scope, true
 }
@@ -76,7 +80,20 @@ func (s *Server) handleDashboardOperations(w http.ResponseWriter, r *http.Reques
 	}
 	body := opsFactsFrom(facts)
 	body.Dims = dims
-	writeJSON(w, http.StatusOK, dashboard.BuildOperations(win, dashboard.Scope{TenantID: tenantID, StoreScope: scope}, body, filters))
+	response := dashboard.BuildOperations(win, dashboard.Scope{TenantID: tenantID, StoreScope: scope}, body, filters)
+	// 组织费用复用原账单权限；可看门店统计不等于可看组织订阅/AI/硬件金额。
+	// 未授权区块只带明确状态，不把删去的金额伪装为 0；其余统计契约不变。
+	if d := authz.Can(s.resolveAccess(callerFrom(r)), string(authz.PermBillingView), ""); !d.Allowed {
+		writeJSON(w, http.StatusOK, struct {
+			dashboard.OperationsResponse
+			CostReconciliation map[string]string `json:"cost_reconciliation"`
+		}{response, map[string]string{
+			"availability": "forbidden",
+			"note":         "当前账号没有组织账单查看权限。请联系组织管理员查看费用。",
+		}})
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 // GET /api/v1/dashboard/operations-summary — the fixed read-only port for the
@@ -172,7 +189,7 @@ func opsFactsFrom(in store.DashboardOpsFacts) dashboard.OpsFacts {
 			RuleVersion: l.RuleVersion, Currency: l.Currency,
 			TotalQty: l.TotalQty, Reserved: l.Reserved, Issued: l.Issued,
 			Redeemed: l.Redeemed, Reversed: l.Reversed, Expired: l.Expired,
-			FaceValueMinor: l.FaceValueMinor, CostMinor: l.CostMinor,
+			FaceValueMinor: l.FaceValueMinor, CostMinor: l.CostMinor, AvailableUnknown: l.AvailableUnknown,
 		})
 	}
 	out.Anomalies = dashboard.AnomalyFacts{
@@ -188,6 +205,7 @@ func opsFactsFrom(in store.DashboardOpsFacts) dashboard.OpsFacts {
 		RewardRedeemedCostMinor:      in.Cost.RewardRedeemedCostMinor,
 		RewardFaceMinor:              in.Cost.RewardFaceMinor,
 		CostUnrecordedBatches:        in.Cost.CostUnrecordedBatches,
+		RewardCostUnrecorded:         in.Cost.RewardCostUnrecorded, RedeemedCostUnrecorded: in.Cost.RedeemedCostUnrecorded,
 	}
 	out.Leads = dashboard.LeadsFacts{
 		CampaignSubmitted:       in.Leads.CampaignSubmitted,
@@ -199,21 +217,31 @@ func opsFactsFrom(in store.DashboardOpsFacts) dashboard.OpsFacts {
 		UniqueContacts:          in.Leads.UniqueContacts,
 	}
 	out.CostRecon = dashboard.CostReconciliationFacts{
-		SubscriptionPaidMinor:    in.CostRecon.SubscriptionPaidMinor,
-		SubscriptionPaidOrders:   in.CostRecon.SubscriptionPaidOrders,
-		SubscriptionFailedOrders: in.CostRecon.SubscriptionFailedOrders,
-		AIConfirmedMinor:         in.CostRecon.AIConfirmedMinor,
-		AIConfirmedCount:         in.CostRecon.AIConfirmedCount,
-		AIConsumedMinor:          in.CostRecon.AIConsumedMinor,
-		AIConsumedCount:          in.CostRecon.AIConsumedCount,
-		AIRefundedMinor:          in.CostRecon.AIRefundedMinor,
-		AIRefundedCount:          in.CostRecon.AIRefundedCount,
-		AIFailedMinor:            in.CostRecon.AIFailedMinor,
-		AIFailedCount:            in.CostRecon.AIFailedCount,
-		HardwarePaidMinor:        in.CostRecon.HardwarePaidMinor,
-		HardwarePaidOrders:       in.CostRecon.HardwarePaidOrders,
-		HardwareRefundMinor:      in.CostRecon.HardwareRefundMinor,
-		HardwareRefunds:          in.CostRecon.HardwareRefunds,
+		SubscriptionPaidMinor:         in.CostRecon.SubscriptionPaidMinor,
+		SubscriptionPaidOrders:        in.CostRecon.SubscriptionPaidOrders,
+		SubscriptionPaidCurrency:      in.CostRecon.SubscriptionPaidCurrency,
+		SubscriptionPaidTimeUnknown:   in.CostRecon.SubscriptionPaidTimeUnknown,
+		SubscriptionFailedOrders:      in.CostRecon.SubscriptionFailedOrders,
+		SubscriptionRefundMinor:       in.CostRecon.SubscriptionRefundMinor,
+		SubscriptionRefunds:           in.CostRecon.SubscriptionRefunds,
+		SubscriptionRefundCurrency:    in.CostRecon.SubscriptionRefundCurrency,
+		SubscriptionRefundTimeUnknown: in.CostRecon.SubscriptionRefundTimeUnknown,
+		AIConfirmedMinor:              in.CostRecon.AIConfirmedMinor,
+		AIConfirmedCount:              in.CostRecon.AIConfirmedCount,
+		AIConsumedMinor:               in.CostRecon.AIConsumedMinor,
+		AIConsumedCount:               in.CostRecon.AIConsumedCount,
+		AIRefundedMinor:               in.CostRecon.AIRefundedMinor,
+		AIRefundedCount:               in.CostRecon.AIRefundedCount,
+		AIFailedMinor:                 in.CostRecon.AIFailedMinor,
+		AIFailedCount:                 in.CostRecon.AIFailedCount,
+		HardwarePaidMinor:             in.CostRecon.HardwarePaidMinor,
+		HardwarePaidOrders:            in.CostRecon.HardwarePaidOrders,
+		HardwarePaidCurrency:          in.CostRecon.HardwarePaidCurrency,
+		HardwarePaidTimeUnknown:       in.CostRecon.HardwarePaidTimeUnknown,
+		HardwareRefundMinor:           in.CostRecon.HardwareRefundMinor,
+		HardwareRefunds:               in.CostRecon.HardwareRefunds,
+		HardwareRefundCurrency:        in.CostRecon.HardwareRefundCurrency,
+		HardwareRefundTimeUnknown:     in.CostRecon.HardwareRefundTimeUnknown,
 	}
 	return out
 }

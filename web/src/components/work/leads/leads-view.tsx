@@ -11,8 +11,9 @@
 //   - 拿不到的就是未知: 没有 items 时显示空态,不用 0 冒充;
 //   - 移动优先(tk- 体系,无固定像素宽);本组件只渲染,不发裸 fetch。
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { failureText, useSession } from "@/components/work/merchant-session";
+import { currentTenantOp } from "@/lib/workspace-tenant";
 
 export const LEADS_NOT_ENABLED_COPY = "线索功能未开通。开通后这里显示顾客授权留下的联系方式。";
 export const LEADS_EMPTY_COPY = "还没有授权线索。顾客在活动页或门店页自愿留资后会出现在这里。";
@@ -77,6 +78,17 @@ export function leadsTone(item: Pick<WorkLeadItem, "sync_state" | "receiver_stat
 
 export function LeadsView() {
   const session = useSession();
+  const currentSession=useRef(session);currentSession.current=session;
+  const [followBusy,setFollowBusy]=useState("");const [followError,setFollowError]=useState("");
+  async function follow(item:WorkLeadItem){
+    const started=session;const epoch=currentTenantOp();const current=()=>currentSession.current===started&&currentTenantOp()===epoch;setFollowBusy(item.submission_ref);setFollowError("");
+    try{const minted=await started.api("POST",`work/leads/${encodeURIComponent(item.submission_ref)}/follow-up`,{});if(!current())return;
+      const token=(minted.data as {jump_token?:unknown}).jump_token;
+      if(!minted.ok||typeof token!=="string"){setFollowError(failureText(minted.status,minted.data));return;}
+      const redeemed=await started.api("POST","eco-nav/switch/redeem",{jump_token:token});if(!current())return;
+      const launch=(redeemed.data as {launch_url?:unknown}).launch_url;if(!redeemed.ok||typeof launch!=="string"){setFollowError(failureText(redeemed.status,redeemed.data));return;}window.location.assign(launch);
+    }catch{if(current())setFollowError("没有连上获客详情入口，请稍后重试。");}finally{if(current())setFollowBusy("");}
+  }
   const [phase, setPhase] = useState<"loading" | "error" | "disabled" | "ready">("loading");
   const [loadError, setLoadError] = useState("");
   const [attempt, setAttempt] = useState(0);
@@ -152,6 +164,7 @@ export function LeadsView() {
   return (
     <main>
       <h1 className="tk-title">线索</h1>
+      {followError?<p className="tk-danger" role="status">{followError}</p>:null}
       <p className="tk-lead">顾客授权留下的联系方式。只统计已经发生的真实事实。</p>
 
       {stats ? (
@@ -174,7 +187,7 @@ export function LeadsView() {
         <section aria-label="线索列表" data-section="items">
           <ul className="tk-gap" data-testid="leads-items">
             {items.map((item) => (
-              <li key={item.submission_ref} className="tk-gap" data-testid="lead-row" data-revoked={item.revoked || undefined}>
+              <li key={item.submission_ref} className="tk-gap" data-testid="lead-row" data-submission-ref={item.submission_ref} data-revoked={item.revoked || undefined}>
                 <p className="tk-lead">
                   {item.name} · {item.phone}
                 </p>
@@ -185,6 +198,7 @@ export function LeadsView() {
                   {item.has_receipt ? " · 有接收回执" : ""}
                 </p>
                 <p className="tk-note">{item.created_at}</p>
+                {item.sync_state==="crm_received"&&item.receiver_state==="stored"&&!item.revoked?<button className="tk-quiet" type="button" disabled={!!followBusy} onClick={()=>follow(item)}>{followBusy===item.submission_ref?"正在核验原线索…":"进入获客详情"}</button>:<p className="tk-note">{item.revoked?"许可已撤回，不能进入跟进。":"接收方尚未确认入库，暂不能进入跟进。"}</p>}
               </li>
             ))}
           </ul>

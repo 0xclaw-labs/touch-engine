@@ -15,11 +15,9 @@ describe("活动页云端制作区（MX-OPS 增量）", () => {
   const panel = read(panelRel);
   const page = read(pageRel);
 
-  it("挂载在活动详情，与内容包采用区分开", () => {
-    expect(page).toContain("ProductionPanel");
-    expect(page).toContain("<ProductionPanel campaignId={id}");
-    expect(panel).toContain('id="production"');
-    expect(panel).toContain("云端制作");
+  it("制作统一交给活动内容编辑器，宿主不再重复挂制作工程区", () => {
+    expect(page).not.toContain("<ProductionPanel");
+    expect(page).toContain("CampaignConfigPanel");
   });
 
   it("读取真实制作交接列表，不伪造队列", () => {

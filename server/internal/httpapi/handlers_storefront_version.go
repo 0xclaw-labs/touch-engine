@@ -435,7 +435,7 @@ func (s *Server) storefrontPreflight(tenantID, storeID string, draft store.Store
 	if len(ids) == 0 {
 		return []storefrontversion.Verdict{}, storefrontversion.FatalProblems(draft.DraftDocument())
 	}
-	facts, err := s.St.StorefrontActionFacts(tenantID, storeID, ids, at)
+	facts, err := s.St.StorefrontFrozenActionFacts(draft, at)
 	if err != nil {
 		return nil, []string{"facts_assembly_failed"}
 	}
@@ -473,5 +473,6 @@ func (s *Server) storefrontDraftDocument(draft store.StorefrontVersion, publishe
 		"sections": draft.Sections, "actions": draft.Actions, "action_revision_refs": draft.ActionRefs,
 		"offer_refs": draft.OfferRefs, "campaign_refs": draft.CampaignRefs, "brand_ref": draft.BrandRef,
 		"published_revision": published,
+		"services":           draft.Services, "services_revision": draft.ServicesRevision,
 	}
 }

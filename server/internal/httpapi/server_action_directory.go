@@ -14,15 +14,15 @@ package httpapi
 //
 // ActionRef 字段逐项来源:
 //   - TenantID/StoreID: StoreActionScope(受信接缝,id 不是授权);
-//   - CatalogCode/Platform/Kind/ActionRevision: store_actions 行;
+//   - CatalogCode/Platform/Kind/ActionRevision: 已发布动作快照（legacy未管理行沿原兼容）；
 //   - StorefrontRevision: store_storefronts 行(懒建,稳定码);
 //   - RuleVersion/RuleSnapshot: 仅 legacy 挂活动行 —— campaign_rules 当前版
 //     本 + Ruleset JSON 快照;无活动行 0/""(绝不伪造活动上下文);
 //   - CampaignID/Window: legacy_campaign_id → campaigns 行(活动行消失时照常
 //     服务但不带活动上下文);窗口过期由 participation 自行裁决(ErrFrozen);
-//   - ContentPackVersion: 内容绑定表 → 包的当前采用指针,且仅当可分发
-//     (blocked/授权过期一律 "" —— 目录不发放不可分发内容的引用);
-//   - Enabled: 恒 true(只有全部门槛通过才 ok=true;停用动作根本到不了这里)。
+//   - ContentPackVersion/ContentCandidates: 具体已发布版本与冻结候选池；
+//     blocked/授权过期实时令Enabled=false，不能以当前采用指针覆盖发布或会话；
+//   - Enabled: 动作和所选内容的实时否决，旧已发权益不重写。
 
 import (
 	"context"
@@ -71,7 +71,7 @@ func (s *Server) ResolveAction(_ context.Context, actionID string) (participatio
 		return participation.ActionRef{}, false, nil
 	}
 	// 动作可见性:只认公共投影单点收口过的行。
-	items, err := s.St.ListPublicStoreActions(storeID, time.Now())
+	items, err := s.St.ListPublishedStoreActions(storeID, time.Now())
 	if err != nil {
 		return participation.ActionRef{}, false, err
 	}
@@ -122,22 +122,14 @@ func (s *Server) ResolveAction(_ context.Context, actionID string) (participatio
 			}
 		}
 	}
-	// 已采用内容版本:绑定 → 包 → 当前采用指针;不可分发一律 ""(fail-closed)。
-	b, berr := s.St.GetActionContentBinding(tenantID, item.ID)
-	if errors.Is(berr, store.ErrNotFound) {
-		b = store.ActionContentBinding{} // 无绑定:内容引用留空
-	} else if berr != nil {
-		return participation.ActionRef{}, false, berr
-	}
-	if b.PackID != "" {
-		v, verr := s.St.GetStoreAdoptedPackVersion(tenantID, b.PackID)
-		if errors.Is(verr, store.ErrNotFound) {
-			// 无采用指针:目录不发放内容引用。
-		} else if verr != nil {
-			return participation.ActionRef{}, false, verr
-		} else if contentpack.Distributable(v.Status, v.GrantUntil, time.Now()) == nil {
-			ref.ContentPackVersion = v.ID
+	ref.ContentCandidates = append([]string{}, item.ContentCandidates...)
+	ref.ContentPackVersion = item.ContentVersionID
+	if item.ContentVersionID != "" {
+		v, err := s.St.GetStoreContentPackVersion(item.ContentVersionID, tenantID)
+		if err != nil || contentpack.Distributable(v.Status, v.GrantUntil, time.Now()) != nil {
+			ref.Enabled = false
 		}
 	}
+
 	return ref, true, nil
 }

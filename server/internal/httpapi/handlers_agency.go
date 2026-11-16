@@ -379,6 +379,13 @@ func (s *Server) handleAgencyGrantedList(w http.ResponseWriter, r *http.Request)
 	}
 	items := make([]map[string]any, 0, len(rels))
 	for _, rel := range rels {
+		// A portfolio entry is an actionable authorization, not merely an
+		// unrevoked historical row. Expired/disabled target membership cannot
+		// be offered as a merchant the agent can enter.
+		member, merr := s.St.GetMemberByPrincipal(rel.TenantID, c.Member.PrincipalRef)
+		if merr != nil || !member.Enabled || member.Role != "agent" || !s.St.HasValidAgencyRelation(rel.TenantID, c.Member.PrincipalRef, time.Now()) {
+			continue
+		}
 		item := map[string]any{
 			"id": rel.ID, "tenant_id": rel.TenantID, "agent_principal": rel.AgentPrincipal,
 			"note": rel.Note, "established_by": rel.EstablishedBy, "established_at": rel.EstablishedAt,

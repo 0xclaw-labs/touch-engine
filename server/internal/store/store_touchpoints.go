@@ -26,6 +26,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -66,8 +67,8 @@ const (
 	TargetLegacyCampaign = "legacy_campaign"
 )
 
-// TouchpointAlias is one physical card's stable entry: /t/{Code} resolves to
-// the current target (store root or legacy campaign) of the card.
+// TouchpointAlias is a logical stable entry. A physical card is optional;
+// /t/{Code} resolves to the current store root or legacy campaign target.
 type TouchpointAlias struct {
 	ID              string `json:"id"`
 	TenantID        string `json:"tenant_id"`
@@ -318,6 +319,79 @@ func (s *Store) ProvisionTouchpoint(tenantID, tagID, label, position, createdBy 
 	}
 	s.bumpEpoch()
 	return a, nil
+}
+
+// ErrTouchpointCreationConflict refuses reusing one creation intent for different input.
+var ErrTouchpointCreationConflict = errors.New("store: touchpoint creation request conflict")
+
+func (s *Store) TouchpointCreation(tenantID, key string) (TouchpointAlias, string, error) {
+	var id, payload string
+	err := s.DB.QueryRow(`SELECT id,creation_request_payload FROM touchpoint_aliases WHERE tenant_id=? AND creation_request_key=?`, tenantID, key).Scan(&id, &payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return TouchpointAlias{}, "", ErrNotFound
+	}
+	if err != nil {
+		return TouchpointAlias{}, "", err
+	}
+	a, err := s.GetTouchpointAlias(id, tenantID)
+	return a, payload, err
+}
+
+// ProvisionStoreTouchpoint creates a logical entry independently of hardware. The
+// unique tenant/request key and alias insert share one transaction, including audit.
+func (s *Store) ProvisionStoreTouchpoint(tenantID, storeID, label, position, key, by string) (TouchpointAlias, bool, error) {
+	sto, err := s.GetStore(storeID, tenantID)
+	if err != nil {
+		return TouchpointAlias{}, false, err
+	}
+	if sto.Status == StoreStatusDisabled {
+		return TouchpointAlias{}, false, ErrNotFound
+	}
+	label, position = strings.TrimSpace(label), strings.TrimSpace(position)
+	payloadBytes, _ := json.Marshal(struct{ StoreID, Label, Position string }{storeID, label, position})
+	payload := string(payloadBytes)
+	if _, err = s.EnsureStorefront(tenantID, storeID); err != nil {
+		// Concurrent first entries can race the existing helper's store_id
+		// unique constraint. Accept only the canonical storefront actually won
+		// by that request; never allocate an alternative target or hide absence.
+		if _, recovered := s.storefrontByStore(storeID, tenantID); recovered != nil {
+			return TouchpointAlias{}, false, err
+		}
+	}
+	code, err := campaign.NewShortcode()
+	if err != nil {
+		return TouchpointAlias{}, false, err
+	}
+	a := TouchpointAlias{ID: newID("tp_"), TenantID: tenantID, Code: code, StoreID: storeID, TargetType: TargetStore, BindingRevision: 1, Label: label, Position: position, Status: TagStatusActive, DeploymentStage: StageRegistered, CreatedBy: by, CreatedAt: now(), UpdatedAt: now()}
+	replayed := false
+	err = s.withAudit(func(tx *sql.Tx) error {
+		var existingID, existingPayload string
+		lookup := tx.QueryRow(`SELECT id,creation_request_payload FROM touchpoint_aliases WHERE tenant_id=? AND creation_request_key=?`, tenantID, key).Scan(&existingID, &existingPayload)
+		if lookup == nil {
+			var e error
+			a, e = scanAlias(tx.QueryRow(`SELECT `+aliasCols+` FROM touchpoint_aliases WHERE tenant_id=? AND id=?`, tenantID, existingID))
+			if e != nil {
+				return e
+			}
+			if existingPayload != payload {
+				return ErrTouchpointCreationConflict
+			}
+			replayed = true
+			return nil
+		}
+		if !errors.Is(lookup, sql.ErrNoRows) {
+			return lookup
+		}
+		_, e := tx.Exec(`INSERT INTO touchpoint_aliases(`+aliasCols+`,creation_request_key,creation_request_payload) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, a.ID, tenantID, a.Code, nil, nil, storeID, TargetStore, 1, label, position, a.Status, a.DeploymentStage, "", "", "", by, a.CreatedAt, a.UpdatedAt, key, payload)
+		if e != nil {
+			return e
+		}
+		return insertEvent(tx, tenantID, a.ID, "created", "store-root", by)
+	})
+	if err == nil && !replayed {
+		s.bumpEpoch()
+	}
+	return a, replayed, err
 }
 
 // SetTouchpointStatus flips ONLY the alias. The bound campaign_link (shared by

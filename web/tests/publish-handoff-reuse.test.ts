@@ -40,6 +40,6 @@ describe("ensureParticipation 先恢复后创建(防同访客双参与)", () => 
 
   it("1670 挂载窄补丁不变(mount guard 同源)", () => {
     const page = src("app/c/[code]/public-campaign.tsx");
-    expect(page.includes("<PublishHandoff code={code} />")).toBe(true);
+    expect(page.includes('<CampaignPublishFlow code={code} participationId={participation.id} versionId={participation.content_pack_version ?? ""} />')).toBe(true);
   });
 });

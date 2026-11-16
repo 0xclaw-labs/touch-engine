@@ -202,10 +202,14 @@ func (f *handoffFixture) startParticipation(t *testing.T) string {
 	if res.Outcome != store.OutcomeAvailable {
 		t.Fatalf("link not available: %s", res.Outcome)
 	}
+	v, err := f.s.St.GetAdoptedVersion(f.tenA, res.Campaign.ID, "xiaohongshu")
+	if err != nil {
+		t.Fatal(err)
+	}
 	started, err := f.s.Participation.Start(t.Context(), participation.StartInput{
 		TenantID: res.Campaign.TenantID, StoreID: res.Campaign.StoreID, CampaignID: res.Campaign.ID,
 		LinkCode: res.Link.Code, Source: participation.SourceQR, RuleVersion: 1,
-		ContentPackVersion: "v1", VisitorID: testVisitor, IdempotencyKey: "idem_http_1",
+		ContentPackVersion: v.ID, VisitorID: testVisitor, IdempotencyKey: "idem_http_1",
 		Window: participation.Window{
 			StartsAt: res.Campaign.StartsAt, ExpiresAt: res.Campaign.EndsAt,
 		},

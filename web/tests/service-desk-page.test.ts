@@ -36,23 +36,24 @@ describe("census 账本同步", () => {
   });
 });
 
-describe("店员台三区结构(移动优先)", () => {
+describe("店员台办理与次级页签(移动优先)", () => {
   const desk = read(deskRel);
 
-  it("只放高频动作:扫参与码、待确认、已发放/已核销记录", () => {
+  it("统一扫描入口，待确认/权益与交班保留可找性", () => {
     expect(desk).toContain('data-section="scan"');
     expect(desk).toContain('data-section="review"');
     expect(desk).toContain('data-section="records"');
     expect(desk).toContain('data-field="scan-input"');
-    expect(desk).toContain('data-action="open-participation"');
-    expect(desk).toContain('data-action="open-coupon"');
+    expect(desk).toContain('data-action="open-credential"');
+    expect(desk).not.toContain('data-field="coupon-input"');
+    expect(desk).not.toContain('data-field="campaign-select"');
+    expect(desk).toContain('aria-label="服务台页签"');
   });
 
   it("相机不可用降级为手输,不装死", () => {
     expect(desk).toContain("BarcodeDetector");
     expect(desk).toContain('data-field="manual-entry"');
-    expect(desk).toContain("extractHandoffToken");
-    expect(desk).toContain("looksLikeHandoffToken");
+    expect(desk).toContain("resolveServiceCredential");
   });
 
   it("店员默认自己门店:whoami 取 store_scope,读取按本店过滤", () => {

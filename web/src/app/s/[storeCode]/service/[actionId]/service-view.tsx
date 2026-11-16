@@ -19,6 +19,8 @@ import { useParams } from "next/navigation";
 import { publicVisitorColumns } from "@/lib/visitor-experience";
 import { detectEnvironment, methodLabel, parseActionCapabilities, pickRoute, type ActionCapabilitiesView } from "@/lib/env-capability";
 import { parseServices, parseStorefront, type ServiceItemView, type StorefrontActionView, type StorefrontView } from "@/lib/storefront-view";
+import { StoreServicePanel } from "@/components/customer/StoreServicePanels";
+import { LinkShareFlow } from "@/components/publish/LinkShareFlow";
 
 type FetchState = "loading" | "ready" | "not_found" | "network_error";
 
@@ -47,6 +49,7 @@ function ServiceViewInner() {
   const [store, setStore] = useState<StorefrontView | null>(null);
   const [fetchState, setFetchState] = useState<FetchState>("loading");
   const [services, setServices] = useState<Map<string, ServiceItemView> | null>(null);
+  const [servicesState, setServicesState] = useState<"loading" | "ready" | "error">("loading");
   const [caps, setCaps] = useState<ActionCapabilitiesView | null>(null);
   const [copyNote, setCopyNote] = useState("");
   const [reloadTick, setReloadTick] = useState(0);
@@ -59,6 +62,7 @@ function ServiceViewInner() {
     if (!storeCode || !actionId) return;
     let alive = true;
     setFetchState("loading");
+    setStore(null); setServices(null); setServicesState("loading");
     fetch(`/api/public/storefronts/${encodeURIComponent(storeCode)}`)
       .then(async (res) => {
         if (!alive) return;
@@ -79,9 +83,9 @@ function ServiceViewInner() {
       .then(async (res) => {
         if (!alive) return;
         const data = res.ok ? await res.json().catch(() => null) : null;
-        if (alive) setServices(data ? parseServices(data) : null);
+        if (alive) { setServices(data ? parseServices(data) : null); setServicesState(res.ok || res.status === 404 ? "ready" : "error"); }
       })
-      .catch(() => undefined);
+      .catch(() => { if (alive) setServicesState("error"); });
     // 3535 路线(实例 id 直查;读不到按未知路线处理)。
     fetch(`/api/public/actions/${encodeURIComponent(actionId)}/capabilities?environment=${encodeURIComponent(environment)}`)
       .then(async (res) => {
@@ -97,7 +101,7 @@ function ServiceViewInner() {
 
   const action: StorefrontActionView | null =
     store && fetchState === "ready" ? store.actions.find((a) => a.actionId === actionId) ?? null : null;
-  const routePick = caps ? pickRoute(caps.routes, environment) : null;
+  const routePick = caps && action && ["publish", "share"].includes(action.kind) ? pickRoute(caps.routes, environment, "link_share") : null;
   const service = services?.get(actionId) ?? null;
 
   const doCopy = useCallback(async (label: string, value: string) => {
@@ -130,14 +134,21 @@ function ServiceViewInner() {
             <p className="tk-note">请核对二维码或碰一碰标签,或联系门店工作人员。</p>
           </div>
         )}
-        {fetchState === "ready" && !action && (
+        {fetchState === "ready" && action?.kind !== "share" && servicesState === "loading" && <p className="tk-note">正在读取这项服务…</p>}
+        {fetchState === "ready" && action?.kind !== "share" && servicesState === "error" && <div><p className="tk-note">这项服务暂未读到，请重试，或向店员询问。</p><button type="button" className="tk-quiet" onClick={retry}>重试</button></div>}
+        {fetchState === "ready" && servicesState === "ready" && !action && !service && (
           <div data-testid="service-missing">
             <h1 className="tk-public-title">这个入口不存在或暂未开放</h1>
             <p className="tk-note">这家门店当前没有提供这一项在线服务。</p>
           </div>
         )}
 
-        {action && (
+        {fetchState === "ready" && store?.store.state === "active" && service?.entry && <>
+          <header><p className="tk-public-merchant">{store.store.name}</p><h1 className="tk-public-title">{service.title || "门店服务"}</h1></header>
+          <StoreServicePanel entry={service.entry} environment={environment} storefrontCode={storeCode} />
+          <footer><a className="tk-quiet" href={`/s/${encodeURIComponent(storeCode)}`} data-testid="back-to-store">返回门店</a></footer>
+        </>}
+        {action && !service?.entry && (servicesState === "ready" || action.kind === "share") && (
           <>
             <header>
               <p className="tk-public-merchant">{store?.store.name}</p>
@@ -218,7 +229,14 @@ function ServiceViewInner() {
               </section>
             )}
 
-            {(action.kind === "groupbuy" || action.kind === "share" || action.kind === "join_group") && (
+            {action.kind === "share" && <LinkShareFlow
+              actionId={actionId}
+              method={routePick?.kind === "ok" ? routePick.route?.method ?? "" : ""}
+              environment={environment}
+              storeCode={storeCode}
+            />}
+
+            {(action.kind === "groupbuy" || action.kind === "join_group") && (
               <section className="tk-section" data-testid="service-groupbuy">
                 <h2 className="tk-section-title">{action.kind === "groupbuy" ? "团购套餐" : "社群"}</h2>
                 {action.kind === "groupbuy" ? (

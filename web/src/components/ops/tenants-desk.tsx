@@ -10,8 +10,9 @@
 //     stale → 服务端 409 → 页面提示重载;
 //   - 不伪造付费开通:服务期只复述 4591 订阅投影事实。
 
-import { useCallback, useEffect, useState } from "react";
-import { useMerchantSession, type MerchantSession } from "@/components/work/merchant-session";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useSession, type MerchantSession } from "@/components/work/merchant-session";
+import { currentTenantOp } from "@/lib/workspace-tenant";
 import {
   OperationFeedback,
   OpsReasonForm,
@@ -24,7 +25,7 @@ import { lifecycleText, type OpsSupportAccess, type OpsTenantDetail, type OpsTen
 type Phase = "loading" | "error" | "ready";
 
 export function TenantsDesk() {
-  const session = useMerchantSession();
+  const session = useSession();
   const [phase, setPhase] = useState<Phase>("loading");
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
@@ -260,8 +261,10 @@ export function TenantsDesk() {
           限时(最长 4 小时)、指定目标商户、原因必填;到期或关闭后立即失效,全程审计。
           {detail ? " 目标商户来自上方详情,避免自由输入跨户目标。" : " 先在上方打开商户详情以确定目标。"}
         </p>
-        <SupportAccessForm session={session} tenantId={detail ? detail.tenant.id : ""} busy={busy}
+        <SupportAccessForm key={detail?.tenant.id ?? ""} session={session} tenantId={detail ? detail.tenant.id : ""} busy={busy}
+          onStart={() => { setOpError(""); setOutcome(null); setNote(""); }}
           onDone={() => {
+            setOpError("");
             void load(session, query, lifecycle);
             if (detail) void openDetail(session, detail.tenant.id);
           }}
@@ -290,60 +293,99 @@ function SupportAccessForm({
   session,
   tenantId,
   busy,
+  onStart,
   onDone,
   onError,
 }: {
   session: MerchantSession;
   tenantId: string;
   busy: boolean;
+  onStart: () => void;
   onDone: () => void;
   onError: (message: string) => void;
 }) {
   const [ttl, setTtl] = useState("60");
   const [reason, setReason] = useState("");
   const [working, setWorking] = useState(false);
+  const [result, setResult] = useState("");
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   const open = useCallback(async () => {
+    setResult("");
+    onStart();
     if (!tenantId || !reason.trim()) {
       onError("申请支持访问需要目标商户与业务原因。");
       return;
     }
+    const epoch = currentTenantOp();
+    const current = () => mounted.current && currentTenantOp() === epoch;
     setWorking(true);
-    const res = await session.api("POST", "ops/support-access", {
-      tenant_id: tenantId,
-      reason: reason.trim(),
-      ttl_minutes: Number(ttl) || 60,
-    });
-    setWorking(false);
-    if (!res.ok) {
-      onError(typeof res.data.message === "string" ? res.data.message : "支持访问申请被拒绝");
-      return;
+    try {
+      const res = await session.api("POST", "ops/support-access", {
+        tenant_id: tenantId,
+        reason: reason.trim(),
+        ttl_minutes: Number(ttl) || 60,
+      });
+      if (!current()) return;
+      if (!res.ok) {
+        onError(typeof res.data.message === "string" ? res.data.message : "支持访问申请被拒绝");
+        return;
+      }
+      setReason("");
+      setResult("支持访问已打开。");
+      onDone();
+    } catch {
+      if (current()) onError("没有确认支持访问申请的结果，请刷新商户详情核对后重试。");
+    } finally {
+      if (current()) setWorking(false);
     }
-    setReason("");
-    onDone();
-  }, [session, tenantId, reason, ttl, onDone, onError]);
+  }, [session, tenantId, reason, ttl, onStart, onDone, onError]);
 
   const closeLast = useCallback(async () => {
+    setResult("");
+    onStart();
+    const epoch = currentTenantOp();
+    const current = () => mounted.current && currentTenantOp() === epoch;
     setWorking(true);
-    // 关闭当前主体对该目标最近的活跃授权。
-    const list = await session.api("GET", "ops/support-access");
-    const items = Array.isArray(list.data.support_access) ? (list.data.support_access as OpsSupportAccess[]) : [];
-    const active = items.find((a) => a.tenant_id === tenantId && !a.closed_at);
-    if (!active) {
-      setWorking(false);
-      onError("没有可关闭的活跃支持访问。");
-      return;
+    try {
+      // 商户详情由服务端按当前受信主体、目标和到期时间确认支持访问。
+      // 全平台审计列表包含其他运营人及过期记录，不能据其顺序猜目标。
+      const detail = await session.api("GET", `ops/tenants/${encodeURIComponent(tenantId)}`);
+      if (!current()) return;
+      if (!detail.ok) {
+        onError("没有读到当前支持访问，请重试。");
+        return;
+      }
+      const business = detail.data.business_data as OpsTenantDetail["business_data"] | undefined;
+      const activeRef = business?.state === "open" && business.available && typeof business.support_access_ref === "string"
+        ? business.support_access_ref : "";
+      if (!activeRef) {
+        onError("没有可关闭的活跃支持访问。");
+        return;
+      }
+      const res = await session.api("POST", `ops/support-access/${encodeURIComponent(activeRef)}/close`, {
+        reason: "支持访问结束(运营台操作)",
+        own_access_only: true,
+      });
+      if (!current()) return;
+      if (!res.ok) {
+        onError(res.status === 403
+          ? "当前账号已变化或授权已失效，请重新核对自己的支持访问。"
+          : "没有确认关闭结果，请刷新商户详情核对后重试。");
+        return;
+      }
+      setResult("支持访问已结束。");
+      onDone();
+    } catch {
+      if (current()) onError("没有确认关闭结果，请刷新商户详情核对后重试。");
+    } finally {
+      if (current()) setWorking(false);
     }
-    const res = await session.api("POST", `ops/support-access/${active.id}/close`, {
-      reason: "支持访问结束(运营台操作)",
-    });
-    setWorking(false);
-    if (!res.ok) {
-      onError(typeof res.data.message === "string" ? res.data.message : "关闭失败");
-      return;
-    }
-    onDone();
-  }, [session, tenantId, onDone, onError]);
+  }, [session, tenantId, onStart, onDone, onError]);
 
   return (
     <form
@@ -380,6 +422,7 @@ function SupportAccessForm({
           结束支持访问
         </button>
       </div>
+      {result ? <p className="tk-state" role="status" data-field="support-result">{result}</p> : null}
     </form>
   );
 }

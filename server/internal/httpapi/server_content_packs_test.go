@@ -269,11 +269,12 @@ func TestContentPacksMerchantFlow(t *testing.T) {
 		t.Fatalf("cross-tenant pack: %d", status)
 	}
 
-	// 声明缺失:缺价格 = 422 missing_price_note
-	bad := strings.Replace(packVersionBody(video.ID, cover.ID), `"price_note":"全场五折",`, "", 1)
-	status, out = f.owner(t, "POST", "/api/v1/content-packs/"+packID+"/versions", bad)
-	if status != 422 || out["error"] != "missing_price_note" {
-		t.Fatalf("missing price: %d %v", status, out)
+	// 普通门店介绍可以不声明价格与有效期；这两项不是素材授权或奖励规则期限。
+	general := strings.Replace(packVersionBody(video.ID, cover.ID), `"price_note":"全场五折",`, "", 1)
+	general = strings.Replace(general, `"valid_note":"2026-10-14 至 2026-10-20",`, "", 1)
+	status, out = f.owner(t, "POST", "/api/v1/content-packs/"+packID+"/versions", general)
+	if status != http.StatusCreated {
+		t.Fatalf("general introduction without optional remarks: %d %v", status, out)
 	}
 
 	// 媒体缺失:引用不存在的素材 = 422 media_missing

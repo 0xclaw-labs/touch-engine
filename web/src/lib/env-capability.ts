@@ -150,10 +150,14 @@ const NO_ROUTE_FACE = "这个平台在当前设备上的路线暂未确认。可
  *   4. 全部 refused → refused(reason_text);
  *   5. 本环境无记录 → pending(未知语气,不冒充可用)。
  */
-export function pickRoute(routes: CapabilityRoute[], environment: string): RoutePick | null {
+export function pickRoute(routes: CapabilityRoute[], environment: string, payloadKind?: "media" | "link_share"): RoutePick | null {
   const env = (environment ?? "").trim();
   if (env === "") return null;
-  const here = routes.filter((r) => r.environment === env);
+  // The route's declared input contract is authoritative. A link-only permit
+  // cannot authorize media export, even when both belong to the same action.
+  const here = routes.filter((r) => r.environment === env && (
+    !payloadKind || r.required_inputs.some((input) => input.trim() === "content_pack_version") === (payloadKind === "media")
+  ));
   if (here.length === 0) return { kind: "pending", route: null, face: NO_ROUTE_FACE };
 
   for (const r of here) {

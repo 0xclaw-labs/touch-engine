@@ -7,8 +7,11 @@
 //   含 "consumed"           → already_consumed（409 路径）
 //   其余                    → confirmed + amount_minor=9900
 import { createServer } from "node:http";
+import { createSourceBillingFixture } from "./source-billing-stub.mjs";
 
 const port = Number(process.argv[2] || process.env.SEAMS_PORT || 18999);
+const sourceBilling = createSourceBillingFixture();
+const tasks = new Map();
 
 const server = createServer((req, res) => {
   let raw = "";
@@ -24,6 +27,7 @@ const server = createServer((req, res) => {
       res.writeHead(code, { "content-type": "application/json" });
       res.end(JSON.stringify(obj));
     };
+    if (sourceBilling(req, body, send)) return;
     if (req.method === "POST" && req.url === "/internal/v1/billing/unified/quote") {
       const ref = String(body.quote_ref || "");
       if (ref.includes("pending")) {
@@ -41,8 +45,14 @@ const server = createServer((req, res) => {
     }
     if (req.method === "POST" && req.url === "/internal/v1/tasks") {
       // 客户端验收契约=task_id（production.go TaskSubmitter）。
-      return send(200, { task_id: `task_stub_${Date.now().toString(36)}`, status: "submitted" });
+      const key = `${body.app_id}|${body.idempotency_key}`;
+      const payload = JSON.stringify(body);
+      const previous = tasks.get(key);
+      if (previous && previous.payload !== payload) return send(409, { error: "idempotency_conflict" });
+      if (!previous) tasks.set(key, { payload, task_id: `task_fixture_${tasks.size + 1}` });
+      return send(200, { task_id: tasks.get(key).task_id, status: "submitted" });
     }
+    if (req.url === "/__e2e/task-state") return send(200, { fixture: true, task_count: tasks.size });
     if (req.url === "/healthz") {
       return send(200, { status: "ok" });
     }

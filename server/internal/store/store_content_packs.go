@@ -470,11 +470,19 @@ type ContentPackVersionEvent struct {
 }
 
 func (s *Store) appendVersionEvent(tenantID, versionID, kind, note, actor string) error {
+	return appendVersionEvent(s.DB, tenantID, versionID, kind, note, actor)
+}
+
+type contentPackEventWriter interface {
+	Exec(string, ...any) (sql.Result, error)
+}
+
+func appendVersionEvent(w contentPackEventWriter, tenantID, versionID, kind, note, actor string) error {
 	e := ContentPackVersionEvent{
 		ID: newID("cpe_"), TenantID: tenantID, VersionID: versionID,
 		Kind: kind, Note: note, Actor: actor, CreatedAt: now(),
 	}
-	_, err := s.DB.Exec(
+	_, err := w.Exec(
 		`INSERT INTO content_pack_version_events(id,tenant_id,version_id,kind,note,actor,created_at) VALUES(?,?,?,?,?,?,?)`,
 		e.ID, e.TenantID, e.VersionID, e.Kind, e.Note, e.Actor, e.CreatedAt)
 	if err != nil {
@@ -540,7 +548,18 @@ func (s *Store) AdoptContentPackVersion(tenantID, packID, versionID, platform, a
 	if err != nil {
 		return ContentPackAdoption{}, err
 	}
-	v, err := s.GetContentPackVersion(versionID, tenantID)
+	// Read the distribution decision and change the pointer in one transaction.
+	// A concurrent block must never be overwritten by a later adoption write.
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return ContentPackAdoption{}, err
+	}
+	defer tx.Rollback()
+	v, err := scanContentPackVersion(tx.QueryRow(
+		`SELECT `+contentPackVersionCols+` FROM content_pack_versions WHERE id=? AND tenant_id=?`, versionID, tenantID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ContentPackAdoption{}, ErrNotFound
+	}
 	if err != nil {
 		return ContentPackAdoption{}, err
 	}
@@ -548,12 +567,15 @@ func (s *Store) AdoptContentPackVersion(tenantID, packID, versionID, platform, a
 		return ContentPackAdoption{}, ErrNotFound
 	}
 	nowText := at.UTC().Format(time.RFC3339Nano)
+	if strings.TrimSpace(v.BlockedReason) != "" {
+		v.Status = contentpack.StatusBlocked
+	}
 	if err := contentpack.Distributable(v.Status, v.GrantUntil, at); err != nil {
 		return ContentPackAdoption{}, err
 	}
 
 	// previous pointer (if any) -> retire + supersede event
-	prev, err := scanAdoption(s.DB.QueryRow(
+	prev, err := scanAdoption(tx.QueryRow(
 		`SELECT `+adoptionCols+` FROM content_pack_adoptions WHERE tenant_id=? AND campaign_id=? AND platform=?`,
 		tenantID, pack.CampaignID, platform))
 	found := err == nil
@@ -561,17 +583,17 @@ func (s *Store) AdoptContentPackVersion(tenantID, packID, versionID, platform, a
 		return ContentPackAdoption{}, err
 	}
 	if found && prev.VersionID != v.ID {
-		if _, err := s.DB.Exec(
-			`UPDATE content_pack_versions SET status=? WHERE id=? AND tenant_id=?`,
-			contentpack.StatusRetired, prev.VersionID, tenantID); err != nil {
+		if _, err := tx.Exec(
+			`UPDATE content_pack_versions SET status=? WHERE id=? AND tenant_id=? AND status<>? AND trim(blocked_reason)=''`,
+			contentpack.StatusRetired, prev.VersionID, tenantID, contentpack.StatusBlocked); err != nil {
 			return ContentPackAdoption{}, err
 		}
-		if err := s.appendVersionEvent(tenantID, prev.VersionID, "superseded", "被新采用版本取代:"+v.ID, adoptedBy); err != nil {
+		if err := appendVersionEvent(tx, tenantID, prev.VersionID, "superseded", "被新采用版本取代:"+v.ID, adoptedBy); err != nil {
 			return ContentPackAdoption{}, err
 		}
 	}
 	if found {
-		if _, err := s.DB.Exec(
+		if _, err := tx.Exec(
 			`UPDATE content_pack_adoptions SET version_id=?,adopted_by=?,updated_at=? WHERE id=? AND tenant_id=?`,
 			v.ID, adoptedBy, nowText, prev.ID, tenantID); err != nil {
 			return ContentPackAdoption{}, err
@@ -584,20 +606,23 @@ func (s *Store) AdoptContentPackVersion(tenantID, packID, versionID, platform, a
 			ID: newID("cpa_"), TenantID: tenantID, CampaignID: pack.CampaignID, Platform: platform,
 			VersionID: v.ID, AdoptedBy: adoptedBy, CreatedAt: nowText, UpdatedAt: nowText,
 		}
-		if _, err := s.DB.Exec(
+		if _, err := tx.Exec(
 			`INSERT INTO content_pack_adoptions(`+adoptionCols+`) VALUES(?,?,?,?,?,?,?,?)`,
 			prev.ID, prev.TenantID, prev.CampaignID, prev.Platform, prev.VersionID, prev.AdoptedBy, prev.CreatedAt, prev.UpdatedAt); err != nil {
 			return ContentPackAdoption{}, err
 		}
 	}
 	if v.Status != contentpack.StatusAdopted {
-		if _, err := s.DB.Exec(
+		if _, err := tx.Exec(
 			`UPDATE content_pack_versions SET status=? WHERE id=? AND tenant_id=?`,
 			contentpack.StatusAdopted, v.ID, tenantID); err != nil {
 			return ContentPackAdoption{}, err
 		}
 	}
-	if err := s.appendVersionEvent(tenantID, v.ID, "adopted", "平台 "+platform+" 明确采用", adoptedBy); err != nil {
+	if err := appendVersionEvent(tx, tenantID, v.ID, "adopted", "平台 "+platform+" 明确采用", adoptedBy); err != nil {
+		return ContentPackAdoption{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return ContentPackAdoption{}, err
 	}
 	return prev, nil

@@ -53,8 +53,8 @@ export function buildKuaishouModel(raw: unknown): KuaishouModel {
         return { kind: "unavailable", reason: "授权地址携带了不该出现的参数；本页拒绝跳转" };
       }
     }
-    if (!authorize.searchParams.get("state") || !authorize.searchParams.get("client_id")) {
-      return { kind: "unavailable", reason: "授权参数缺失（state/client_id）；请回到交接页重试" };
+    if (!authorize.searchParams.get("state") || !authorize.searchParams.get("app_id")) {
+      return { kind: "unavailable", reason: "授权参数缺失（state/app_id）；请回到交接页重试" };
     }
     return {
       kind: "authorize",

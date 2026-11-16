@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,6 +41,7 @@ describe("lookupParticipation 恢复语义", () => {
       vi.fn(async () => ok({ id: "pt_9", status: "pending", benefit_reservation_state: "confirmed" })),
     );
     const p = await lookupParticipation("CODE1");
+    assert(p && !("error" in p), "expected a successful participation response");
     expect(p?.id).toBe("pt_9");
     expect(p?.status).toBe("pending");
   });
@@ -59,6 +61,8 @@ describe("startParticipation 显式开始才建参与", () => {
     vi.stubGlobal("fetch", fetchMock);
     const first = await startParticipation("CODE1", "v1");
     const second = await startParticipation("CODE1", "v1");
+    assert(first && !("error" in first), "expected first participation");
+    assert(second && !("error" in second), "expected replayed participation");
     expect(first?.id).toBe("pt_1");
     expect(second?.id).toBe("pt_1");
     const body1 = JSON.parse(String(((fetchMock.mock.calls[0] as unknown[])[1] as RequestInit).body));
@@ -88,6 +92,7 @@ describe("switchDraft / cancelParticipation", () => {
     const fetchMock = vi.fn(async () => ok({ id: "pt_1", status: "pending", content_pack_version: "v2" }));
     vi.stubGlobal("fetch", fetchMock);
     const p = await switchDraft("pt_1", "v2");
+    assert(p && !("error" in p), "expected a successful participation response");
     expect(p?.content_pack_version).toBe("v2");
     const [url, init] = fetchMock.mock.calls[0] as unknown[];
     expect(String(url)).toBe("/api/participations/pt_1/content");
@@ -103,6 +108,7 @@ describe("switchDraft / cancelParticipation", () => {
     const fetchMock = vi.fn(async () => ok({ id: "pt_1", status: "canceled" }));
     vi.stubGlobal("fetch", fetchMock);
     const p = await cancelParticipation("pt_1");
+    assert(p && !("error" in p), "expected a successful participation response");
     expect(p?.status).toBe("canceled");
     const [url, init] = fetchMock.mock.calls[0] as unknown[];
     expect(String(url)).toBe("/api/participations/pt_1/cancel");

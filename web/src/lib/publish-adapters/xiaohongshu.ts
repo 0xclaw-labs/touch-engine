@@ -5,8 +5,8 @@
 //     由用户主动点击复制(复制动作只记录 copy 事实,不是发布成功);
 //   - 官方 JS 为媒体交接:SDK 失败只是交接错误;本系统没有 JS 发布回执契约,
 //     唤起/失败/关闭页面都不升级平台确认;
-//   - 官方 JS SDK 真身(平台脚本)未接入:本模块不加载、不模拟任何 SDK——
-//     只有当部署方注册了官方 SDK 装载器时 invoke 才可用(诚实缺位)。
+//   - 默认加载官方固定版本脚本；服务端签名缺失/过期拒绝调用。
+//     SDK 调用只表示发起交接，异步 fail 交回原页面展示，不冒充发布结果。
 
 import { isHttpsUrl, parseClientAction, type ClientActionView } from "./client-action";
 
@@ -20,6 +20,7 @@ export interface XhsMediaPayload {
 export interface XhsHandoffModel {
   kind: "xhs_handoff";
   payload: XhsMediaPayload;
+  verifyConfig: XhsVerifyConfig;
   copyText: string; // 独立 copy_view 的参考文案(用户主动复制)
   steps: string[];
   mediaNote: string;
@@ -40,23 +41,48 @@ const BANNED_TEXT_KEYS = ["title", "content", "topics", "desc", "text"] as const
 // 载荷)。默认无注册 = invoke 诚实不可用(本模块绝不内嵌/伪装平台脚本)。
 export type XhsJsSdkLoader = (payload: XhsMediaPayload) => Promise<unknown>;
 
-let xhsSdkLoader: XhsJsSdkLoader | null = null;
-
-export function registerXhsJsSdkLoader(loader: XhsJsSdkLoader | null): void {
-  xhsSdkLoader = loader;
+export interface XhsVerifyConfig { appKey: string; nonce: string; timestamp: string; signature: string }
+interface XhsSdk { share(input: { shareInfo: XhsMediaPayload; verifyConfig: XhsVerifyConfig; fail: (error: unknown) => void }): unknown }
+declare global { interface Window { xhs?: XhsSdk } }
+let xhsSdkLoader: XhsJsSdkLoader | null | undefined;
+let loading: Promise<void> | null = null;
+export function registerXhsJsSdkLoader(loader: XhsJsSdkLoader | null | undefined): void { xhsSdkLoader = loader; }
+export function xhsSdkReady(): boolean { return typeof xhsSdkLoader === "function" || (xhsSdkLoader !== null && typeof window !== "undefined" && !!window.xhs); }
+export function loadOfficialXhsSdk(): Promise<void> {
+  if (typeof xhsSdkLoader === "function") return Promise.resolve();
+  if (xhsSdkLoader === null || typeof document === "undefined") return Promise.reject(new Error("当前环境无法加载小红书交接，请回原页面重试。"));
+  if (window.xhs) return Promise.resolve();
+  if (loading) return loading;
+  loading = new Promise<void>((resolve, reject) => {
+    const script = document.createElement("script");
+    const timeout = setTimeout(() => { script.remove(); loading = null; reject(new Error("小红书组件加载超时，请重试。")); }, 15000);
+    script.src = "https://fe-static.xhscdn.com/biz-static/goten/xhs-1.0.1.js";
+    script.async = true;
+    script.onload = () => { clearTimeout(timeout); if (window.xhs) resolve(); else { loading = null; reject(new Error("小红书组件未就绪，请重试。")); } };
+    script.onerror = () => { clearTimeout(timeout); script.remove(); loading = null; reject(new Error("小红书组件加载失败，请检查网络后重试。")); };
+    document.head.appendChild(script);
+  });
+  return loading;
 }
-
-export function xhsSdkReady(): boolean {
-  return xhsSdkLoader !== null;
+export async function invokeXhsJs(payload: XhsMediaPayload, verify?: XhsVerifyConfig, onFailure?: (message: string) => void): Promise<unknown> {
+  if (typeof xhsSdkLoader === "function") return xhsSdkLoader(payload);
+  if (!verify) throw new Error("小红书交接签名缺失，请重新获取。");
+  await loadOfficialXhsSdk();
+  if (!window.xhs) throw new Error("小红书组件未就绪，请重试。");
+  // SDK has a fail callback, no official publish-success callback. Async
+  // failures go back to the owning view; returning only means invocation.
+  let synchronousFailure = false;
+  window.xhs.share({ shareInfo: payload, verifyConfig: verify, fail: () => { synchronousFailure = true; onFailure?.("小红书素材交接失败，请在原页面重新获取素材和签名后重试。"); } });
+  if (synchronousFailure) throw new Error("小红书素材交接失败，请重试。");
+  return { evidence: "handoff_only", officialResult: "unknown" };
 }
-
-// 用户主动调用:装载并调用官方 JS SDK。没有装载器=诚实错误;SDK 失败原样
-// 上抛,调用面只能把它当「交接错误」呈现——没有回执语义。
-export async function invokeXhsJs(payload: XhsMediaPayload): Promise<unknown> {
-  if (!xhsSdkLoader) {
-    throw new Error("xiaohongshu official JS SDK is not wired in this deployment; the handoff stays manual");
-  }
-  return xhsSdkLoader(payload);
+function parseVerifyConfig(raw: string): XhsVerifyConfig | null {
+  try { const obj = JSON.parse(raw) as Record<string, unknown>;
+    if (!obj || ["appKey", "nonce", "timestamp", "signature"].some(k => typeof obj[k] !== "string" || !obj[k])) return null;
+    const stamp = Number(obj.timestamp);
+    if (!Number.isFinite(stamp) || Math.abs(Date.now() - stamp) > 10 * 60 * 1000) return null;
+    return { appKey: obj.appKey as string, nonce: obj.nonce as string, timestamp: obj.timestamp as string, signature: obj.signature as string };
+  } catch { return null; }
 }
 
 // parseXhsPayload validates the server-issued media payload. 红线自检:载荷
@@ -99,8 +125,11 @@ export function buildXhsHandoff(raw: unknown): XhsModel {
   }
   const payload = parseXhsPayload(action.params["payload"] ?? "");
   if (!payload) return { kind: "unavailable", reason: "媒体载荷缺失或携带了文字字段；本页拒绝渲染" };
+  const verifyConfig = parseVerifyConfig(action.params["verify_config"] ?? "");
+  if (!verifyConfig || verifyConfig.appKey !== action.params["app_id"]) return { kind: "unavailable", reason: "交接签名缺失或已过期，请刷新原交接重新获取。" };
   return {
     kind: "xhs_handoff",
+    verifyConfig,
     payload,
     copyText: action.caption,
     steps: action.steps,

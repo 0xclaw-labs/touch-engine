@@ -16,9 +16,9 @@ describe("商家活动页记下门店参数", () => {
     const page = read(pageRel);
     const note = read(noteRel);
 
-    expect(page).toContain('from "@/components/work/store-motion-note"');
-    expect(page).toContain("<StoreMotionNote");
-    expect(page).toContain("还没生成成片");
+    expect(page).not.toContain('from "@/components/work/store-motion-note"');
+    expect(page).not.toContain("<StoreMotionNote");
+    expect(page).toContain("CampaignConfigPanel");
     expect(page).not.toContain("已生成");
     expect(page).not.toContain("已送出");
     expect(note).not.toContain("已生成");

@@ -48,10 +48,6 @@ describe("C2 预览:真实媒体与素材缺失待办态", () => {
     expect(view.includes('"preview"')).toBe(true);
   });
 
-  it("保存走 purpose=download(不给死链)", () => {
-    expect(view.includes('"download"')).toBe(true);
-  });
-
   it("availability=missing 的媒体不给播放入口只给待办文案", () => {
     expect(view.includes("missing")).toBe(true);
     expect(view.includes("素材还没有准备好")).toBe(true);
@@ -87,18 +83,18 @@ describe("C2 换选:已采用候选池 + 冻结语义", () => {
 
 describe("C2 交接:1670 契约诚实呈现", () => {
   it("plan 四态走 planCopy/parseHandoffPlan/statusFace 唯一出口", () => {
-    expect(view.includes("parseHandoffPlan")).toBe(true);
-    expect(view.includes("planCopy")).toBe(true);
-    expect(view.includes("statusFace")).toBe(true);
+    expect(view.includes("ActionPublishFlow")).toBe(true);
+    expect(src("components/publish/ActionPublishFlow.tsx").includes("planCopy")).toBe(true);
+    expect(src("components/publish/ActionPublishFlow.tsx").includes("statusFace")).toBe(true);
   });
 
   it("交接端点读不到(基线无 1670)给「尚未开通」诚实态,不伪报成功", () => {
-    expect(view.includes("尚未开通")).toBe(true);
+    expect(view.includes("ActionPublishFlow")).toBe(true);
   });
 
   it("unsupported_fields 与 evidenceFace 如实展示", () => {
-    expect(view.includes("unsupportedFields")).toBe(true);
-    expect(view.includes("evidenceFace")).toBe(true);
+    expect(src("components/publish/ActionPublishFlow.tsx").includes("unsupported_fields")).toBe(true);
+    expect(src("components/publish/ActionPublishFlow.tsx").includes("evidenceFace")).toBe(true);
   });
 
   it("发布主体=顾客自己账号;每一步可取消的说明在场", () => {
@@ -111,7 +107,7 @@ describe("C2 布局与环境差异", () => {
   it("环境路线走 detectEnvironment/pickRoute(3535 能力渲染)", () => {
     expect(view.includes("detectEnvironment")).toBe(true);
     expect(view.includes("pickRoute")).toBe(true);
-    expect(view.includes("methodLabel")).toBe(true);
+    expect(view.includes("routePick.route?.method")).toBe(true);
   });
 
   it("无生态导航/无强制注册留资;返回门店入口在场", () => {

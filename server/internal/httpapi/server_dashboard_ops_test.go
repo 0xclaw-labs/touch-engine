@@ -9,10 +9,51 @@ package httpapi
 //   - 跨租户 0 行;OperationsSummary 契约字段固定五项。
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
 )
+
+func TestDashboardScopedStaffCannotReadOtherStoreFacts(t *testing.T) {
+	f := newDashboardFixture(t)
+	m, err := f.s.St.GetMemberByPrincipal(f.tenA, "usr_staff_a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.s.St.UpdateMemberScoped(m.ID, nil, nil, nil, &f.store1ID); err != nil {
+		t.Fatal(err)
+	}
+	f.beacon(t, f.code1, "nfc")
+	f.beacon(t, f.code2, "nfc")
+	start, end := opsDayWindow()
+	for _, route := range []string{"/api/v1/dashboard", "/api/v1/dashboard/operations"} {
+		status, _, out := f.do(t, "GET", route+"?window_start="+start+"&window_end="+end, "sess-staff-a", f.tenA, ``)
+		if status != http.StatusOK {
+			t.Fatalf("%s: %d %v", route, status, out)
+		}
+		if out["scope"].(map[string]any)["store_scope"] != f.store1ID {
+			t.Fatalf("staff scope ignored: %v", out["scope"])
+		}
+		dims, _ := json.Marshal(out["dimensions"])
+		if bytes.Contains(dims, []byte(f.camp2ID)) {
+			t.Fatalf("out-of-scope campaign leaked: %s", dims)
+		}
+	}
+	status, _, _ := f.do(t, "GET", "/api/v1/dashboard/operations?window_start="+start+"&window_end="+end+"&store_id=other-store", "sess-staff-a", f.tenA, ``)
+	if status != http.StatusForbidden {
+		t.Fatalf("staff escaping scope = %d", status)
+	}
+	disabled := false
+	if _, err = f.s.St.UpdateMember(m.ID, nil, &disabled, nil); err != nil {
+		t.Fatal(err)
+	}
+	status, _, _ = f.do(t, "GET", "/api/v1/dashboard/operations-summary", "sess-staff-a", f.tenA, ``)
+	if status != http.StatusForbidden {
+		t.Fatalf("revoked staff kept summary access: %d", status)
+	}
+}
 
 func opsDayWindow() (string, string) {
 	now := time.Now().UTC()
@@ -164,5 +205,61 @@ func TestOperationsSummaryEndpointContract(t *testing.T) {
 	}
 	if out["rewards_issued"].(float64) != 0 {
 		t.Fatalf("manager summary must be scoped, got %v", out)
+	}
+}
+
+// HUI-4665：租户 B 没有门店、活动、素材或事件。断言真正 HTTP JSON，
+// 避免只断言 Go len(nil)==0 而漏掉 null 导致浏览器崩溃。
+func TestDashboardOpsEmptyTenantCollectionsAreReadable(t *testing.T) {
+	f := newDashboardFixture(t)
+	start, end := opsDayWindow()
+	status, _, out := f.do(t, "GET", "/api/v1/dashboard/operations?window_start="+start+"&window_end="+end, "sess-owner-b", f.tenB, ``)
+	if status != http.StatusOK {
+		t.Fatalf("empty tenant = %d: %v", status, out)
+	}
+	if echo, ok := out["filter_echo"].(map[string]any); !ok || len(echo) != 0 {
+		t.Fatalf("empty filter_echo must be {}, got %#v", out["filter_echo"])
+	}
+	if inventory, ok := out["inventory"].([]any); !ok || len(inventory) != 0 {
+		t.Fatalf("empty inventory must be [], got %#v", out["inventory"])
+	}
+	for _, stage := range out["funnel"].([]any) {
+		row := stage.(map[string]any)
+		if row["available"] != true || row["value"] != float64(0) {
+			t.Fatalf("empty local fact must be known zero: %v", row)
+		}
+	}
+	cost := out["cost"].(map[string]any)
+	if cost["content_generation_available"] != false {
+		t.Fatalf("missing generation cost must remain unavailable: %v", cost)
+	}
+}
+
+func TestDashboardOpsBillingProjectionUsesBillingPermission(t *testing.T) {
+	f := newDashboardFixture(t)
+	start, end := opsDayWindow()
+	path := "/api/v1/dashboard/operations?window_start=" + start + "&window_end=" + end
+	for _, session := range []string{"sess-sm-a", "sess-staff-a"} {
+		status, _, out := f.do(t, "GET", path, session, f.tenA, ``)
+		if status != http.StatusOK {
+			t.Fatalf("%s operations = %d", session, status)
+		}
+		recon := out["cost_reconciliation"].(map[string]any)
+		if recon["availability"] != "forbidden" {
+			t.Fatalf("%s must obey billing:view: %v", session, recon)
+		}
+		if len(recon) != 2 {
+			t.Fatalf("restricted projection must not serialize amounts or counts: %v", recon)
+		}
+		if len(out["funnel"].([]any)) != 7 {
+			t.Fatalf("unrelated store facts remain readable")
+		}
+	}
+	status, _, owner := f.admin(t, "GET", path, ``)
+	if status != http.StatusOK {
+		t.Fatal(status)
+	}
+	if _, ok := owner["cost_reconciliation"].(map[string]any)["ai_consumed_minor"]; !ok {
+		t.Fatalf("owner billing projection must stay compatible")
 	}
 }

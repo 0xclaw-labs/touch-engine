@@ -34,20 +34,20 @@ import (
 // ContentMedia is one verified real-media row (bytes live in the controlled
 // media directory, content-addressed; the database never stores bytes).
 type ContentMedia struct {
-	ID         string             `json:"id"`
-	TenantID   string             `json:"tenant_id"`
-	StoreID    string             `json:"store_id"`
-	Kind       upload.MediaKind   `json:"kind"`
-	MimeType   string             `json:"mime_type"`
-	ByteSize   int64              `json:"byte_size"`
-	SHA256     string             `json:"sha256"`
-	DurationMS int64              `json:"duration_ms"`
-	Width      int                `json:"width"`
-	Height     int                `json:"height"`
-	Filename   string             `json:"filename"`
-	MediaRef   string             `json:"media_ref"`
-	CreatedBy  string             `json:"created_by"`
-	CreatedAt  string             `json:"created_at"`
+	ID         string           `json:"id"`
+	TenantID   string           `json:"tenant_id"`
+	StoreID    string           `json:"store_id"`
+	Kind       upload.MediaKind `json:"kind"`
+	MimeType   string           `json:"mime_type"`
+	ByteSize   int64            `json:"byte_size"`
+	SHA256     string           `json:"sha256"`
+	DurationMS int64            `json:"duration_ms"`
+	Width      int              `json:"width"`
+	Height     int              `json:"height"`
+	Filename   string           `json:"filename"`
+	MediaRef   string           `json:"media_ref"`
+	CreatedBy  string           `json:"created_by"`
+	CreatedAt  string           `json:"created_at"`
 }
 
 const contentMediaCols = `id,tenant_id,store_id,kind,mime_type,byte_size,sha256,duration_ms,width,height,filename,media_ref,created_by,created_at`
@@ -666,11 +666,15 @@ type StoreContentPackVersionEvent struct {
 }
 
 func (s *Store) appendStoreVersionEvent(tenantID, versionID, kind, note, actor string) error {
+	return appendStoreVersionEvent(s.DB, tenantID, versionID, kind, note, actor)
+}
+
+func appendStoreVersionEvent(w contentPackEventWriter, tenantID, versionID, kind, note, actor string) error {
 	e := StoreContentPackVersionEvent{
 		ID: newID("scpe_"), TenantID: tenantID, VersionID: versionID,
 		Kind: kind, Note: note, Actor: actor, CreatedAt: now(),
 	}
-	_, err := s.DB.Exec(
+	_, err := w.Exec(
 		`INSERT INTO store_content_pack_version_events(id,tenant_id,version_id,kind,note,actor,created_at) VALUES(?,?,?,?,?,?,?)`,
 		e.ID, e.TenantID, e.VersionID, e.Kind, e.Note, e.Actor, e.CreatedAt)
 	return err
@@ -736,19 +740,33 @@ func (s *Store) AdoptStoreContentPackVersion(tenantID, packID, versionID, platfo
 	if err != nil {
 		return StoreContentPackAdoption{}, err
 	}
-	v, err := s.GetStoreContentPackVersion(versionID, tenantID)
+	// The distribution decision, old-version transition, pointer and events
+	// commit together; adoption cannot race a block and restore distribution.
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return StoreContentPackAdoption{}, err
+	}
+	defer tx.Rollback()
+	v, err := scanStoreVersion(tx.QueryRow(
+		`SELECT `+storeVersionCols+` FROM store_content_pack_versions WHERE id=? AND tenant_id=?`, versionID, tenantID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return StoreContentPackAdoption{}, ErrNotFound
+	}
 	if err != nil {
 		return StoreContentPackAdoption{}, err
 	}
 	if v.PackID != pack.ID {
 		return StoreContentPackAdoption{}, ErrNotFound
 	}
+	if strings.TrimSpace(v.BlockedReason) != "" {
+		v.Status = contentpack.StatusBlocked
+	}
 	if err := contentpack.Distributable(v.Status, v.GrantUntil, at); err != nil {
 		return StoreContentPackAdoption{}, err
 	}
 	nowText := at.UTC().Format(time.RFC3339Nano)
 
-	prev, err := scanStoreAdoption(s.DB.QueryRow(
+	prev, err := scanStoreAdoption(tx.QueryRow(
 		`SELECT `+storeAdoptionCols+` FROM store_content_pack_adoptions WHERE tenant_id=? AND store_id=? AND platform=? AND pack_id=?`,
 		tenantID, pack.StoreID, platform, pack.ID))
 	found := err == nil
@@ -756,18 +774,18 @@ func (s *Store) AdoptStoreContentPackVersion(tenantID, packID, versionID, platfo
 		return StoreContentPackAdoption{}, err
 	}
 	if found && prev.VersionID != v.ID {
-		if _, err := s.DB.Exec(
-			`UPDATE store_content_pack_versions SET status=? WHERE id=? AND tenant_id=?`,
-			contentpack.StatusRetired, prev.VersionID, tenantID); err != nil {
+		if _, err := tx.Exec(
+			`UPDATE store_content_pack_versions SET status=? WHERE id=? AND tenant_id=? AND status<>? AND trim(blocked_reason)=''`,
+			contentpack.StatusRetired, prev.VersionID, tenantID, contentpack.StatusBlocked); err != nil {
 			return StoreContentPackAdoption{}, err
 		}
-		if err := s.appendStoreVersionEvent(tenantID, prev.VersionID, "superseded", "被新采用版本取代:"+v.ID, adoptedBy); err != nil {
+		if err := appendStoreVersionEvent(tx, tenantID, prev.VersionID, "superseded", "被新采用版本取代:"+v.ID, adoptedBy); err != nil {
 			return StoreContentPackAdoption{}, err
 		}
 	}
 	var adoption StoreContentPackAdoption
 	if found {
-		if _, err := s.DB.Exec(
+		if _, err := tx.Exec(
 			`UPDATE store_content_pack_adoptions SET pack_id=?,version_id=?,adopted_by=?,updated_at=? WHERE id=? AND tenant_id=?`,
 			pack.ID, v.ID, adoptedBy, nowText, prev.ID, tenantID); err != nil {
 			return StoreContentPackAdoption{}, err
@@ -787,7 +805,7 @@ func (s *Store) AdoptStoreContentPackVersion(tenantID, packID, versionID, platfo
 		if adoption.CampaignID != "" {
 			campaign = adoption.CampaignID
 		}
-		if _, err := s.DB.Exec(
+		if _, err := tx.Exec(
 			`INSERT INTO store_content_pack_adoptions(`+storeAdoptionCols+`) VALUES(?,?,?,?,?,?,?,?,?,?)`,
 			adoption.ID, adoption.TenantID, adoption.StoreID, campaign, adoption.Platform,
 			adoption.PackID, adoption.VersionID, adoption.AdoptedBy, adoption.CreatedAt, adoption.UpdatedAt); err != nil {
@@ -795,13 +813,16 @@ func (s *Store) AdoptStoreContentPackVersion(tenantID, packID, versionID, platfo
 		}
 	}
 	if v.Status != contentpack.StatusAdopted {
-		if _, err := s.DB.Exec(
+		if _, err := tx.Exec(
 			`UPDATE store_content_pack_versions SET status=? WHERE id=? AND tenant_id=?`,
 			contentpack.StatusAdopted, v.ID, tenantID); err != nil {
 			return StoreContentPackAdoption{}, err
 		}
 	}
-	if err := s.appendStoreVersionEvent(tenantID, v.ID, "adopted", "平台 "+platform+" 明确采用", adoptedBy); err != nil {
+	if err := appendStoreVersionEvent(tx, tenantID, v.ID, "adopted", "平台 "+platform+" 明确采用", adoptedBy); err != nil {
+		return StoreContentPackAdoption{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return StoreContentPackAdoption{}, err
 	}
 	return adoption, nil
@@ -1048,7 +1069,7 @@ func (s *Store) GetActionContentBindingAnyTenant(actionID string) (ActionContent
 }
 
 // ClearActionContentBinding is the「解绑」internal call (HUI-4584 actions PUT
-// 写入侧,中央集成 2026-11-10): the merchant put content_binding_ref='' on an
+// 写入侧,中央集成 2026-11-10): the merchant put content_binding_ref=” on an
 // action that previously carried one (or deleted the action row entirely), so
 // the authoritative binding index must follow. Deletes the
 // store_action_content_bindings row and appends one audit event on the last

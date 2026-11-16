@@ -34,6 +34,7 @@ export interface ContentSnapshotView {
 
 export interface ContentPublishProps {
   code: string;
+  participationId?:string;
   /** 自身参与的内容版本(回显当前选中;null=还没开始参与)。 */
   selectedVersion?: string;
   /** 未交接草稿才可换(canSwitchDraft 判定在页面)。 */
@@ -41,7 +42,7 @@ export interface ContentPublishProps {
   onSwitchVersion?: (versionId: string) => void;
 }
 
-export function ContentPublish({ code, selectedVersion, canSwitch, onSwitchVersion }: ContentPublishProps) {
+export function ContentPublish({ code, participationId, selectedVersion, canSwitch, onSwitchVersion }: ContentPublishProps) {
   const [choices, setChoices] = useState<ContentChoice[] | null>(null);
   const [choicesUnavailable, setChoicesUnavailable] = useState(false);
   const [snapshot, setSnapshot] = useState<ContentSnapshotView | null>(null);
@@ -61,7 +62,8 @@ export function ContentPublish({ code, selectedVersion, canSwitch, onSwitchVersi
         }
         const data = await res.json().catch(() => null);
         const items = Array.isArray(data?.items) ? (data.items as ContentChoice[]) : [];
-        if (items.length === 0) setChoicesUnavailable(true);
+        if (items.length === 0 && selectedVersion && participationId) { setChoices([{pack_id:"",version_id:selectedVersion,title:"原选择内容",platform:""}]); }
+        else if (items.length === 0) setChoicesUnavailable(true);
         else setChoices(items);
       })
       .catch(() => {
@@ -70,14 +72,14 @@ export function ContentPublish({ code, selectedVersion, canSwitch, onSwitchVersi
     return () => {
       alive = false;
     };
-  }, [code]);
+  }, [code, participationId, selectedVersion]);
 
   // Default recommendation is the first choice. Once the guest has a selected
   // version, only that version may be shown; missing/retired is a real mismatch.
   useEffect(() => {
     if (!choices || choices.length === 0) return;
     const mine = selectedVersion ? choices.find((c) => c.version_id === selectedVersion) : undefined;
-    if (selectedVersion && !mine) {
+    if (selectedVersion && !mine && !participationId) {
       setMismatch("你参与时选的内容已经不是门店当前可用的版本。请换选一个当前版本，或请店员协助。");
       setSnapshot(null);
       setAdmission(null);
@@ -87,9 +89,9 @@ export function ContentPublish({ code, selectedVersion, canSwitch, onSwitchVersi
     const seq = ++requestSeq.current;
     setMismatch("");
     let alive = true;
-    const versionQuery = selectedVersion ? `&version_id=${encodeURIComponent(selectedVersion)}` : "";
+    const versionQuery = selectedVersion ? `&version_id=${encodeURIComponent(selectedVersion)}${participationId ? `&participation_id=${encodeURIComponent(participationId)}` : ""}` : "";
     fetch(
-      `/api/public/links/${encodeURIComponent(code)}/content-snapshot?pack_id=${encodeURIComponent(chosen.pack_id)}&platform=${encodeURIComponent(chosen.platform)}${versionQuery}`,
+      `/api/public/links/${encodeURIComponent(code)}/content-snapshot?pack_id=${selectedVersion && participationId ? "" : encodeURIComponent(chosen.pack_id)}&platform=${encodeURIComponent(chosen.platform)}${versionQuery}`,
     )
       .then(async (res) => {
         if (!alive || seq !== requestSeq.current) return;
@@ -128,7 +130,7 @@ export function ContentPublish({ code, selectedVersion, canSwitch, onSwitchVersi
     return () => {
       alive = false;
     };
-  }, [code, choices, selectedVersion]);
+  }, [code, choices, selectedVersion, participationId]);
 
   const snapshotBody = snapshot?.body || "文案内容在开始交接时一并给出。";
   const lines = admissionLines(admission);

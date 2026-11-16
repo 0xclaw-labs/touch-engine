@@ -10,7 +10,7 @@
 //     blocked(blocked_reason = 运营原因),历史证据不被覆盖。
 
 import { useCallback, useEffect, useState } from "react";
-import { useMerchantSession, type MerchantSession } from "@/components/work/merchant-session";
+import { useSession, type MerchantSession } from "@/components/work/merchant-session";
 import {
   OperationFeedback,
   OpsReasonForm,
@@ -29,7 +29,7 @@ interface TemplatesPayload {
 }
 
 export function TemplatesDesk() {
-  const session = useMerchantSession();
+  const session = useSession();
   const [phase, setPhase] = useState<Phase>("loading");
   const [error, setError] = useState("");
   const [data, setData] = useState<TemplatesPayload | null>(null);

@@ -13,64 +13,38 @@ const panelRel = "components/work/content-pack-panel.tsx";
 const detailRel = "app/work/campaigns/[id]/page.tsx";
 const panelProductionRel = "components/work/store-production-panel.tsx";
 
-describe("素材页三个入口，商家不填技术 ID", () => {
+describe("素材页统一内容编辑器", () => {
   const materials = read(materialsRel);
-
-  it("提供上传已有内容/从素材库选择/帮我制作三个入口", () => {
-    expect(materials).toContain("上传已有内容");
-    expect(materials).toContain("从素材库选择");
-    expect(materials).toContain("帮我制作");
-    // 两个真实入口的表单 + 制作入口的 section,均有稳定标识
-    expect(materials).toMatch(/entry="upload"/);
-    expect(materials).toMatch(/entry="library"/);
-    expect(materials).toMatch(/data-entry="produce"/);
+  const editor = read("components/work/store-content-drawer.tsx");
+  it("当前门店与可选活动进入同一编辑器", () => {
+    expect(materials).toContain("<StoreContentDrawer");
+    expect(materials).toContain("campaignId={context.campaignId || undefined}");
+    expect(materials).not.toContain("PackForm");
   });
-
-  it("不要求填写 asset_id/version 技术字段", () => {
-    expect(materials).not.toContain('placeholder="平台 asset_id"');
-    expect(materials).not.toMatch(/name="asset_id"/);
-    expect(materials).not.toMatch(/name="version"/);
-    // 版本选择走素材选择器(asset_id 由选择器内部携带,商家不输入)
-    expect(materials).toMatch(/value={item\.id}/);
+  it("上传、已有、制作单选且共享一份标题正文", () => {
+    expect(editor).toContain('type="radio"');
+    for (const label of ["上传文件", "选择已有", "帮我制作"]) expect(editor).toContain(label);
+    expect((editor.match(/name="title"/g) || []).length).toBe(1);
+    expect((editor.match(/name="body"/g) || []).length).toBe(1);
+    expect(editor).not.toMatch(/name="asset_id"|name="version"/);
   });
-
-  it("选择器展示来源/类型/授权声明与适用平台，预览含文案与门店事实", () => {
-    expect(materials).toMatch(/item\.source/);
-    expect(materials).toMatch(/item\.media_type/);
-    expect(materials).toMatch(/item\.grant_ref/);
-    expect(materials).toMatch(/适用平台/);
-    expect(materials).toMatch(/name="title"/);
-    expect(materials).toMatch(/name="body"/);
-    expect(materials).toMatch(/name="store_name"/);
-    expect(materials).toMatch(/name="price_note"/);
-    expect(materials).toMatch(/name="valid_note"/);
-    // 采用路径:候选提交后可明确采用
-    expect(materials).toMatch(/versions\/\$\{[^}]+\}\/adopt/);
-    expect(materials).toContain("采用");
+  it("版权、广告与AI标识随候选保存，采用与上线分开", () => {
+    expect(editor).toContain("素材版权及使用授权");
+    expect(editor).toContain("marking: { ad_required: true, ai_generated: aiGenerated }");
+    expect(editor).toContain("adopted_pending_publish");
+    expect(editor).toContain("线上是否使用，以原用途的发布版本为准");
   });
-
-  it("帮我制作：未接通时显示原因、按钮不可用，不阻塞上传/选素材", () => {
-    // HUI-4595: 发起制作切到门店真实制作面板(StoreProductionPanel);能力
-    // 申报/禁用态/原因文案由面板承担并经 content-production.test.ts 锁定。
-    // 本断言保持同一语义:未接通=面板挂载+禁用能力+原因文案可见,且两个
-    // 真实入口的表单不因制作不可用而隐藏。
-    expect(materials).toContain("StoreProductionPanel");
-    expect(read(panelProductionRel)).toMatch(/content-production-handoffs\/capabilities/);
-    expect(read(panelProductionRel)).toMatch(/production_available/);
-    expect(read(panelProductionRel)).toMatch(/data-field="produce-reason"/);
-    expect(read(panelProductionRel)).toMatch(/disabled=\{busy \|\| !caps\?\.production_available\}/);
-    expect(materials).toMatch(/data-field="produce-reason"/);
-    // 两个真实入口的表单不因制作不可用而隐藏
-    expect(materials).toMatch(/data-entry-panel=\{entry\}/);
-    expect(materials).toMatch(/entry="upload"/);
-    expect(materials).toMatch(/entry="library"/);
+  it("制作能力失败只影响制作来源，允许获取权威报价与明确确认", () => {
+    const production=read(panelProductionRel);
+    expect(editor).toContain('<StoreProductionPanel');
+    expect(production).toContain("content-production-handoffs/capabilities");
+    expect(production).toContain('data-action="request-quote"');
+    expect(production).toContain("确认费用并提交制作");
   });
-
-  it("390/430 与桌面可操作：窄屏堆叠样式，无固定像素宽", () => {
-    expect(materials).toMatch(/className="tk-section/);
-    expect(materials).toMatch(/className="tk-form/);
-    expect(materials).not.toMatch(/style=\{\{[^}]*width:\s*\d/);
-    expect(materials).not.toMatch(/width:\s*[34]\d\dpx/);
+  it("采用后回到同一门店或活动，不引入固定像素宽", () => {
+    expect(editor).toContain("onAdopted?.({ storeId, campaignId, packId, versionId, platform");
+    expect(materials).toContain("returnHref={returnHref}");
+    expect(editor).not.toMatch(/width:\s*[34]\d\dpx/);
   });
 });
 
@@ -107,18 +81,11 @@ describe("活动内容面板：候选→预览/编辑→明确采用", () => {
   });
 });
 
-describe("活动详情页只做最小窄补丁挂载内容面板", () => {
-  const detail = read(detailRel);
-
-  it("import 并挂载 ContentPackPanel，一处 section", () => {
-    expect(detail).toContain('from "@/components/work/content-pack-panel"');
-    const mounts = detail.match(/<ContentPackPanel/g) ?? [];
-    expect(mounts.length).toBe(1);
-    expect(detail).toMatch(/<ContentPackPanel campaignId=\{id\} \/?>/);
-  });
-
-  it("不动 HUI-2628 在改的既有区块（门店参数/碰一碰仍在）", () => {
-    expect(detail).toContain('id="store-motion"');
-    expect(detail).toContain('id="touch"');
-  });
+describe("活动内容复用统一编辑器", () => {
+ it("活动宿主不再重复挂载独立内容包面板", () => {
+  const detail=read("app/work/campaigns/[id]/page.tsx");
+  expect(detail).not.toContain("<ContentPackPanel");
+  expect(read("components/work/campaign-config-panel.tsx")).toContain("<ContentEditor");
+  expect(detail).toContain('id="touch"');
+ });
 });

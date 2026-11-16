@@ -211,32 +211,43 @@ type LeadsFacts struct {
 	UniqueContacts          int64 // COUNT(DISTINCT phone) 窗口内提交
 }
 
-// CostReconciliationFacts: 4591 投影只读。指针 = 窗口内没有该类支付事实
-// (未录入,不冒充 0);退款是分列的对账事实,绝不冲销改写原订单金额。
+// CostReconciliationFacts: 4591 投影只读。nil 金额表示缺付款事实或金额/币种不完整；
+// 不冒充 0。退款是分列的对账事实,绝不冲销改写原订单金额。
 type CostReconciliationFacts struct {
-	SubscriptionPaidMinor    *int64 // kind='subscription' status='active' 的 SUM(amount_minor)
-	SubscriptionPaidOrders   int64
-	SubscriptionFailedOrders int64 // failed 订单数(失败不是支出,单列)
-	AIConfirmedMinor         int64 // state='confirmed'(已确认未消费)
-	AIConfirmedCount         int64
-	AIConsumedMinor          int64 // state='consumed'(已消费,已发生)
-	AIConsumedCount          int64
-	AIRefundedMinor          int64 // state='refunded'(单列,不计支出)
-	AIRefundedCount          int64
-	AIFailedMinor            int64 // state='failed'(单列,不计支出)
-	AIFailedCount            int64
-	HardwarePaidMinor        *int64 // kind='hardware' status='active' 的 SUM(amount_minor)
-	HardwarePaidOrders       int64
-	HardwareRefundMinor      int64 // billing_refunds SUM(分列对账)
-	HardwareRefunds          int64
+	SubscriptionPaidMinor         *int64 // payment_paid 权威事实关联的单币种订单金额;缺失保持未知
+	SubscriptionPaidOrders        int64
+	SubscriptionPaidCurrency      string
+	SubscriptionPaidTimeUnknown   int64 // 无法归窗的付款单数；确定落窗单数仍单列
+	SubscriptionFailedOrders      int64 // failed 开通订单数;可能已经支付,与付款分列
+	SubscriptionRefundMinor       *int64
+	SubscriptionRefunds           int64
+	SubscriptionRefundCurrency    string
+	SubscriptionRefundTimeUnknown int64 // 无法归窗的退款笔数，不归为本窗口的零
+	AIConfirmedMinor              int64 // state='confirmed'(已确认未消费)
+	AIConfirmedCount              int64
+	AIConsumedMinor               int64 // state='consumed'(已消费,已发生)
+	AIConsumedCount               int64
+	AIRefundedMinor               int64 // state='refunded'(单列,不计支出)
+	AIRefundedCount               int64
+	AIFailedMinor                 int64 // state='failed'(单列,不计支出)
+	AIFailedCount                 int64
+	HardwarePaidMinor             *int64 // payment_paid 权威事实关联的单币种订单金额
+	HardwarePaidOrders            int64
+	HardwarePaidCurrency          string
+	HardwarePaidTimeUnknown       int64
+	HardwareRefundMinor           *int64 // 仅硬件订单的退款;缺币种/金额不完整时未知
+	HardwareRefunds               int64
+	HardwareRefundCurrency        string
+	HardwareRefundTimeUnknown     int64
 }
 
 // LayerCount is one named count line inside an evidence layer. Each line has
 // its own dedup scope stated in the layer definition; lines are never summed.
 type LayerCount struct {
-	Key   string `json:"key"`
-	Label string `json:"label"`
-	Value int64  `json:"value"`
+	Key            string   `json:"key"`
+	Label          string   `json:"label"`
+	Value          int64    `json:"value"`
+	AppliedFilters []string `json:"applied_filters"`
 }
 
 // EvidenceLayer is one of the six verification layers.
@@ -271,51 +282,62 @@ type LeadsPanel struct {
 }
 
 // CostReconciliation is the read-only 4591 projection block. Subscriptions and
-// hardware carry pointer amounts: nil = no payment facts in the window (kept
-// unknown, never a fabricated 0). Refunds are listed apart, never netted.
+// hardware carry pointer amounts: nil = no payment facts or incomplete amount /
+// currency (kept unknown, never a fabricated 0). Refunds are listed apart.
 type CostReconciliation struct {
-	SubscriptionAvailable    bool       `json:"subscription_available"`
-	SubscriptionPaidMinor    *int64     `json:"subscription_paid_minor,omitempty"`
-	SubscriptionPaidOrders   int64      `json:"subscription_paid_orders"`
-	SubscriptionFailedOrders int64      `json:"subscription_failed_orders"`
-	SubscriptionNote         string     `json:"subscription_note,omitempty"`
-	AIConfirmedMinor         int64      `json:"ai_confirmed_minor"`
-	AIConfirmedCount         int64      `json:"ai_confirmed_count"`
-	AIConsumedMinor          int64      `json:"ai_consumed_minor"`
-	AIConsumedCount          int64      `json:"ai_consumed_count"`
-	AIRefundedMinor          int64      `json:"ai_refunded_minor"`
-	AIRefundedCount          int64      `json:"ai_refunded_count"`
-	AIFailedMinor            int64      `json:"ai_failed_minor"`
-	AIFailedCount            int64      `json:"ai_failed_count"`
-	HardwareAvailable        bool       `json:"hardware_available"`
-	HardwarePaidMinor        *int64     `json:"hardware_paid_minor,omitempty"`
-	HardwarePaidOrders       int64      `json:"hardware_paid_orders"`
-	HardwareRefundMinor      int64      `json:"hardware_refund_minor"`
-	HardwareRefunds          int64      `json:"hardware_refunds"`
-	Definition               Definition `json:"definition"`
-	FaceNote                 string     `json:"face_note"`
+	SubscriptionAvailable         bool       `json:"subscription_available"`
+	SubscriptionPaidMinor         *int64     `json:"subscription_paid_minor,omitempty"`
+	SubscriptionPaidOrders        int64      `json:"subscription_paid_orders"`
+	SubscriptionPaidCurrency      string     `json:"subscription_paid_currency,omitempty"`
+	SubscriptionPaidTimeUnknown   int64      `json:"subscription_paid_time_unknown"`
+	SubscriptionFailedOrders      int64      `json:"subscription_failed_orders"`
+	SubscriptionRefundMinor       *int64     `json:"subscription_refund_minor,omitempty"`
+	SubscriptionRefunds           int64      `json:"subscription_refunds"`
+	SubscriptionRefundCurrency    string     `json:"subscription_refund_currency,omitempty"`
+	SubscriptionRefundTimeUnknown int64      `json:"subscription_refund_time_unknown"`
+	SubscriptionNote              string     `json:"subscription_note,omitempty"`
+	AIConfirmedMinor              int64      `json:"ai_confirmed_minor"`
+	AIConfirmedCount              int64      `json:"ai_confirmed_count"`
+	AIConsumedMinor               int64      `json:"ai_consumed_minor"`
+	AIConsumedCount               int64      `json:"ai_consumed_count"`
+	AIRefundedMinor               int64      `json:"ai_refunded_minor"`
+	AIRefundedCount               int64      `json:"ai_refunded_count"`
+	AIFailedMinor                 int64      `json:"ai_failed_minor"`
+	AIFailedCount                 int64      `json:"ai_failed_count"`
+	HardwareAvailable             bool       `json:"hardware_available"`
+	HardwarePaidMinor             *int64     `json:"hardware_paid_minor,omitempty"`
+	HardwarePaidOrders            int64      `json:"hardware_paid_orders"`
+	HardwarePaidCurrency          string     `json:"hardware_paid_currency,omitempty"`
+	HardwarePaidTimeUnknown       int64      `json:"hardware_paid_time_unknown"`
+	HardwareRefundMinor           *int64     `json:"hardware_refund_minor,omitempty"`
+	HardwareRefunds               int64      `json:"hardware_refunds"`
+	HardwareRefundCurrency        string     `json:"hardware_refund_currency,omitempty"`
+	HardwareRefundTimeUnknown     int64      `json:"hardware_refund_time_unknown"`
+	Definition                    Definition `json:"definition"`
+	FaceNote                      string     `json:"face_note"`
 }
 
 // InventoryFactLine is one reward_inventory batch with its benefit counts.
 // FaceValueMinor/CostMinor are the batch's per-unit snapshot values (the
 // benefit rows copy them at allocation; the panel never re-derives them).
 type InventoryFactLine struct {
-	InventoryID    string
-	CampaignID     string
-	StoreID        string // "" = 租户级批次(全店共享)
-	Name           string
-	Kind           string
-	BenefitSlot    string
-	RuleVersion    int
-	Currency       string
-	TotalQty       int64
-	Reserved       int64
-	Issued         int64
-	Redeemed       int64
-	Reversed       int64
-	Expired        int64
-	FaceValueMinor int64
-	CostMinor      int64
+	InventoryID      string
+	CampaignID       string
+	StoreID          string // 空值仅表示未显式绑定,不授予共享权限
+	Name             string
+	Kind             string
+	BenefitSlot      string
+	RuleVersion      int
+	Currency         string
+	TotalQty         int64
+	Reserved         int64
+	Issued           int64
+	Redeemed         int64
+	Reversed         int64
+	Expired          int64
+	FaceValueMinor   int64
+	CostMinor        int64
+	AvailableUnknown bool
 }
 
 // AnomalyFacts: pending review 与 failed 是当前态队列;reversed/expired 取
@@ -335,6 +357,8 @@ type CostFacts struct {
 	RewardRedeemedCostMinor      int64
 	RewardFaceMinor              int64
 	CostUnrecordedBatches        int64
+	RewardCostUnrecorded         int64
+	RedeemedCostUnrecorded       int64
 }
 
 // FunnelStage is one funnel level. AppliedFilters names the requested filter
@@ -359,26 +383,27 @@ type EvidencePanel struct {
 }
 
 // InventoryLine is the read-only projection of one ledger batch. Available
-// mirrors the ledger's own occupancy check so the panel can never disagree
-// with issuance.
+// mirrors the ledger occupancy only when the reader can see the whole batch.
+// A scoped reader receives null plus available_unknown, never a partial estimate.
 type InventoryLine struct {
-	InventoryID    string `json:"inventory_id"`
-	CampaignID     string `json:"campaign_id"`
-	StoreID        string `json:"store_id,omitempty"`
-	Name           string `json:"name"`
-	Kind           string `json:"kind"`
-	BenefitSlot    string `json:"benefit_slot"`
-	RuleVersion    int    `json:"rule_version"`
-	Currency       string `json:"currency,omitempty"`
-	TotalQty       int64  `json:"total_qty"`
-	Reserved       int64  `json:"reserved"`
-	Issued         int64  `json:"issued"`
-	Redeemed       int64  `json:"redeemed"`
-	Available      int64  `json:"available"`
-	Reversed       int64  `json:"reversed"`
-	Expired        int64  `json:"expired"`
-	FaceValueMinor int64  `json:"face_value_minor"`
-	CostMinor      int64  `json:"cost_minor"`
+	InventoryID      string `json:"inventory_id"`
+	CampaignID       string `json:"campaign_id"`
+	StoreID          string `json:"store_id,omitempty"`
+	Name             string `json:"name"`
+	Kind             string `json:"kind"`
+	BenefitSlot      string `json:"benefit_slot"`
+	RuleVersion      int    `json:"rule_version"`
+	Currency         string `json:"currency,omitempty"`
+	TotalQty         int64  `json:"total_qty"`
+	Reserved         int64  `json:"reserved"`
+	Issued           int64  `json:"issued"`
+	Redeemed         int64  `json:"redeemed"`
+	Available        *int64 `json:"available"`
+	AvailableUnknown bool   `json:"available_unknown,omitempty"`
+	Reversed         int64  `json:"reversed"`
+	Expired          int64  `json:"expired"`
+	FaceValueMinor   int64  `json:"face_value_minor"`
+	CostMinor        int64  `json:"cost_minor"`
 }
 
 // CostPanel keeps the three cost numbers apart. Face carries the fixed note
@@ -392,6 +417,8 @@ type CostPanel struct {
 	RewardRedeemedCostMinor      int64  `json:"reward_redeemed_cost_minor"`
 	RewardFaceMinor              int64  `json:"reward_face_minor"`
 	UnrecordedBatches            int64  `json:"unrecorded_batches"`
+	RewardCostUnrecorded         int64  `json:"reward_cost_unrecorded"`
+	RedeemedCostUnrecorded       int64  `json:"redeemed_cost_unrecorded"`
 	FaceNote                     string `json:"face_note"`
 }
 
@@ -446,7 +473,7 @@ const (
 	evidenceNote = "三类核验证据是不同核验方式,同一参与可能同时具备多种证据,不能相加成" +
 		"「发布总人数」;总体覆盖按 distinct 参与数,官方发布单独按可信尝试计数"
 	faceNote               = "券面额是营销面值,不是已发生支出;实际支出只看成本列,未知成本标未录入"
-	contentCostUnknownNote = "内容实际生成费用未录入:本窗口内没有已结算(billed)的生成记录," +
+	contentCostUnknownNote = "本窗口内没有可核算的已结算生成记录，或部分结算金额缺失/无效；费用合计保持未知。" +
 		"在途预扣(hold)不算支出,不以报价推算"
 )
 
@@ -477,7 +504,7 @@ var filterLabels = []struct{ key, label string }{
 var layerTitles = map[string]string{
 	LayerActionClicked:    "点击",
 	LayerInvokeAttempt:    "唤起尝试",
-	LayerHandoffMedia:     "媒体交接",
+	LayerHandoffMedia:     "交接准备与操作",
 	LayerUserReported:     "顾客自报",
 	LayerStaffConfirmed:   "店员确认",
 	LayerPlatformVerified: "平台证实",
@@ -508,12 +535,12 @@ func layerDefs() map[string]Definition {
 			WindowNote:  windowNoteSecond + ";无官方回执的「已唤起成功」结构上不存在",
 		},
 		LayerHandoffMedia: {
-			Source: "publish_handoffs(1670 交接权威行):requested=创建行(idempotency_key UNIQUE);" +
-				"media_handoff 事件 kind='media_handoff'(1670 v2:素材交出≠发布,下载开始不算平台成功);" +
+			Source: "publish_handoffs(1670 交接权威行):requested=创建行(idempotency_key UNIQUE);门店以交接原store_id为准，活动可选;" +
+				"media_handoff事件包含顾客端取材/分享操作记录，既可能是媒体也可能是链接；不能据此确认文件已保存、消息已发送或平台已发布;" +
 				"completed=当前状态 ∈ {handoff_ready,editor_opened,submitting,awaiting_review,unknown,platform_confirmed}" +
 				"(状态机只前进,六态蕴含 handoff_ready 已达;状态机定义见 publishhandoff.transitions)",
 			DedupKey:    "distinct handoff(UNIQUE(tenant_id,idempotency_key):重放回原行)",
-			Denominator: "distinct handoff;completed 是 requested 的子集(同一批行内的状态事实)",
+			Denominator: "distinct handoff;准备就绪是已发起的子集，只表示交接已准备，不是交出或发布完成",
 			EventTime:   "publish_handoffs.created_at(交接发起时刻,UTC)",
 			WindowNote:  windowNoteSecond + ";completed 按窗口内发起的行在当前时点的状态披露(当前态,可随推进变化)",
 		},
@@ -544,46 +571,11 @@ func layerDefs() map[string]Definition {
 	}
 }
 
-// layersAppliedFor: which requested filters a layer can honestly honor.
-// Session/service facts carry action_id + environment; publish-domain facts
-// carry campaign/store/platform plus (v2 rows) action_id/environment on the
-// handoff row itself.
-func layersAppliedFor(layer string, f FilterSet) []string {
-	out := []string{}
-	add := func(cond bool, key string) {
-		if cond {
-			out = append(out, key)
-		}
-	}
-	publishDomain := func() {
-		add(f.CampaignID != "", "campaign_id")
-		add(f.StoreID != "", "store_id")
-		add(f.Platform != "", "platform")
-		add(f.ActionID != "", "action_id")
-		add(f.Environment != "", "environment")
-	}
-	switch layer {
-	case LayerActionClicked, LayerInvokeAttempt:
-		add(f.StoreID != "", "store_id")
-		add(f.ActionID != "", "action_id")
-		add(f.Environment != "", "environment")
-	case LayerHandoffMedia, LayerStaffConfirmed, LayerPlatformVerified:
-		publishDomain()
-	case LayerUserReported:
-		// 自报事实行(customer_publish_attempts)没有 action/environment 列,
-		// 不声明这两项——声明了就是假装过滤。
-		add(f.CampaignID != "", "campaign_id")
-		add(f.StoreID != "", "store_id")
-		add(f.Platform != "", "platform")
-	}
-	return out
-}
-
 // appliedFor returns the filter keys a stage can honestly honor, given the
 // requested set. The join-path facts are fixed here (and worded in each
 // stage's definition): visits only link campaign/store/touchpoint(channel);
-// participations link campaign/store/touchpoint/content_pack_version; frozen
-// attempts additionally carry platform/handoff_method.
+// participations link campaign/store/touchpoint; frozen attempts carry
+// content_pack_version/platform/handoff_method. Credentials bind exact attempts.
 func appliedFor(stage string, f FilterSet) []string {
 	out := []string{}
 	add := func(cond bool, key string) {
@@ -598,16 +590,19 @@ func appliedFor(stage string, f FilterSet) []string {
 	participationLevel := func() {
 		basic()
 		add(f.Touchpoint != "", "touchpoint")
-		add(f.ContentPackVersion != "", "content_pack_version")
 	}
 	switch stage {
 	case FunnelVisits:
 		basic()
 		add(f.Touchpoint != "", "touchpoint")
-	case FunnelStarted, FunnelHandoffInitiated:
+	case FunnelStarted:
 		participationLevel()
+	case FunnelHandoffInitiated:
+		participationLevel()
+		add(f.ContentPackVersion != "", "content_pack_version")
 	case FunnelContentSelected:
 		participationLevel()
+		add(f.ContentPackVersion != "", "content_pack_version")
 		add(f.Platform != "", "platform")
 		add(f.HandoffMethod != "", "handoff_method")
 	case FunnelPublishVerified:
@@ -639,14 +634,14 @@ func funnelDefs() map[string]Definition {
 		},
 		FunnelContentSelected: {
 			Source:      "participation_attempts.content_pack_version(交接时冻结在 attempt 行,append-only)",
-			DedupKey:    "distinct participation:同参与多次换稿/换平台只计一次,取最早一次冻结时刻落窗",
+			DedupKey:    "distinct participation:同参与多次换稿/换平台只计一次,取符合筛选的最早一次冻结时刻落窗",
 			Denominator: "distinct participation(至少有一条冻结了内容版本的尝试)",
 			EventTime:   "MIN(participation_attempts.created_at where content_pack_version<>'')",
 			WindowNote:  windowNoteSecond + ";晚到的冻结行按其自身事件时间落窗",
 		},
 		FunnelHandoffInitiated: {
 			Source:      "handoff_credentials(3546 受控交接凭据铸发行;弱网重铸多枚凭据按参与去重)",
-			DedupKey:    "distinct participation(token_hash 唯一,重铸不重复计);取最早铸发时刻落窗",
+			DedupKey:    "distinct participation(token_hash 唯一,重铸不重复计);内容版本仅沿凭据绑定的同租户同参与 attempt 筛选,取匹配后最早铸发时刻落窗",
 			Denominator: "distinct participation(至少铸发过一枚交接凭据)",
 			EventTime:   "MIN(handoff_credentials.created_at)",
 			WindowNote:  windowNoteSecond,
@@ -679,11 +674,10 @@ func funnelDefs() map[string]Definition {
 // BuildOperations assembles the operations dashboard. Pure function of
 // (window, scope, facts, filters): same inputs → byte-identical output.
 func BuildOperations(w Window, sc Scope, f OpsFacts, filters FilterSet) OperationsResponse {
-	var resp OperationsResponse
+	resp := OperationsResponse{FilterEcho: map[string]string{}, Inventory: []InventoryLine{}}
 	resp.Window.Start, resp.Window.End = w.Start.Format(time.RFC3339), w.End.Format(time.RFC3339)
 	resp.Scope.TenantID, resp.Scope.StoreScope = sc.TenantID, sc.StoreScope
 	if filters.HasAny() {
-		resp.FilterEcho = map[string]string{}
 		for _, fl := range filterLabels {
 			v := mapGet(filters, fl.key)
 			if v != "" {
@@ -741,14 +735,19 @@ func BuildOperations(w Window, sc Scope, f OpsFacts, filters FilterSet) Operatio
 	resp.CostReconciliation = buildCostReconciliation(f.CostRecon)
 
 	for _, line := range f.Inventory {
+		var available *int64
+		if !line.AvailableUnknown {
+			v := line.TotalQty - line.Reserved - line.Issued - line.Redeemed
+			available = &v
+		}
 		resp.Inventory = append(resp.Inventory, InventoryLine{
 			InventoryID: line.InventoryID, CampaignID: line.CampaignID, StoreID: line.StoreID,
 			Name: line.Name, Kind: line.Kind, BenefitSlot: line.BenefitSlot,
 			RuleVersion: line.RuleVersion, Currency: line.Currency,
 			TotalQty: line.TotalQty,
 			Reserved: line.Reserved, Issued: line.Issued, Redeemed: line.Redeemed,
-			Available: line.TotalQty - line.Reserved - line.Issued - line.Redeemed,
-			Reversed:  line.Reversed, Expired: line.Expired,
+			Available: available, AvailableUnknown: line.AvailableUnknown,
+			Reversed: line.Reversed, Expired: line.Expired,
 			FaceValueMinor: line.FaceValueMinor, CostMinor: line.CostMinor,
 		})
 	}
@@ -761,7 +760,8 @@ func BuildOperations(w Window, sc Scope, f OpsFacts, filters FilterSet) Operatio
 		RewardRedeemedCostMinor:      f.Cost.RewardRedeemedCostMinor,
 		RewardFaceMinor:              f.Cost.RewardFaceMinor,
 		UnrecordedBatches:            f.Cost.CostUnrecordedBatches,
-		FaceNote:                     faceNote,
+		RewardCostUnrecorded:         f.Cost.RewardCostUnrecorded, RedeemedCostUnrecorded: f.Cost.RedeemedCostUnrecorded,
+		FaceNote: faceNote,
 	}
 	if !resp.Cost.ContentGenerationAvailable {
 		resp.Cost.ContentGenerationNote = contentCostUnknownNote
@@ -818,8 +818,7 @@ func buildEvidenceLayers(f OpsFacts, filters FilterSet) EvidenceLayersPanel {
 				layerLine("service_opens", "卡片打开(逐事件行)", f.LayerServiceOpens),
 				layerLine("customer_click", "发布动作点击(1670 v2,逐事件行)", f.LayerCustomerClick),
 			},
-			Definition:     defs[LayerActionClicked],
-			AppliedFilters: layersAppliedFor(LayerActionClicked, filters),
+			Definition: defs[LayerActionClicked],
 		},
 		{
 			Key: LayerInvokeAttempt, Title: layerTitles[LayerInvokeAttempt], Available: true,
@@ -828,19 +827,17 @@ func buildEvidenceLayers(f OpsFacts, filters FilterSet) EvidenceLayersPanel {
 				layerLine("wake_attempt", "发布动作唤起尝试(1670 v2,逐事件行)", f.LayerWakeAttempt),
 				layerLine("editor_open_proved", "可证实的编辑器打开(distinct handoff)", f.LayerEditorProved),
 			},
-			Definition:     defs[LayerInvokeAttempt],
-			AppliedFilters: layersAppliedFor(LayerInvokeAttempt, filters),
-			Note:           "可证实唤起是比尝试更强的证据,按名分列,不相加",
+			Definition: defs[LayerInvokeAttempt],
+			Note:       "可证实唤起是比尝试更强的证据,按名分列,不相加",
 		},
 		{
 			Key: LayerHandoffMedia, Title: layerTitles[LayerHandoffMedia], Available: true,
 			Counts: []LayerCount{
-				layerLine("handoff_requested", "媒体交接发起", f.LayerHandoffRequested),
-				layerLine("handoff_completed", "媒体交接完成(交接就绪已达)", f.LayerHandoffCompleted),
-				layerLine("media_handoff_events", "媒体交接事件(1670 v2,distinct handoff)", f.LayerMediaHandoff),
+				layerLine("handoff_requested", "交接发起（媒体或链接）", f.LayerHandoffRequested),
+				layerLine("handoff_completed", "交接准备就绪", f.LayerHandoffCompleted),
+				layerLine("media_handoff_events", "取材或分享操作记录", f.LayerMediaHandoff),
 			},
-			Definition:     defs[LayerHandoffMedia],
-			AppliedFilters: layersAppliedFor(LayerHandoffMedia, filters),
+			Definition: defs[LayerHandoffMedia],
 		},
 		{
 			Key: LayerUserReported, Title: layerTitles[LayerUserReported], Available: true,
@@ -848,9 +845,8 @@ func buildEvidenceLayers(f OpsFacts, filters FilterSet) EvidenceLayersPanel {
 				layerLine("user_reported", "顾客自报提交(distinct attempt)", f.LayerUserReported),
 				layerLine("customer_self_report", "顾客自报核验请求(1670 v2,不改状态)", f.LayerSelfReportEvent),
 			},
-			Definition:     defs[LayerUserReported],
-			AppliedFilters: layersAppliedFor(LayerUserReported, filters),
-			Note:           "自报不是发布:只进入待确认队列,确认归店员/平台层",
+			Definition: defs[LayerUserReported],
+			Note:       "自报不是发布:只进入待确认队列,确认归店员/平台层",
 		},
 		{
 			Key: LayerStaffConfirmed, Title: layerTitles[LayerStaffConfirmed], Available: true,
@@ -860,8 +856,7 @@ func buildEvidenceLayers(f OpsFacts, filters FilterSet) EvidenceLayersPanel {
 				layerLine("staff_confirm", "店员确认(1670 v2,distinct handoff)", f.LayerStaffConfirm),
 				layerLine("staff_benefit_participations", "权益行店员确认(distinct participation)", countOr(evidenceMap(f), EvidenceStaffObserved)+countOr(evidenceMap(f), EvidenceStaffVerified)),
 			},
-			Definition:     defs[LayerStaffConfirmed],
-			AppliedFilters: layersAppliedFor(LayerStaffConfirmed, filters),
+			Definition: defs[LayerStaffConfirmed],
 		},
 		{
 			Key: LayerPlatformVerified, Title: layerTitles[LayerPlatformVerified], Available: true,
@@ -871,11 +866,65 @@ func buildEvidenceLayers(f OpsFacts, filters FilterSet) EvidenceLayersPanel {
 				layerLine("platform_confirm", "平台证实回执(1670 v2,distinct handoff)", f.LayerPlatformConfirm),
 				layerLine("official_attempt_facts", "官方查询回执(distinct attempt)", f.OfficialConfirmedAttempts),
 			},
-			Definition:     defs[LayerPlatformVerified],
-			AppliedFilters: layersAppliedFor(LayerPlatformVerified, filters),
+			Definition: defs[LayerPlatformVerified],
 		},
 	}
+	// 同层包含不同来源,每条计数披露自己的筛选能力；层级只声明共同适用项。
+	for li := range layers {
+		for ci := range layers[li].Counts {
+			line := &layers[li].Counts[ci]
+			line.AppliedFilters = countAppliedFor(line.Key, filters)
+		}
+		common := append([]string{}, layers[li].Counts[0].AppliedFilters...)
+		for _, line := range layers[li].Counts[1:] {
+			kept := []string{}
+			for _, key := range common {
+				for _, applied := range line.AppliedFilters {
+					if key == applied {
+						kept = append(kept, key)
+						break
+					}
+				}
+			}
+			common = kept
+		}
+		layers[li].AppliedFilters = common
+	}
 	return EvidenceLayersPanel{Layers: layers, Note: layersNote}
+}
+
+func countAppliedFor(key string, f FilterSet) []string {
+	out := []string{}
+	add := func(value, key string) {
+		if value != "" {
+			out = append(out, key)
+		}
+	}
+	switch key {
+	case "action_sessions", "service_opens", "service_jump_attempts":
+		add(f.StoreID, "store_id")
+		add(f.ActionID, "action_id")
+		if key != "action_sessions" {
+			add(f.Environment, "environment")
+		}
+	case "user_reported", "official_attempt_facts":
+		add(f.CampaignID, "campaign_id")
+		add(f.StoreID, "store_id")
+		add(f.Platform, "platform")
+	case "staff_benefit_participations":
+		add(f.CampaignID, "campaign_id")
+		add(f.StoreID, "store_id")
+		add(f.Touchpoint, "touchpoint")
+	case "customer_click", "wake_attempt", "editor_open_proved", "handoff_requested", "handoff_completed", "media_handoff_events", "customer_self_report", "staff_saw_submit", "staff_verified_work", "staff_confirm", "platform_confirmed_handoffs", "official_confirmed_events", "platform_confirm":
+		// 冻结 publish_handoffs 或其准确关联事件。
+		add(f.CampaignID, "campaign_id")
+		add(f.StoreID, "store_id")
+		add(f.Platform, "platform")
+		add(f.ActionID, "action_id")
+		add(f.Environment, "environment")
+		add(f.ContentPackVersion, "content_pack_version")
+	}
+	return out
 }
 
 func evidenceMap(f OpsFacts) map[string]int64 {
@@ -913,11 +962,12 @@ func buildLeads(f LeadsFacts) LeadsPanel {
 }
 
 const (
-	subscriptionCostNote = "订阅实付是支付事实订单(active)的投影;failed/cancelled 不是支出,单列披露;" +
+	subscriptionCostNote = "订阅实付只计有 payment_paid 权威事实的原订单金额;开通中或开通失败不抹掉付款;" +
+		"没有付款事实或金额/币种不完整时保持未知,不同币种不相加;退款单列;" +
 		"账单权威在派诺生态统一账单,本看板不维护余额,明细可回查 /work/billing"
 	aiCostNote = "AI 实际费用按投影状态分列:consumed/confirmed 是已发生金额(confirmed=已确认未消费);" +
 		"refunded/failed 单列,不计入支出;浏览/复制等不计费动作结构上进不了投影"
-	hardwareCostNote = "硬件支出是支付事实订单(active)的投影;退款是分列的对账事实,不冲销不改写原订单金额"
+	hardwareCostNote = "硬件支出只计有 payment_paid 权威事实的原订单金额;退款按原订单类型分列,不冲销不改写原付款"
 	reconFaceNote    = "权益兑现成本与券面额在 cost 区块分列:面额是营销面值,不是已发生支出"
 )
 
@@ -925,31 +975,41 @@ const (
 // Pure function.
 func buildCostReconciliation(f CostReconciliationFacts) CostReconciliation {
 	return CostReconciliation{
-		SubscriptionAvailable:    f.SubscriptionPaidMinor != nil,
-		SubscriptionPaidMinor:    f.SubscriptionPaidMinor,
-		SubscriptionPaidOrders:   f.SubscriptionPaidOrders,
-		SubscriptionFailedOrders: f.SubscriptionFailedOrders,
-		SubscriptionNote:         subscriptionCostNote,
-		AIConfirmedMinor:         f.AIConfirmedMinor,
-		AIConfirmedCount:         f.AIConfirmedCount,
-		AIConsumedMinor:          f.AIConsumedMinor,
-		AIConsumedCount:          f.AIConsumedCount,
-		AIRefundedMinor:          f.AIRefundedMinor,
-		AIRefundedCount:          f.AIRefundedCount,
-		AIFailedMinor:            f.AIFailedMinor,
-		AIFailedCount:            f.AIFailedCount,
-		HardwareAvailable:        f.HardwarePaidMinor != nil,
-		HardwarePaidMinor:        f.HardwarePaidMinor,
-		HardwarePaidOrders:       f.HardwarePaidOrders,
-		HardwareRefundMinor:      f.HardwareRefundMinor,
-		HardwareRefunds:          f.HardwareRefunds,
+		SubscriptionAvailable:         f.SubscriptionPaidMinor != nil,
+		SubscriptionPaidMinor:         f.SubscriptionPaidMinor,
+		SubscriptionPaidOrders:        f.SubscriptionPaidOrders,
+		SubscriptionPaidCurrency:      f.SubscriptionPaidCurrency,
+		SubscriptionPaidTimeUnknown:   f.SubscriptionPaidTimeUnknown,
+		SubscriptionFailedOrders:      f.SubscriptionFailedOrders,
+		SubscriptionRefundMinor:       f.SubscriptionRefundMinor,
+		SubscriptionRefunds:           f.SubscriptionRefunds,
+		SubscriptionRefundCurrency:    f.SubscriptionRefundCurrency,
+		SubscriptionRefundTimeUnknown: f.SubscriptionRefundTimeUnknown,
+		SubscriptionNote:              subscriptionCostNote,
+		AIConfirmedMinor:              f.AIConfirmedMinor,
+		AIConfirmedCount:              f.AIConfirmedCount,
+		AIConsumedMinor:               f.AIConsumedMinor,
+		AIConsumedCount:               f.AIConsumedCount,
+		AIRefundedMinor:               f.AIRefundedMinor,
+		AIRefundedCount:               f.AIRefundedCount,
+		AIFailedMinor:                 f.AIFailedMinor,
+		AIFailedCount:                 f.AIFailedCount,
+		HardwareAvailable:             f.HardwarePaidMinor != nil,
+		HardwarePaidMinor:             f.HardwarePaidMinor,
+		HardwarePaidOrders:            f.HardwarePaidOrders,
+		HardwarePaidCurrency:          f.HardwarePaidCurrency,
+		HardwarePaidTimeUnknown:       f.HardwarePaidTimeUnknown,
+		HardwareRefundMinor:           f.HardwareRefundMinor,
+		HardwareRefunds:               f.HardwareRefunds,
+		HardwareRefundCurrency:        f.HardwareRefundCurrency,
+		HardwareRefundTimeUnknown:     f.HardwareRefundTimeUnknown,
 		Definition: Definition{
-			Source: "billing_orders/billing_ai_usage/billing_refunds(4591 投影表,受信权威缝写入;本看板只读)",
-			DedupKey: "订单 UNIQUE(tenant,idempotency_key);AI 用量 UNIQUE(tenant,quote_ref);" +
+			Source: "billing_order_events 的 payment_paid → billing_orders 冻结金额/币种;billing_ai_usage/billing_refunds(4591 受信权威投影;本看板只读)",
+			DedupKey: "付款按 tenant+order_id 去重(同单多次回调只计一单);AI 用量 UNIQUE(tenant,quote_ref);" +
 				"退款 UNIQUE(tenant,source,event_id)——重复回调不重复计",
-			Denominator: "窗口内按各自事件时间的真实投影行;支付金额=status='active' 订单的 amount_minor 投影",
-			EventTime:   "订单/退款/用量行的 created_at(事实落投影时刻,UTC)",
-			WindowNote:  windowNoteSecond + ";退款分列披露,不与支出对冲",
+			Denominator: "订阅/硬件付款与退款仅在该类发生时间可解析、窗口内金额全部已知且币种一致时汇总,否则未知;未知时间数为本组织该类无法归窗的事实,确定落窗笔数单列;订单状态不替代支付事实;AI 用量仍按原投影状态分列",
+			EventTime:   "付款按同单最早 payment_paid.occurred_at;退款按 billing_refunds.occurred_at;AI 按用量行 created_at(投影时刻,UTC)",
+			WindowNote:  windowNoteSecond + ";晚到付款/退款按原发生时间落窗;退款分列披露,不与付款对冲;失败订阅单为窗口内创建订单的当前开通状态",
 		},
 		FaceNote: reconFaceNote,
 	}

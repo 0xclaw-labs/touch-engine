@@ -5,6 +5,7 @@ package store
 import (
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/bianjiefilm/touch-engine/server/internal/billing"
@@ -279,5 +280,108 @@ func TestAIUsageProjectionAndQuoteSeam(t *testing.T) {
 	// 未知引用 = nil 行(不泄漏)
 	if proj, err := st.QuoteProjectionFor(tenID, "q_missing"); err != nil || proj != nil {
 		t.Fatalf("missing: %v %+v", err, proj)
+	}
+}
+
+func TestBillingOrderRejectsChangedIntent(t *testing.T) {
+	st, tenant := newBillingStore(t)
+	original := NewBillingOrder{TenantID: tenant, Kind: billing.KindSubscription, Action: billing.ActionRenew, PlanCode: billing.PlanMonthly, PriceRef: "price-1", PriceSnapshot: `{"reason":"续费","additional_stores":0}`, AmountMinor: 100, Currency: "CNY", IdempotencyKey: "same-intent", ActorPrincipal: "owner", ActorRole: "org_owner", PayerPrincipal: "payer", PayerGrantRef: "grant", AgencyRelationRef: "relation"}
+	if _, _, err := st.CreateBillingOrder(original, now()); err != nil {
+		t.Fatal(err)
+	}
+	changes := map[string]func(*NewBillingOrder){"actor": func(i *NewBillingOrder) { i.ActorPrincipal = "other" }, "role": func(i *NewBillingOrder) { i.ActorRole = "agent" }, "payer": func(i *NewBillingOrder) { i.PayerPrincipal = "other" }, "grant": func(i *NewBillingOrder) { i.PayerGrantRef = "other" }, "relation": func(i *NewBillingOrder) { i.AgencyRelationRef = "other" }, "action": func(i *NewBillingOrder) { i.Action = billing.ActionNew }, "plan": func(i *NewBillingOrder) { i.PlanCode = billing.PlanYearly }, "price": func(i *NewBillingOrder) { i.PriceRef = "other" }, "amount": func(i *NewBillingOrder) { i.AmountMinor++ }, "currency": func(i *NewBillingOrder) { i.Currency = "USD" }, "reason": func(i *NewBillingOrder) { i.PriceSnapshot = `{"reason":"不同","additional_stores":0}` }}
+	changes["kind"] = func(i *NewBillingOrder) { i.Kind = billing.KindHardware }
+	changes["additional_stores"] = func(i *NewBillingOrder) { i.PriceSnapshot = `{"reason":"续费","additional_stores":1}` }
+	for name, change := range changes {
+		t.Run(name, func(t *testing.T) {
+			in := original
+			change(&in)
+			_, _, err := st.CreateBillingOrder(in, now())
+			if !errors.Is(err, ErrBillingIdempotencyConflict) {
+				t.Fatalf("changed %s accepted: %v", name, err)
+			}
+		})
+	}
+}
+
+func TestHardwareOrderAtomicAndItemIntent(t *testing.T) {
+	st, tenant := newBillingStore(t)
+	in := NewBillingOrder{TenantID: tenant, Kind: billing.KindHardware, Action: billing.ActionPurchase, AmountMinor: 200, Currency: "CNY", IdempotencyKey: "atomic-hardware", ActorPrincipal: "owner", ActorRole: "org_owner"}
+	// Both lines validate, but the second insert fails its primary-key constraint.
+	items := []BillingHardwareItem{{ID: "duplicate-item-id", SKU: "A", Name: "卡A", Kind: "goods", Qty: 1, UnitAmountMinor: 100}, {ID: "duplicate-item-id", SKU: "B", Name: "卡B", Kind: "goods", Qty: 1, UnitAmountMinor: 100}}
+	if _, _, err := st.CreateHardwareOrder(in, items, now()); err == nil {
+		t.Fatal("expected line insertion failure")
+	}
+	orders, err := st.ListBillingOrders(tenant, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(orders) != 0 {
+		t.Fatalf("failed hardware left partial order: %v", orders)
+	}
+	var lineCount int
+	if err := st.DB.QueryRow(`SELECT COUNT(*) FROM billing_hardware_items WHERE tenant_id=?`, tenant).Scan(&lineCount); err != nil || lineCount != 0 {
+		t.Fatalf("failed transaction left lines=%d err=%v", lineCount, err)
+	}
+	items[0].ID = ""
+	items[1].ID = ""
+	first, replay, err := st.CreateHardwareOrder(in, items, now())
+	if err != nil || replay {
+		t.Fatalf("retry after rollback: %v %v", replay, err)
+	}
+	reversed := []BillingHardwareItem{items[1], items[0]}
+	got, replay, err := st.CreateHardwareOrder(in, reversed, now())
+	if err != nil || !replay || got.ID != first.ID {
+		t.Fatalf("reordered same lines: %v %v", replay, err)
+	}
+	changed := append([]BillingHardwareItem(nil), items...)
+	changed[0].SKU = "SAME-PRICE-OTHER-SKU"
+	_, _, err = st.CreateHardwareOrder(in, changed, now())
+	if !errors.Is(err, ErrBillingIdempotencyConflict) {
+		t.Fatalf("same total different SKU accepted: %v", err)
+	}
+}
+
+func TestHardwareSameIntentConcurrentRequests(t *testing.T) {
+	st, tenant := newBillingStore(t)
+	in := NewBillingOrder{TenantID: tenant, Kind: billing.KindHardware, Action: billing.ActionPurchase, AmountMinor: 100, Currency: "CNY", IdempotencyKey: "parallel-hardware", ActorPrincipal: "owner", ActorRole: "org_owner"}
+	items := []BillingHardwareItem{{SKU: "A", Name: "前台卡", Kind: "goods", Qty: 1, UnitAmountMinor: 100}}
+	type result struct {
+		row    BillingOrderRow
+		replay bool
+		err    error
+	}
+	results := make(chan result, 8)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			row, replay, err := st.CreateHardwareOrder(in, items, now())
+			results <- result{row, replay, err}
+		}()
+	}
+	wg.Wait()
+	close(results)
+	id := ""
+	created := 0
+	for result := range results {
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if id != "" && result.row.ID != id {
+			t.Fatal("multiple orders for one key")
+		}
+		id = result.row.ID
+		if !result.replay {
+			created++
+		}
+	}
+	if created != 1 {
+		t.Fatalf("created=%d", created)
+	}
+	lines, err := st.ListHardwareItems(tenant, id)
+	if err != nil || len(lines) != 1 {
+		t.Fatalf("partial or duplicate lines: %v %v", lines, err)
 	}
 }

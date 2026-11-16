@@ -31,7 +31,7 @@ function WorkShell({ children }: { children: ReactNode }) {
         tenantName={session.tenantName}
         serviceDesk={serviceDeskEntryVisible(session.features, session.role)}
       >
-        {children}
+        <div key={session.tenantId}>{children}</div>
       </WorkFrame>
     </AdminShell>
   );

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 )
@@ -52,6 +53,7 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"content_pack_version_events",
 		"content_pack_versions",
 		"content_packs",
+		"content_production_offers",
 		"copy_drafts",
 		"copy_jobs",
 		"copy_versions",
@@ -65,6 +67,7 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"external_voucher_attempts",
 		"extra_jump_actions",
 		"extra_jump_clicks",
+		"follow_up_navigation_contexts",
 		"handoff_credentials",
 		// HUI-4587 快手 OAuth state/token 与投稿任务(0122-0123)
 		"kuaishou_oauth_states",
@@ -210,5 +213,39 @@ func TestForeignKeysEnforced(t *testing.T) {
 	if _, err := d.Exec(`INSERT INTO campaigns(id,tenant_id,title,public_content,status,starts_at,ends_at,created_by,created_at,updated_at)
 		VALUES('cmp_x','tnt_missing','t','', 'draft','','','u','now','now')`); err == nil {
 		t.Fatal("expected FK violation for missing tenant, got nil")
+	}
+}
+
+func TestRewardCostMigrationPreservesUnknownAndPositiveCost(t *testing.T) {
+	d, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "legacy-cost.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	for _, table := range []string{"reward_inventory", "reward_benefits"} {
+		if _, err = d.Exec(`CREATE TABLE ` + table + `(id TEXT PRIMARY KEY,cost_minor INTEGER NOT NULL); INSERT INTO ` + table + `(id,cost_minor) VALUES('unknown',0),('positive',150);`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	migration, err := migrationsFS.ReadFile("migrations/0134_reward_cost_recorded.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = d.Exec(string(migration)); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"reward_inventory", "reward_benefits"} {
+		for _, sample := range []struct {
+			id       string
+			recorded bool
+		}{{"unknown", false}, {"positive", true}} {
+			var got bool
+			if err = d.QueryRow(`SELECT cost_recorded FROM `+table+` WHERE id=?`, sample.id).Scan(&got); err != nil {
+				t.Fatal(err)
+			}
+			if got != sample.recorded {
+				t.Fatalf("%s %s recorded=%v", table, sample.id, got)
+			}
+		}
 	}
 }

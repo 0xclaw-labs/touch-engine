@@ -4,7 +4,7 @@
 //
 // 旅程:进门幂等开/恢复 3546 会话 → 按会话冻结版本(无会话则用门店当前
 // 采用版本)预览真实媒体(3553 media-access 受控凭据)→ 已采用候选池内
-// 「换一个」(零收费,只改未交接草稿)→ 复制文案/保存素材 → 发布交接
+// 「换一个」(零收费,只改未交接草稿)→ 经原准入交接后复制文案/保存素材
 // (1670 handoff v2;基线尚未提供时给「尚未开通」诚实态)→ 返回恢复同版本。
 //
 // 纪律(票面/裁定书):
@@ -18,11 +18,11 @@
 //   - 无生态导航、不强制注册/留资/下载。
 
 import { Suspense, useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
+import { ActionPublishFlow } from "@/components/publish/ActionPublishFlow";
 import { useParams } from "next/navigation";
 import { publicVisitorColumns } from "@/lib/visitor-experience";
 import {
   detectEnvironment,
-  methodLabel,
   parseActionCapabilities,
   pickRoute,
   type ActionCapabilitiesView,
@@ -37,17 +37,8 @@ import {
   type ActionSessionView,
   type MediaAccessItem,
 } from "@/lib/store-session";
-import {
-  evidenceFace,
-  parseHandoffPlan,
-  parseHandoffStatus,
-  planCopy,
-  statusFace,
-  type HandoffPlanView,
-} from "@/lib/store-handoff";
 
 type ContentState = "loading" | "ready" | "not_found" | "undistributable" | "network_error";
-type HandoffState = "idle" | "starting" | "planned" | "unavailable";
 
 interface ContentMarking {
   ad_required?: boolean;
@@ -92,9 +83,9 @@ interface ActionContentView {
   candidates: ContentCandidate[];
 }
 
-async function getContent(actionId: string): Promise<{ state: ContentState; data: ActionContentView | null }> {
+async function getContent(actionId: string, sessionId = ""): Promise<{ state: ContentState; data: ActionContentView | null }> {
   try {
-    const res = await fetch(`/api/public/actions/${encodeURIComponent(actionId)}/content`);
+    const res = await fetch(`/api/public/actions/${encodeURIComponent(actionId)}/content${sessionId ? `?action_session_id=${encodeURIComponent(sessionId)}` : ""}`);
     if (res.status === 502 || res.status === 503 || res.status === 504) return { state: "network_error", data: null };
     const data = await res.json().catch(() => null);
     if (res.status === 409) return { state: "undistributable", data: null };
@@ -104,23 +95,6 @@ async function getContent(actionId: string): Promise<{ state: ContentState; data
     return { state: "ready", data: data as ActionContentView };
   } catch {
     return { state: "network_error", data: null };
-  }
-}
-
-async function postHandoff(
-  actionId: string,
-  body: Record<string, unknown>,
-): Promise<{ status: number; data: Record<string, unknown> | null }> {
-  try {
-    const res = await fetch(`/api/public/actions/${encodeURIComponent(actionId)}/handoffs`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
-    return { status: res.status, data };
-  } catch {
-    return { status: 0, data: null };
   }
 }
 
@@ -144,10 +118,6 @@ function ContentViewInner() {
   const [previewUrls, setPreviewUrls] = useState<Record<string, MediaAccessItem>>({});
   const [previewNote, setPreviewNote] = useState("");
   const [switchNote, setSwitchNote] = useState("");
-  const [handoff, setHandoff] = useState<HandoffState>("idle");
-  const [plan, setPlan] = useState<HandoffPlanView | null>(null);
-  const [handoffStatus, setHandoffStatus] = useState("");
-  const [handoffId, setHandoffId] = useState("");
   const [resumeToken, setResumeToken] = useState("");
   const [resumeInput, setResumeInput] = useState("");
   const [resumeNote, setResumeNote] = useState("");
@@ -164,7 +134,13 @@ function ContentViewInner() {
     if (!actionId) return;
     let alive = true;
     setContentState("loading");
-    getContent(actionId).then((res) => {
+    startOrResumeSession(actionId).then(async result => {
+      if (!alive) return;
+      const restored = "session" in result ? result.session : null;
+      if (restored) {setSession(restored);setSessionNote("");} else setSessionNote("原进度暂未接上。可以先看内容，或使用下方恢复码继续。");
+      return getContent(actionId, restored?.action_session_id);
+    }).then((res) => {
+      if (!res) return;
       if (!alive) return;
       setContent(res.data);
       setContentState(res.state);
@@ -181,32 +157,13 @@ function ContentViewInner() {
     };
   }, [actionId, environment, reloadTick]);
 
-  // 返回恢复:进门幂等开/恢复会话;会话的冻结版本就是回显版本。
-  useEffect(() => {
-    if (!actionId || contentState !== "ready") return;
-    let alive = true;
-    startOrResumeSession(actionId, {
-      source: "web",
-      expectedActionRevision: content?.action_revision ?? 0,
-    }).then((res) => {
-      if (!alive) return;
-      if ("session" in res && res.session) {
-        setSession(res.session);
-        setSessionNote("");
-        return;
-      }
-      if ("error" in res && res.error === "action_unavailable") {
-        setSessionNote("这个动作现在不可用。可以先看内容,办理请听门店现场安排。");
-      } else if ("error" in res && res.error === "not_found") {
-        setSessionNote("这个入口不存在或已收回。请核对二维码/标签。");
-      } else if ("error" in res && res.error !== "network") {
-        setSessionNote("进度暂时没有接上。可以先看内容,稍后重试即可。");
-      }
-    });
-    return () => {
-      alive = false;
-    };
-  }, [actionId, content?.action_revision, contentState]);
+  // 会话版本变化（换选或合法恢复）后，沿原会话读取完整冻结内容。
+  useEffect(()=>{
+    if(!session?.action_session_id)return;
+    let alive=true;
+    getContent(actionId,session.action_session_id).then(result=>{if(alive){setContent(result.data);setContentState(result.state);}});
+    return()=>{alive=false;};
+  },[actionId,session?.action_session_id,session?.selected_content_pack_version]);
 
   // 会话实时位轮询(返回平台后重进本页即恢复;resume_available 是权威实时位)。
   useEffect(() => {
@@ -259,7 +216,7 @@ function ContentViewInner() {
     };
   }, [content, contentState, selectedVersion, session?.action_session_id]);
 
-  const mediaById = new Map((content?.media ?? []).map((m) => [m.media_id, m]));
+
   const video = (content?.media ?? []).find((m) => m.role === "video");
   const videoUrl = video && video.availability === "ready" ? previewUrls[video.media_id]?.url : undefined;
 
@@ -288,104 +245,6 @@ function ContentViewInner() {
     },
     [session],
   );
-
-  const copyBody = useCallback(async () => {
-    if (!content) return;
-    const text = [content.body, ...(content.topics ?? [])].filter(Boolean).join("\n");
-    try {
-      await navigator.clipboard.writeText(text);
-      setPreviewNote("文案已复制。可以粘贴到你自己的账号发布。");
-    } catch {
-      setPreviewNote("复制没有完成。可以长按文字手动复制。");
-    }
-  }, [content]);
-
-  const saveMedia = useCallback(
-    async (mediaId: string) => {
-      if (!selectedVersion) return;
-      const res = await mintMediaAccess(selectedVersion, {
-        actionSessionId: session?.action_session_id ?? "",
-        mediaIds: [mediaId],
-        purpose: "download",
-      });
-      if (!("items" in res) || res.items.length === 0) {
-        setPreviewNote("保存暂时没有开始。稍后再试,或请店员协助。");
-        return;
-      }
-      const item = res.items[0];
-      const a = document.createElement("a");
-      a.href = item.url;
-      a.download = item.filename || item.media_id;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setPreviewNote("已开始保存。保存只是把素材交给你,不等于发布成功。");
-    },
-    [selectedVersion, session],
-  );
-
-  // 交接:1670 handoff v2(基线端点未提供 → 404 = 尚未开通诚实态)。
-  const startHandoff = useCallback(async () => {
-    const id = session?.action_session_id;
-    if (!id || !content) return;
-    const routePick = caps ? pickRoute(caps.routes, environment) : null;
-    if (!routePick || routePick.kind !== "ok" || !routePick.route) {
-      setHandoffStatus(routePick ? routePick.face : "发布路线还没有确认,这一步不能开始。");
-      return;
-    }
-    setHandoff("starting");
-    setHandoffStatus("");
-    const res = await postHandoff(actionId, {
-      action_session_id: id,
-      action_revision: content.action_revision,
-      payload_kind: "media",
-      content_pack_version: selectedVersion,
-      method: routePick.route.method,
-      confirmation: "customer_confirmed",
-      idempotency_key: "hd-" + id + "-" + selectedVersion,
-      participation_id: session?.participation_id ?? "",
-    });
-    if (res.status === 0) {
-      setHandoff("idle");
-      setHandoffStatus("网络没有给出明确结果。先当作还没开始,稍后重试。");
-      return;
-    }
-    if (res.status === 404 || res.status === 405 || res.status === 501) {
-      setHandoff("unavailable");
-      setHandoffStatus("");
-      return;
-    }
-    if (res.status === 200 || res.status === 201) {
-      const parsed = parseHandoffPlan(res.data);
-      setPlan(parsed);
-      setHandoff(parsed ? "planned" : "unavailable");
-      if (parsed?.handoffId) setHandoffId(parsed.handoffId);
-      return;
-    }
-    setHandoff("idle");
-    setHandoffStatus("交接没有开始。可以稍后再试,或按门店现场方式参与。");
-  }, [actionId, caps, content, environment, selectedVersion, session]);
-
-  // 交接状态续查。
-  useEffect(() => {
-    if (!handoffId) return;
-    let alive = true;
-    const poll = () => {
-      fetch(`/api/public/handoffs/${encodeURIComponent(handoffId)}`)
-        .then(async (res) => {
-          if (!alive || !res.ok) return;
-          const st = parseHandoffStatus(await res.json().catch(() => null));
-          if (alive && st) setHandoffStatus(statusFace(st.status || st.attemptStatus));
-        })
-        .catch(() => undefined);
-    };
-    poll();
-    const timer = window.setInterval(poll, 30000);
-    return () => {
-      alive = false;
-      window.clearInterval(timer);
-    };
-  }, [handoffId]);
 
   // 跨浏览器恢复:粘贴另一台浏览器取出的恢复码(POST 体;单用途)。
   const exchangeResume = useCallback(async () => {
@@ -421,7 +280,7 @@ function ContentViewInner() {
     const token = await issueCustomerResume(id);
     if (token?.token) {
       setResumeToken(token.token);
-      setResumeNote("恢复码已取出,只显示这一次。请复制到另一台设备粘贴使用;它会绑定那台设备,本机原进度保留。");
+      setResumeNote("恢复码已取出,只显示这一次。请复制到另一台设备粘贴使用;它会把原进度交给那台设备，旧浏览器请勿重复办理。");
     } else {
       setResumeNote("恢复码暂时取不出来。可以直接在新设备重进本页(同一浏览器会自动恢复)。");
     }
@@ -431,7 +290,7 @@ function ContentViewInner() {
     setReloadTick((t) => t + 1);
   }, []);
 
-  const routePick = caps ? pickRoute(caps.routes, environment) : null;
+  const routePick = caps ? pickRoute(caps.routes, environment, "media") : null;
 
   return (
     <main
@@ -473,7 +332,7 @@ function ContentViewInner() {
         {contentState === "ready" && content && (
           <>
             {session?.resume_available === true && (
-              <p className="tk-note" data-testid="resume-restored">已接上你上次的进度,内容版本和离开时一致。</p>
+              <p className="tk-note" data-testid="resume-restored">本次内容与进度已保存，离开后可以继续。</p>
             )}
             {sessionNote && <p className="tk-note" data-testid="session-note">{sessionNote}</p>}
 
@@ -483,7 +342,7 @@ function ContentViewInner() {
               )}
               {videoUrl ? (
                 // 受控凭据 URL:短 TTL、绑定版本+用途,服务端逐层校验。
-                <video controls preload="metadata" src={videoUrl} data-testid="content-video" className="tk-media" />
+                <video controls controlsList="nodownload" preload="metadata" src={videoUrl} data-testid="content-video" className="tk-media" />
               ) : null}
               {(content.media ?? [])
                 .filter((m) => (m.role === "image" || m.role === "cover") && m.availability === "ready" && previewUrls[m.media_id]?.url)
@@ -509,14 +368,6 @@ function ContentViewInner() {
               {content.marking?.ad_required === true && (
                 <p className="tk-note" data-testid="content-ad-marking">按平台要求,这条内容属于广告或推广信息。</p>
               )}
-              <div className="tk-row tk-gap">
-                {content.body && (
-                  <button type="button" className="tk-quiet" data-testid="content-copy-button" onClick={copyBody}>复制文案</button>
-                )}
-                {video && video.availability === "ready" && (
-                  <button type="button" className="tk-quiet" data-testid="content-save-video" onClick={() => saveMedia(video.media_id)}>保存视频</button>
-                )}
-              </div>
               {previewNote && <p className="tk-note" data-testid="preview-note">{previewNote}</p>}
             </section>
 
@@ -541,49 +392,11 @@ function ContentViewInner() {
               </section>
             )}
 
-            <section className="tk-section" data-testid="content-handoff">
-              <h2 className="tk-section-title">发布交接</h2>
-              {routePick && routePick.kind !== "ok" && <p className="tk-warn" data-testid="route-note">{routePick.face}</p>}
-              {routePick !== null && routePick.kind === "ok" && routePick.route !== null && (
-                <p className="tk-note" data-testid="route-method">当前设备路线:{methodLabel(routePick.route.method)}。</p>
-              )}
-              {handoff === "unavailable" ? (
-                <p className="tk-note" data-testid="handoff-unavailable">
-                  在线发布交接尚未开通。可以复制文案、保存素材后按门店现场方式发布,或请店员协助确认。
-                </p>
-              ) : (
-                <>
-                  <p className="tk-note">
-                    交接只是把门店做好的内容交到你自己的账号页面上;是否发布由你在平台确认,结果以平台为准。
-                  </p>
-                  <button
-                    type="button"
-                    className="tk-primary"
-                    data-testid="handoff-start"
-                    disabled={handoff === "starting" || !session?.action_session_id || routePick?.kind !== "ok"}
-                    onClick={startHandoff}
-                  >
-                    {handoff === "starting" ? "交接中…" : "开始发布交接"}
-                  </button>
-                </>
-              )}
-              {plan && (
-                <div data-testid="handoff-plan">
-                  <p className="tk-note" data-state={plan.kind === "unknown" ? "unknown" : "info"}>{planCopy(plan.kind)}</p>
-                  {plan.clientAction?.url && (
-                    <a className="tk-primary" href={plan.clientAction.url} target="_blank" rel="noopener noreferrer">
-                      {plan.clientAction.note || "打开平台页面"}
-                    </a>
-                  )}
-                  {plan.unsupportedFields.length > 0 && (
-                    <p className="tk-note">这些内容平台这一路线不带过去:{plan.unsupportedFields.join("、")}。发布时可能需要你自己补上。</p>
-                  )}
-                  <p className="tk-note">{evidenceFace(plan.evidenceLevel)}</p>
-                </div>
-              )}
-              {handoffStatus && <p className="tk-note" data-testid="handoff-status">{handoffStatus}</p>}
-            </section>
+            {session?.action_session_id ? <ActionPublishFlow actionId={actionId} sessionId={session.action_session_id} actionRevision={session.action_revision ?? content.action_revision} versionId={selectedVersion} method={routePick?.kind === "ok" ? routePick.route?.method ?? "" : ""} environment={environment} storeCode={storeCode} /> : <section className="tk-section" data-testid="content-handoff"><h2 className="tk-section-title">发布交接</h2><p className="tk-warn">{routePick?.face || "当前路线尚未确认，暂不能开始交接。请刷新原进度或请门店协助。"}</p></section>}
 
+
+          </>
+        )}
             <section className="tk-section" data-testid="content-resume">
               <h2 className="tk-section-title">离开与恢复</h2>
               <p className="tk-note">
@@ -615,8 +428,6 @@ function ContentViewInner() {
               </button>
               {resumeNote && <p className="tk-note" data-testid="resume-note">{resumeNote}</p>}
             </section>
-          </>
-        )}
       </div>
     </main>
   );

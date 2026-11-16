@@ -14,6 +14,7 @@ import { touchEntryFace, touchEntryRedirect } from "@/lib/touchpoints";
 export function TouchEntry() {
   const params = useParams<{ code: string }>();
   const [face, setFace] = useState<string | null>(null);
+  const [reloadTick,setReloadTick]=useState(0);
   const code = params?.code;
 
   useEffect(() => {
@@ -39,10 +40,10 @@ export function TouchEntry() {
     return () => {
       alive = false;
     };
-  }, [code]);
+  }, [code,reloadTick]);
 
   if (face === null) {
     return <p>正在打开…</p>;
   }
-  return <p>{face}</p>;
+  return <main className="tk-public"><div className="tk-public-card" data-testid="touch-entry-recovery"><h1 className="tk-public-title">暂时无法打开这个入口</h1><p className="tk-note">{face}</p><p className="tk-note">请核对标签或二维码，向现场工作人员索取本店当前可用的入口。这里暂时无法确认所属门店，请不要用陌生门店的链接认回原权益。</p><p className="tk-note">若之前已参与，请在原浏览器打开保存的活动页或“我的权益与凭证”；持有本人恢复码时可在原内容页继续。</p><button type="button" className="tk-quiet" onClick={()=>{setFace(null);setReloadTick(t=>t+1);}}>重新读取入口</button></div></main>;
 }

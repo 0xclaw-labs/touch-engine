@@ -241,6 +241,7 @@ func TestFourStateActivationLoopViaAuthority(t *testing.T) {
 func TestAgentRenewalOrderCarriesPayerGrantSnapshot(t *testing.T) {
 	f := newAgencyFixture(t, true)
 	f.s.Cfg.SubscriptionStatus = "active"
+	f.s.Cfg.CashierAppID, f.s.Cfg.CashierTargetID = "cashier", "ti-cashier-web"
 	seedCatalogStore(t, f.s.St)
 	// 建立代管关系并授予 renewal + payer_grant_ref(owner 显式授权,4593 语义)。
 	relID := f.mustEstablish(t, "usr_ag1", "年度代运营")
@@ -263,6 +264,17 @@ func TestAgentRenewalOrderCarriesPayerGrantSnapshot(t *testing.T) {
 	if order["agency_relation_ref"] != relID {
 		t.Fatalf("relation ref: %v", order)
 	}
+	orderPath := "/api/v1/billing/orders/" + order["id"].(string)
+	status, out = f.do(t, "GET", orderPath, "sess-agent1", f.tenA, "")
+	checkout, _ := out["checkout"].(map[string]any)
+	if status != 200 || checkout["available"] != false || checkout["reason"] != "checkout_unwired" {
+		t.Fatalf("original payer was rejected or offered an unbound checkout: %d %v", status, out)
+	}
+	status, out = f.do(t, "GET", orderPath, "sess-owner-a", f.tenA, "")
+	checkout, _ = out["checkout"].(map[string]any)
+	if status != 200 || checkout["available"] != false || checkout["reason"] != "original_payer_required" {
+		t.Fatalf("order checkout silently changed payer: %d %v", status, out)
+	}
 	// 撤销 payer 授权后立即失权:改 scope 去 payer_grant_ref(下一请求拒绝)。
 	status, out = f.do(t, "PUT", "/api/v1/agency/relations/"+relID+"/scope", "sess-owner-a", f.tenA,
 		`{"allowed_actions":["renewal"],"store_scope_set":[],"valid_until":"2027-01-01T00:00:00Z",
@@ -274,6 +286,11 @@ func TestAgentRenewalOrderCarriesPayerGrantSnapshot(t *testing.T) {
 		`{"action":"renew","plan_code":"store.plan.month","price_ref":"price_m_v2026","idempotency_key":"ag-2"}`)
 	if status != 403 || out["error"] != "payment_authorization_required" {
 		t.Fatalf("after revoke = %d %v", status, out)
+	}
+	status, out = f.do(t, "GET", orderPath, "sess-agent1", f.tenA, "")
+	checkout, _ = out["checkout"].(map[string]any)
+	if status != 200 || checkout["available"] != false {
+		t.Fatalf("revoked payer could still resume checkout: %d %v", status, out)
 	}
 	// 无任何 grant 的 agent 一律拒。
 	if status, _ := f.do(t, "POST", "/api/v1/billing/subscription-orders", "sess-agent2", f.tenA,
@@ -462,5 +479,109 @@ func TestWhoamiCarriesCashierParams(t *testing.T) {
 	if status != 200 || features["billing_cashier_app_id"] != "eco-cashier" ||
 		features["billing_cashier_target_id"] != "ti-cashier-web" {
 		t.Fatalf("whoami features = %v", features)
+	}
+}
+
+func TestSubscriptionOriginalOrderRecoveryAfterCatalogChangeHTTP(t *testing.T) {
+	f := billingFixture(t, true)
+	seedCatalog(t, f)
+	body := `{"action":"renew","plan_code":"store.plan.month","price_ref":"price_m_v2026","reason":"本次续费","idempotency_key":"lost-response"}`
+	status, first := f.do2(t, "POST", "/api/v1/billing/subscription-orders", "sess-owner-a", f.tenA, body)
+	mustEqual(t, status, 201)
+	entry := billing.CatalogEntry{ScopeTenant: "", PlanCode: billing.PlanMonthly, PricingVersion: "v2026", PriceRef: "price_changed", Currency: "CNY", PriceMinor: 1200000, ServiceDays: 365, IncludedStoreCount: 3}
+	catalogBody, err := json.Marshal(map[string]any{"entries": []billing.CatalogEntry{entry}})
+	mustNoErr(t, err)
+	catalogStatus, catalogResult := f.doService(t, "POST", "/api/v1/billing/authority/catalog", string(catalogBody))
+	if catalogStatus != 201 {
+		t.Fatalf("catalog authority: %d %v", catalogStatus, catalogResult)
+	}
+	status, recovered := f.do2(t, "POST", "/api/v1/billing/subscription-orders", "sess-owner-a", f.tenA, body)
+	if status != 200 || recovered["replayed"] != true || recovered["order"].(map[string]any)["id"] != first["order"].(map[string]any)["id"] {
+		t.Fatalf("lost response recovery after price change = %d %v", status, recovered)
+	}
+	if recovered["order"].(map[string]any)["amount_minor"] != float64(990000) {
+		t.Fatal("replay repriced original order")
+	}
+	status, out := f.do2(t, "POST", "/api/v1/billing/subscription-orders", "sess-owner-a", f.tenA, strings.Replace(body, "lost-response", "new-intent", 1))
+	if status != 409 || out["error"] != "catalog_changed" {
+		t.Fatalf("new key old price = %d %v", status, out)
+	}
+	status, out = f.do2(t, "POST", "/api/v1/billing/subscription-orders", "sess-owner-a", f.tenA, strings.Replace(body, "本次续费", "不同用途", 1))
+	if status != 409 || out["error"] != "idempotency_conflict" {
+		t.Fatalf("changed original request = %d %v", status, out)
+	}
+	status, _ = f.do2(t, "POST", "/api/v1/billing/subscription-orders", "sess-staff-a", f.tenA, body)
+	mustEqual(t, status, 403)
+	entry.EffectiveTo = "2020-01-01T00:00:00Z"
+	catalogBody, err = json.Marshal(map[string]any{"entries": []billing.CatalogEntry{entry}})
+	mustNoErr(t, err)
+	catalogStatus, _ = f.doService(t, "POST", "/api/v1/billing/authority/catalog", string(catalogBody))
+	mustEqual(t, catalogStatus, 201)
+	status, out = f.do2(t, "POST", "/api/v1/billing/subscription-orders", "sess-owner-a", f.tenA, body)
+	if status != 200 || out["replayed"] != true {
+		t.Fatalf("original order recovery with no current catalog: %d %v", status, out)
+	}
+}
+
+func TestHardwareSameTotalDifferentItemsConflictHTTP(t *testing.T) {
+	f := billingFixture(t, false)
+	body := `{"idempotency_key":"same-hardware","reason":"桌贴","items":[{"sku":"A","name":"桌贴A","kind":"goods","qty":1,"unit_amount_minor":100}]}`
+	status, _ := f.do2(t, "POST", "/api/v1/billing/hardware-orders", "sess-owner-a", f.tenA, body)
+	mustEqual(t, status, 201)
+	status, out := f.do2(t, "POST", "/api/v1/billing/hardware-orders", "sess-owner-a", f.tenA, strings.Replace(body, `"sku":"A"`, `"sku":"B"`, 1))
+	if status != 409 || out["error"] != "idempotency_conflict" {
+		t.Fatalf("changed SKU same total = %d %v", status, out)
+	}
+}
+
+func TestSubscriptionReplayRequiresLiveOriginalActorAndPayerHTTP(t *testing.T) {
+	f := newAgencyFixture(t, true)
+	seedCatalogStore(t, f.s.St)
+	relation := f.mustEstablish(t, "usr_ag1", "授权原单恢复")
+	scope := func(revision int, grant string) {
+		t.Helper()
+		status, out := f.do(t, "PUT", "/api/v1/agency/relations/"+relation+"/scope", "sess-owner-a", f.tenA, fmt.Sprintf(`{"allowed_actions":["renewal"],"store_scope_set":[],"payer_grant_ref":%q,"grant_revision":%d,"reason":"原单恢复授权测试"}`, grant, revision))
+		if status != 200 {
+			t.Fatalf("grant scope %d %v", status, out)
+		}
+	}
+	scope(0, "payer-original")
+	body := `{"action":"renew","plan_code":"store.plan.month","price_ref":"price_m_v2026","idempotency_key":"actor-original"}`
+	status, _ := f.do(t, "POST", "/api/v1/billing/subscription-orders", "sess-owner-a", f.tenA, body)
+	mustEqual(t, status, 201)
+	status, out := f.do(t, "POST", "/api/v1/billing/subscription-orders", "sess-agent1", f.tenA, body)
+	if status != 409 || out["error"] != "idempotency_conflict" {
+		t.Fatalf("another authorized actor reused original key: %d %v", status, out)
+	}
+	agentBody := strings.Replace(body, "actor-original", "agent-original", 1)
+	status, _ = f.do(t, "POST", "/api/v1/billing/subscription-orders", "sess-agent1", f.tenA, agentBody)
+	mustEqual(t, status, 201)
+	status, out = f.do(t, "POST", "/api/v1/billing/subscription-orders", "sess-agent1", f.tenA, agentBody)
+	if status != 200 || out["replayed"] != true {
+		t.Fatalf("live identical agent replay: %d %v", status, out)
+	}
+	scope(1, "payer-replaced")
+	status, out = f.do(t, "POST", "/api/v1/billing/subscription-orders", "sess-agent1", f.tenA, agentBody)
+	if status != 409 || out["error"] != "idempotency_conflict" {
+		t.Fatalf("replaced payer grant reused original key: %d %v", status, out)
+	}
+	scope(2, "")
+	status, _ = f.do(t, "POST", "/api/v1/billing/subscription-orders", "sess-agent1", f.tenA, agentBody)
+	mustEqual(t, status, 403)
+}
+
+func TestHistoricalSubscriptionOrderRecoversFrozenBusinessSnapshotHTTP(t *testing.T) {
+	f := billingFixture(t, false) // Deliberately no current catalog.
+	in := store.NewBillingOrder{TenantID: f.tenA, Kind: billing.KindSubscription, Action: billing.ActionExpand, PlanCode: billing.PlanMonthly, PriceRef: "historic-price", PriceSnapshot: `{"action":"expand","additional_stores":2,"reason":"旧扩店订单","price_minor":200}`, AmountMinor: 400, Currency: "CNY", IdempotencyKey: "historical-original", ActorPrincipal: f.ownA, ActorRole: "org_owner", PayerPrincipal: f.ownA}
+	original, _, err := f.s.St.CreateBillingOrder(in, time.Now().UTC().Format(time.RFC3339))
+	mustNoErr(t, err)
+	body := `{"action":"expand","plan_code":"store.plan.month","price_ref":"historic-price","additional_stores":2,"reason":"旧扩店订单","idempotency_key":"historical-original"}`
+	status, out := f.do2(t, "POST", "/api/v1/billing/subscription-orders", "sess-owner-a", f.tenA, body)
+	if status != 200 || out["order"].(map[string]any)["id"] != original.ID {
+		t.Fatalf("historical snapshot recovery: %d %v", status, out)
+	}
+	status, out = f.do2(t, "POST", "/api/v1/billing/subscription-orders", "sess-owner-a", f.tenA, strings.Replace(body, `"additional_stores":2`, `"additional_stores":3`, 1))
+	if status != 409 || out["error"] != "idempotency_conflict" {
+		t.Fatalf("historical extra stores changed: %d %v", status, out)
 	}
 }

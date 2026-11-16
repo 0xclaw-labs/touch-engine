@@ -10,7 +10,7 @@
 //     获准退款仍由公共权威缝推进,运营台无退款写面。
 
 import { useCallback, useEffect, useState } from "react";
-import { useMerchantSession, type MerchantSession } from "@/components/work/merchant-session";
+import { useSession, type MerchantSession } from "@/components/work/merchant-session";
 import {
   OperationFeedback,
   OpsReasonForm,
@@ -38,7 +38,7 @@ interface OrdersPayload {
 }
 
 export function OrdersDesk() {
-  const session = useMerchantSession();
+  const session = useSession();
   const [phase, setPhase] = useState<Phase>("loading");
   const [error, setError] = useState("");
   const [kind, setKind] = useState("");

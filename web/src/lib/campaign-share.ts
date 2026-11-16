@@ -19,7 +19,7 @@ export function campaignShareUrl(origin: string, code: string): string {
 export function campaignShareText(input: ShareCampaign & { url: string }): string {
   const lines = [`【${input.title || "门店活动"}】`];
   if (input.store_name) lines.push(input.store_name);
-  if (input.starts_at || input.ends_at) lines.push(formatCampaignWindow(input.starts_at, input.ends_at));
+  if (input.starts_at || input.ends_at) lines.push(`${formatCampaignWindow(input.starts_at, input.ends_at, { timeZone: "Asia/Shanghai" })}（北京时间 UTC+8）`);
   lines.push(`活动入口：${input.url}`);
   return lines.join("\n");
 }

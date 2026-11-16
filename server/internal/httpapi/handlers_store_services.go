@@ -76,6 +76,7 @@ func (s *Server) handleStoreServicesPut(w http.ResponseWriter, r *http.Request) 
 	}
 	var body struct {
 		ExpectedRevision *int              `json:"expected_revision"`
+		PublicationMode  string            `json:"publication_mode"`
 		Items            *[]storeServiceIn `json:"items"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ExpectedRevision == nil || body.Items == nil {
@@ -95,7 +96,15 @@ func (s *Server) handleStoreServicesPut(w http.ResponseWriter, r *http.Request) 
 			Label: label, Config: raw.Config, Order: raw.Order, Enabled: raw.Enabled,
 		})
 	}
-	rev, items, err := s.St.ReplaceStoreServices(c.Member.TenantID, rec.ID, *body.ExpectedRevision, inputs)
+	if body.PublicationMode != "" && body.PublicationMode != "draft" {
+		fail(w, http.StatusBadRequest, "bad_request", "publication_mode must be draft")
+		return
+	}
+	save := s.St.ReplaceStoreServices
+	if body.PublicationMode == "draft" {
+		save = s.St.StageStoreServices
+	}
+	rev, items, err := save(c.Member.TenantID, rec.ID, *body.ExpectedRevision, inputs)
 	switch {
 	case errors.Is(err, store.ErrStaleRevision):
 		fail(w, http.StatusConflict, "stale_version", "config was changed by someone else; reload and retry")
@@ -194,7 +203,7 @@ func (s *Server) storefrontForServices(w http.ResponseWriter, r *http.Request) (
 		return store.StorefrontPublic{}, nil, nil, false
 	}
 	now := time.Now().UTC()
-	actions, err := s.St.ListPublicStoreActions(pub.StoreID, now)
+	actions, err := s.St.ListPublishedStoreActions(pub.StoreID, now)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "internal", "storefront lookup failed")
 		return store.StorefrontPublic{}, nil, nil, false

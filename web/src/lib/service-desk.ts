@@ -26,6 +26,7 @@ export interface ServiceBatch {
   valid_until?: string;
   face_value_minor?: number;
   cost_minor?: number;
+  cost_recorded?: boolean;
   currency?: string;
 }
 
@@ -33,6 +34,8 @@ export interface ParticipationCard {
   id: string;
   campaign_id: string;
   store_id: string;
+  confirmation_allowed?: boolean;
+  confirmation_blocked_reason?: string;
   status?: string;
   rule_version?: number;
   link_code?: string;
@@ -206,4 +209,56 @@ export function reverseRequestBody(reason: string): Record<string, unknown> {
     reason,
     event_id: `svx-${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`,
   };
+}
+
+export interface ServiceCredentialResponse {
+  ok: boolean;
+  status: number;
+  data: Record<string, unknown>;
+}
+export type ServiceCredentialAPI = (method: string, path: string, body?: unknown) => Promise<ServiceCredentialResponse>;
+
+/** 一个入口使用原凭证权威；所有调用仅定位，明确操作仍由原账本端点负责。 */
+export async function resolveServiceCredential(api: ServiceCredentialAPI, input: string): Promise<{
+  kind: "participation" | "benefit" | "invalid";
+  response: ServiceCredentialResponse;
+}> {
+  const raw = input.trim();
+  const token = extractHandoffToken(raw);
+  if (token) return { kind: "participation", response: await api("POST", "participations/staff/peek", { token }) };
+  if (!raw || /[\s/?#\\]/.test(raw) || /^(pt_|rben_|ben_|cmp_|sto_|phc_|ptx_)/.test(raw)) {
+    return { kind: "invalid", response: { ok: false, status: 400, data: {} } };
+  }
+  if (/^[a-f0-9]{32}$/.test(raw)) {
+    const response = await api("POST", "reward-display-codes/lookup", { code: raw });
+    // 两种凭证的形状可能相同。原展示码权威查无定位时，仍兼容真实旧券原码；
+    // 到期/权限等明确拒绝不改道，两条端口都严格裁决原权益的租户与门店。
+    if (response.status === 404) return { kind: "benefit", response: await api("GET", `reward-benefits/by-code?code=${encodeURIComponent(raw)}`) };
+    return { kind: "benefit", response: { ...response, data: (response.data.benefit as Record<string, unknown> | undefined) ?? response.data } };
+  }
+  return { kind: "benefit", response: await api("GET", `reward-benefits/by-code?code=${encodeURIComponent(raw)}`) };
+}
+
+/** 未知响应时保存原提交体，重试沿原操作键回查/去重，不生成第二次业务操作。 */
+export function stableServiceOperation(cache: Map<string, Record<string, unknown>>, key: string, create: () => Record<string, unknown>): Record<string, unknown> {
+  const existing = cache.get(key);
+  if (existing) return existing;
+  const body = create();
+  cache.set(key, body);
+  return body;
+}
+
+export function serviceReturnPath(input: string | null): string | null {
+  if (!input || !/^\/work(?:\/|\?|$)/.test(input) || /[\\\r\n]/.test(input)) return null;
+  const parsed = new URL(input, "https://service.local");
+  return parsed.origin === "https://service.local" && /^\/work(?:\/|$)/.test(parsed.pathname) ? parsed.pathname + parsed.search + parsed.hash : null;
+}
+
+export function participationNeedsConfirmation(benefit?: { status: string }): boolean {
+  return !benefit || benefit.status === "reserved";
+}
+
+/** 网关异常或缺少业务结果不能解释为确定拒绝，先回查原业务记录。 */
+export function serviceMutationNeedsRecovery(response: ServiceCredentialResponse): boolean {
+  return response.status === 0 || response.status >= 500 || (response.ok && typeof response.data.outcome !== "string");
 }

@@ -17,11 +17,11 @@
 package httpapi
 
 import (
-	"strconv"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,7 +30,8 @@ import (
 	"github.com/bianjiefilm/touch-engine/server/internal/rewardops"
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
 
-	"github.com/bianjiefilm/touch-engine/server/internal/campaign")
+	"github.com/bianjiefilm/touch-engine/server/internal/campaign"
+)
 
 // rewardOpsGate answers uniform 404 when FEATURE_REWARD_OPS is off: an
 // invisible surface (rulesGate/dashGate 同一纪律).
@@ -47,6 +48,8 @@ func (s *Server) rewardOpsGate(w http.ResponseWriter) bool {
 func (s *Server) registerRewardOpsRoutes(mux *http.ServeMux) {
 	// /work admin surface (session + authz; no feature flag).
 	mux.Handle("GET /api/v1/campaigns/{id}/reward-inventory", s.requireSession(s.handleRewardInventoryList))
+	mux.Handle("POST /api/v1/campaigns/{id}/reward-inventory/prepare", s.requireSession(s.handleRewardInventoryPrepare))
+	mux.Handle("GET /api/v1/campaigns/{id}/reward-inventory/prepare", s.requireSession(s.handleRewardInventoryPreparationGet))
 	mux.Handle("POST /api/v1/campaigns/{id}/reward-inventory", s.requireSession(s.handleRewardInventoryCreate))
 	mux.Handle("POST /api/v1/campaigns/{id}/reward-inventory/{invId}/status", s.requireSession(s.handleRewardInventoryStatus))
 	mux.Handle("GET /api/v1/campaigns/{id}/reward-benefits", s.requireSession(s.handleRewardBenefitsList))
@@ -109,6 +112,10 @@ func rewardError(w http.ResponseWriter, err error) {
 
 func promiseBlockedText(err error) string {
 	switch rewardReason(err) {
+	case "promise_not_enabled", "campaign_not_active":
+		return "活动承诺已暂停或尚未启用，停止新发放；已发有效券仍按原条件处理。"
+	case "publication_unknown":
+		return "原生效承诺尚未读到，没有发放新的权益，请回查原记录。"
 	case "subscription_expired":
 		return "订阅已到期，停止新的奖励承诺；已发未过期权益仍可查询和核销。"
 	case "campaign_ended":
@@ -134,7 +141,7 @@ func rewardReason(err error) string {
 		"missing_field", "campaign_mismatch", "slot_unknown", "rule_version_mismatch", "store_mismatch",
 		// HUI-1671: 六种到期独立原因 + 动作资格 + 外部券边界码
 		"reward_not_eligible",
-		"subscription_expired", "campaign_ended", "channel_closed", "participation_closed",
+		"subscription_expired", "campaign_ended", "channel_closed", "participation_closed", "promise_not_enabled", "publication_unknown", "campaign_not_active",
 		"reservation_ttl_elapsed", "benefit_expired",
 		"external_redeem_local_forbidden", "external_authorization_required",
 	} {
@@ -191,7 +198,7 @@ type rewardInventoryBody struct {
 	TotalQty        int      `json:"total_qty"`
 	Codes           []string `json:"codes"`
 	FaceValueMinor  int64    `json:"face_value_minor"`
-	CostMinor       int64    `json:"cost_minor"`
+	CostMinor       *int64   `json:"cost_minor"`
 	Currency        string   `json:"currency"`
 	StoreID         string   `json:"store_id"`
 	ValidFrom       string   `json:"valid_from"`
@@ -205,7 +212,7 @@ func (s *Server) handleRewardInventoryList(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	items, err := s.St.ListRewardInventory(camp.TenantID, camp.ID)
+	items, err := s.St.ListRewardInventoryAt(camp.TenantID, camp.ID, s.rewardTime())
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "internal", "reward inventory lookup failed")
 		return
@@ -223,12 +230,26 @@ func (s *Server) handleRewardInventoryCreate(w http.ResponseWriter, r *http.Requ
 	if !readRewardBody(w, r, &body) {
 		return
 	}
+	// Existing raw-reference callers remain compatible only for campaigns that
+	// never had a configured promise. Once configured, every public stock write
+	// must derive its bindings from the authority; manual evidence cannot widen it.
+	if _, err := s.St.GetPublishConfig(camp.TenantID, camp.ID); err == nil {
+		fail(w, http.StatusUnprocessableEntity, "use_promise_inventory", "请从活动承诺准备关联库存，不能手工覆盖核验条件或规则版本。")
+		return
+	} else if !errors.Is(err, store.ErrNotFound) {
+		rewardError(w, err)
+		return
+	}
+	cost := int64(0)
+	if body.CostMinor != nil {
+		cost = *body.CostMinor
+	}
 	inv, err := s.St.CreateRewardInventory(camp.TenantID, store.NewRewardInventory{
 		CampaignID: camp.ID, StoreID: body.StoreID, Kind: body.Kind, Name: body.Name,
 		BenefitSlot: body.BenefitSlot, RuleVersion: body.RuleVersion,
 		AllowedEvidence: body.AllowedEvidence, RuleRef: body.RuleRef,
 		TotalQty: body.TotalQty, Codes: body.Codes,
-		FaceValueMinor: body.FaceValueMinor, CostMinor: body.CostMinor,
+		FaceValueMinor: body.FaceValueMinor, CostMinor: cost, CostRecorded: body.CostMinor != nil,
 		Currency: body.Currency, ValidFrom: body.ValidFrom, ValidUntil: body.ValidUntil,
 		Note: body.Note, CreatedBy: c.Member.PrincipalRef,
 	})
@@ -409,8 +430,12 @@ func (s *Server) handleRewardConfirm(w http.ResponseWriter, r *http.Request) {
 			writeParticipationError(w, err)
 			return
 		}
+		if p.CampaignID != camp.ID || body.RuleVersion != p.RuleVersion {
+			fail(w, http.StatusForbidden, "target_mismatch", "确认活动与规则必须和顾客本次参与的冻结上下文一致。")
+			return
+		}
 		participationUntil = p.Window.ExpiresAt
-		if p.Window.Expired(time.Now().UTC()) {
+		if p.Window.Expired(s.rewardTime()) {
 			// 过期参与:窗口已关闭,不再发新承诺(读取仍允许顾客查看)。
 			writeParticipationError(w, participation.ErrFrozen)
 			return
@@ -430,7 +455,7 @@ func (s *Server) handleRewardConfirm(w http.ResponseWriter, r *http.Request) {
 		},
 		Actor: c.Member.PrincipalRef, StoreID: body.StoreID, Note: body.Note,
 		FulfillNow: body.FulfillNow, RedeemEventID: body.RedeemEventID,
-		Now:            nowRFC3339(),
+		Now:            s.rewardTime().Format(time.RFC3339Nano),
 		ActionKind:     body.ActionKind,
 		ActionEligible: body.ActionEligible,
 		Expiry:         s.rewardPromiseDeadlines(camp, participationUntil),
@@ -477,7 +502,7 @@ func (s *Server) handleRewardRedeem(w http.ResponseWriter, r *http.Request) {
 		redeemStore = camp.StoreID
 	}
 	out, outcome, err := s.St.RedeemRewardBenefit(camp.TenantID, camp.ID, ben.ID,
-		c.Member.PrincipalRef, redeemStore, body.EventID, nowRFC3339())
+		c.Member.PrincipalRef, redeemStore, body.EventID, s.rewardTime().Format(time.RFC3339Nano))
 	if err != nil {
 		rewardError(w, err)
 		return
@@ -504,7 +529,7 @@ func (s *Server) handleRewardReverse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ben, outcome, err := s.St.ReverseRewardBenefit(camp.TenantID, camp.ID, r.PathValue("benefitId"),
-		c.Member.PrincipalRef, strings.TrimSpace(body.Reason), body.EventID, nowRFC3339())
+		c.Member.PrincipalRef, strings.TrimSpace(body.Reason), body.EventID, s.rewardTime().Format(time.RFC3339Nano))
 	if err != nil {
 		rewardError(w, err)
 		return
@@ -521,7 +546,7 @@ func (s *Server) handleRewardSummary(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	sum, err := s.St.RewardSummary(camp.TenantID, camp.ID)
+	sum, err := s.St.RewardSummaryAt(camp.TenantID, camp.ID, s.rewardTime())
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "internal", "reward summary failed")
 		return
@@ -536,26 +561,53 @@ func (s *Server) handlePublicRewardSummary(w http.ResponseWriter, r *http.Reques
 	if !s.rewardOpsGate(w) {
 		return
 	}
+	at := s.rewardTime()
 	res, ok := s.availablePublishLink(w, r)
 	if !ok {
 		return
 	}
-	sum, err := s.St.RewardSummary(res.Campaign.TenantID, res.Campaign.ID)
+	sum, err := s.St.RewardSummaryAt(res.Campaign.TenantID, res.Campaign.ID, at)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "internal", "reward summary failed")
 		return
 	}
+	live, liveErr := s.St.GetPublishedConfig(res.Campaign.TenantID, res.Campaign.ID)
+	configured := !errors.Is(liveErr, store.ErrNotFound)
 	slots := []map[string]any{}
-	inventory, err := s.St.ListRewardInventory(res.Campaign.TenantID, res.Campaign.ID)
+	inventory, err := s.St.ListRewardInventoryAt(res.Campaign.TenantID, res.Campaign.ID, at)
 	if err == nil {
 		for _, inv := range inventory {
+			if configured && (liveErr != nil || inv.RuleVersion != live.Version || inv.BenefitSlot != live.Spec.Reward.Slot) {
+				continue
+			}
 			slots = append(slots, map[string]any{
 				"benefit_slot": inv.BenefitSlot, "rule_version": inv.RuleVersion,
 				"available_qty": inv.AvailableQty,
 			})
 		}
 	}
+	availability := s.campaignManagement(res.Campaign).Availability
+	promise := map[string]any{}
+	if cfg, cerr := s.St.GetPublishedConfig(res.Campaign.TenantID, res.Campaign.ID); cerr == nil {
+		stores := []string{}
+		for _, id := range cfg.Spec.Reward.StoreIDs {
+			if st, e := s.St.GetStore(id, res.Campaign.TenantID); e == nil {
+				stores = append(stores, st.Name)
+			}
+		}
+		promise = map[string]any{"description": cfg.Spec.CustomerCopy, "verification_mode": cfg.Spec.VerificationMode, "claim_from": cfg.Spec.Reward.ClaimFrom, "claim_until": cfg.Spec.Reward.ClaimUntil, "redeem_from": cfg.Spec.Reward.RedeemFrom, "redeem_until": cfg.Spec.Reward.RedeemUntil, "stores": stores, "onsite_redemption": cfg.Spec.Reward.OnsiteRedempt, "dedup_basis": cfg.Spec.DedupBasis, "per_order_limit": cfg.Spec.PerOrderLimit, "out_of_stock_rule": cfg.Spec.Reward.OutOfStockRule, "enabled": cfg.Status == "enabled"}
+		for _, inv := range inventory {
+			if inv.BenefitSlot == cfg.Spec.Reward.Slot && inv.RuleVersion == cfg.Version {
+				promise["benefit_name"] = inv.Name
+				promise["allowed_evidence"] = inv.AllowedEvidence
+				promise["available_qty"] = inv.AvailableQty
+				promise["valid_from"] = inv.ValidFrom
+				promise["valid_until"] = inv.ValidUntil
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
+		"availability": availability, "promise": promise,
 		"campaign_id": res.Campaign.ID, "as_of": sum.AsOf,
 		"counts": sum.Counts, "slots": slots,
 	})
@@ -594,7 +646,7 @@ func (s *Server) handleRewardReserve(w http.ResponseWriter, r *http.Request) {
 		RuleVersion: body.RuleVersion, EventID: body.EventID,
 		Actor: body.Actor, TTLSeconds: body.TTLSeconds,
 		Expiry: dl,
-	}, nowRFC3339())
+	}, s.rewardTime().Format(time.RFC3339Nano))
 	if err != nil {
 		rewardError(w, err)
 		return
@@ -650,4 +702,36 @@ func (s *Server) handleStoreServiceHistory(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (s *Server) handleRewardInventoryPrepare(w http.ResponseWriter, r *http.Request) {
+	c := callerFrom(r)
+	camp, ok := s.campaignScoped(c, r.PathValue("id"), authz.ActionManagePublishReward, w)
+	if !ok {
+		return
+	}
+	var in store.PrepareRewardInventory
+	if !readRewardBody(w, r, &in) {
+		return
+	}
+	inv, err := s.St.PrepareRewardInventory(camp.TenantID, camp.ID, in, c.Member.PrincipalRef)
+	if err != nil {
+		rewardError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, inv)
+}
+
+func (s *Server) handleRewardInventoryPreparationGet(w http.ResponseWriter, r *http.Request) {
+	c := callerFrom(r)
+	camp, ok := s.campaignScoped(c, r.PathValue("id"), authz.ActionManagePublishReward, w)
+	if !ok {
+		return
+	}
+	inv, err := s.St.PreparedRewardInventory(camp.TenantID, camp.ID, r.URL.Query().Get("request_key"))
+	if err != nil {
+		rewardError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, inv)
 }

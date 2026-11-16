@@ -3,8 +3,10 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"github.com/bianjiefilm/touch-engine/server/internal/campaignenable"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/bianjiefilm/touch-engine/server/internal/authz"
 	"github.com/bianjiefilm/touch-engine/server/internal/campaign"
@@ -388,7 +390,11 @@ func (s *Server) handleCampaignList(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, "internal", "campaign list failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	views := make([]campaignManagementView, 0, len(items))
+	for _, item := range items {
+		views = append(views, s.campaignManagement(item))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": views})
 }
 
 func (s *Server) handleCampaignGet(w http.ResponseWriter, r *http.Request) {
@@ -397,7 +403,7 @@ func (s *Server) handleCampaignGet(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, rec)
+	writeJSON(w, http.StatusOK, s.campaignManagement(rec))
 }
 
 func (s *Server) handleCampaignPatch(w http.ResponseWriter, r *http.Request) {
@@ -468,7 +474,8 @@ func (s *Server) handleCampaignPatch(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCampaignStatus(w http.ResponseWriter, r *http.Request) {
 	c := callerFrom(r)
-	if _, ok := s.campaignScoped(c, r.PathValue("id"), authz.ActionUpdate, w); !ok {
+	camp, ok := s.campaignScoped(c, r.PathValue("id"), authz.ActionUpdate, w)
+	if !ok {
 		return
 	}
 	var in struct {
@@ -482,6 +489,30 @@ func (s *Server) handleCampaignStatus(w http.ResponseWriter, r *http.Request) {
 	if !to.Valid() {
 		fail(w, http.StatusBadRequest, "bad_status", "status must be one of draft/active/paused/ended")
 		return
+	}
+	if to == campaign.StatusActive {
+		cfg, err := s.St.GetPublishedConfig(c.Member.TenantID, camp.ID)
+		if err == nil {
+			if cfg.Status != "enabled" {
+				fail(w, http.StatusUnprocessableEntity, "promise_not_enabled", "先在活动承诺中保存配置、准备库存并通过启用检查。")
+				return
+			}
+			facts, err := s.assemblePublishedFacts(c.Member.TenantID, camp, cfg, time.Now().UTC())
+			if err != nil {
+				fail(w, http.StatusInternalServerError, "preflight_unavailable", "活动预检没有读到，请重试。")
+				return
+			}
+			if d := campaignenable.Check(cfg.Spec, facts); !d.Allowed {
+				writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": d.Reason, "field": d.Field, "message": "活动承诺预检未通过，请回活动配置查看缺项。"})
+				return
+			}
+		} else if errors.Is(err, store.ErrPublishConfigNotEnabled) {
+			fail(w, 422, "promise_not_enabled", "先检查并启用活动承诺。")
+			return
+		} else if !errors.Is(err, store.ErrNotFound) {
+			fail(w, http.StatusInternalServerError, "preflight_unavailable", "活动承诺没有读到，请重试。")
+			return
+		}
 	}
 	rec, err := s.St.TransitionCampaign(r.PathValue("id"), c.Member.TenantID, to)
 	if errors.Is(err, store.ErrNotFound) {

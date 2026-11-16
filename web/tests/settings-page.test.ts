@@ -71,7 +71,7 @@ describe("裁定书四区(按角色维度)", () => {
     expect(desk).toContain('"action:channel_target"');
     expect(desk).toContain('"action:manage_deal"');
     expect(desk).toContain('"action:manage_voucher"');
-    expect(desk).not.toContain('"billing:view"');
+    expect(desk.slice(desk.indexOf("const STAFF_PERM_LABELS"), desk.indexOf("// newTemplateDraft"))).not.toContain('"billing:view"');
     // 走授权端点,撤回即时生效口径
     expect(desk).toContain("/permissions");
     expect(desk).toContain("撤回后,店员的下一次请求立即失去对应能力");
@@ -125,10 +125,11 @@ describe("其余区域与纪律", () => {
     expect(desk).toContain("正在为");
   });
 
-  it("特权操作必填原因(授权/停用/scope/撤销/下发/动作授权都先挡空原因)", () => {
-    const reasonChecks = desk.match(/必须填写原因/g) ?? [];
-    expect(reasonChecks.length).toBeGreaterThanOrEqual(4);
-    expect(desk).toContain("留痕可查");
+  it("常规审计由业务上下文形成，例外更正仍可说明", () => {
+    expect(desk).not.toContain("必须填写原因");
+    expect(desk).toContain("负责人按任务调整店员配置授权");
+    expect(desk).toContain("例外更正说明（需要时填写）");
+    expect(desk).toContain("useTaskReview");
   });
 
   it("权限不足/off 状态用产品语句,不崩不装成功", () => {

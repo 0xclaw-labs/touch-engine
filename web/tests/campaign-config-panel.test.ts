@@ -40,7 +40,7 @@ describe("发布与启用面板:五步一次配置", () => {
     expect(panel).toContain('data-action="save-draft"');
     expect(panel).toContain('data-action="enable"');
     const enableBody = panel.slice(panel.indexOf("async function enable"));
-    expect(enableBody).toContain("await saveDraft()");
+    expect(enableBody).toContain("await saveDraft(false)");
   });
 
   it("三核验模式单选,顾客文案在配置时写,不在完成后加严", () => {
@@ -81,13 +81,17 @@ describe("发布与启用面板:五步一次配置", () => {
     expect(panel).toContain("不用重填");
   });
 
-  it("紧急暂停语义:停新参与,老参与照常核对履约", () => {
+  it("紧急暂停语义:停止新发放并保留已发有效券", () => {
     expect(panel).toContain('data-action="pause"');
-    expect(panel).toContain("不再放新参与;已经参与的顾客照常核对与履约");
+    expect(panel).toContain("停止新参与与新发放；在途事项按原冻结条件核对");
   });
 
-  it("enabled 下保存被收回草稿的语义如实展示", () => {
-    expect(panel).toContain("enabled 下保存会被服务端收回草稿");
+  it("编辑稿与线上版分别显示，保存不替换线上，恢复只用原正式版本", () => {
+    expect(panel).toContain("保存草稿只保留编辑内容，不替换或关闭线上承诺");
+    expect(panel).toContain("编辑稿第");
+    expect(panel).toContain("线上第");
+    expect(panel).toContain('data-action="resume"');
+    expect(panel).toContain("expected_version");
   });
 });
 
@@ -96,7 +100,8 @@ describe("活动详情页窄接线", () => {
     expect(detailPage).toContain('from "@/components/work/campaign-config-panel"');
     expect(detailPage).toMatch(/<CampaignConfigPanel\s+campaignId=\{id\}/);
     // ContentPackPanel 等既有挂载保持原样(3553 先例不被推翻)。
-    expect(detailPage).toContain("<ContentPackPanel campaignId={id} />");
+    expect(detailPage).not.toContain("<ContentPackPanel");
+    expect(panel).toContain("<ContentEditor");
   });
 
   it("面板带活动与门店资料(只读展示用)", () => {

@@ -89,7 +89,7 @@ export function touchEntryRedirect(view: TouchEntryView | null | undefined): str
 
 // 404 面:顾客可读文案,不泄漏后台细节(uid_hint/角色/租户)。
 export function touchEntryFace(state: unknown): string {
-  if (state === "not_found") return "这个入口不存在，或已被商家收回。";
+  if (state === "not_found") return "这个入口不存在，或已被商家收回。请向现场工作人员索取当前可用入口。";
   if (state === "touchpoint_disabled") return "这个入口已被商家停用。请联系门店工作人员。";
   return "入口状态未知，请稍后再试。";
 }

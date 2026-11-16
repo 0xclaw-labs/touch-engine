@@ -220,11 +220,11 @@ func newHandoffV2Fixture(t *testing.T, on bool) *handoffV2Fixture {
 	s.Participation.SetActionDirectory(&stubV2Directory{refs: map[string]participation.ActionRef{
 		actA27: {
 			ActionID: actA27, CatalogCode: "A27", Platform: "qq", Kind: "share",
-			TenantID: tenA.ID, StoreID: stoA.ID, StorefrontRevision: 1, ActionRevision: 7, Enabled: true,
+			TenantID: tenA.ID, StoreID: stoA.ID, StorefrontRevision: 0, ActionRevision: 1, Enabled: true,
 		},
 		actA07: {
 			ActionID: actA07, CatalogCode: "A07", Platform: "xiaohongshu", Kind: "publish",
-			TenantID: tenA.ID, StoreID: stoA.ID, StorefrontRevision: 1, ActionRevision: 9,
+			TenantID: tenA.ID, StoreID: stoA.ID, StorefrontRevision: 0, ActionRevision: 1,
 			ContentPackVersion: version.ID, Enabled: true,
 		},
 	}})
@@ -316,7 +316,7 @@ func TestActionHandoffV2LinkShareHappyPath(t *testing.T) {
 	}
 
 	// 开交接:201 + 无参与 + open_url client_action。
-	startBody := `{"action_session_id":"` + f.sidA + `","action_revision":7,"payload_kind":"link_share",
+	startBody := `{"action_session_id":"` + f.sidA + `","action_revision":1,"payload_kind":"link_share",
 		"method":"link_share","environment":"ios_safari","confirmation":"https://dianping.example.com/store/123",
 		"idempotency_key":"idem-v2-link"}`
 	status, _, body = f.do(t, "POST", "/api/v1/public/actions/"+f.actA27+"/handoffs", f.cookie, strings.ReplaceAll(startBody, "\n", ""))
@@ -384,7 +384,7 @@ func TestActionHandoffV2LinkShareHappyPath(t *testing.T) {
 // 资格未知(method 无记录)→ pending_external 422 零落行,不承诺。
 func TestActionHandoffV2PendingExternalRefuses(t *testing.T) {
 	f := newHandoffV2Fixture(t, true)
-	startBody := `{"action_session_id":"` + f.sidA + `","action_revision":7,"payload_kind":"link_share",
+	startBody := `{"action_session_id":"` + f.sidA + `","action_revision":1,"payload_kind":"link_share",
 		"method":"h5_share","environment":"ios_safari","confirmation":"https://dianping.example.com/store/123",
 		"idempotency_key":"idem-v2-unknown"}`
 	status, _, body := f.do(t, "POST", "/api/v1/public/actions/"+f.actA27+"/handoffs", f.cookie, strings.ReplaceAll(startBody, "\n", ""))
@@ -412,7 +412,7 @@ func TestActionHandoffV2MediaHappyPath(t *testing.T) {
 	if fingerprint == "" {
 		t.Fatalf("media plan must carry the confirmation fingerprint: %v", body)
 	}
-	startBody := `{"action_session_id":"` + f.sidB + `","action_revision":9,"payload_kind":"media",
+	startBody := `{"action_session_id":"` + f.sidB + `","action_revision":1,"payload_kind":"media",
 		"method":"js_media_handoff","environment":"ios_safari","confirmation":"` + fingerprint + `",
 		"idempotency_key":"idem-v2-media"}`
 	status, _, body = f.do(t, "POST", "/api/v1/public/actions/"+f.actA07+"/handoffs", f.cookie, strings.ReplaceAll(startBody, "\n", ""))
@@ -480,7 +480,7 @@ func TestActionHandoffV2CallbackSurface(t *testing.T) {
 		t.Fatal("unknown handoff reference must 404")
 	}
 	// 真实交接 + 错租户绑定:已验真被拒 → 200 accepted=false。
-	startBody := `{"action_session_id":"` + f.sidA + `","action_revision":7,"payload_kind":"link_share",
+	startBody := `{"action_session_id":"` + f.sidA + `","action_revision":1,"payload_kind":"link_share",
 		"method":"link_share","environment":"ios_safari","confirmation":"https://dianping.example.com/store/123",
 		"idempotency_key":"idem-v2-cb"}`
 	status, _, body := f.do(t, "POST", "/api/v1/public/actions/"+f.actA27+"/handoffs", f.cookie, strings.ReplaceAll(startBody, "\n", ""))
@@ -527,7 +527,7 @@ func (a *v2CallbackStub) VerifyCallback(_ context.Context, _ publishhandoff.Call
 // submit/query HTTP 面:adapter 驱动;未注册/unsupported = 422 诚实缺位(状态不推进)。
 func TestActionHandoffV2SubmitQuerySurface(t *testing.T) {
 	f := newHandoffV2Fixture(t, true)
-	startBody := `{"action_session_id":"` + f.sidA + `","action_revision":7,"payload_kind":"link_share",
+	startBody := `{"action_session_id":"` + f.sidA + `","action_revision":1,"payload_kind":"link_share",
 		"method":"link_share","environment":"ios_safari","confirmation":"https://dianping.example.com/store/123",
 		"idempotency_key":"idem-v2-submit"}`
 	status, _, body := f.do(t, "POST", "/api/v1/public/actions/"+f.actA27+"/handoffs", f.cookie, strings.ReplaceAll(startBody, "\n", ""))

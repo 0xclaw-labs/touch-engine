@@ -2,10 +2,13 @@ package store
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
+	"reflect"
 	"strings"
 	"time"
 
@@ -67,6 +70,7 @@ type RewardInventory struct {
 	AvailableQty         int      `json:"available_qty"`
 	FaceValueMinor       int64    `json:"face_value_minor"`
 	CostMinor            int64    `json:"cost_minor"`
+	CostRecorded         bool     `json:"cost_recorded"`
 	Currency             string   `json:"currency"`
 	ValidFrom            string   `json:"valid_from"`
 	ValidUntil           string   `json:"valid_until"`
@@ -100,6 +104,8 @@ type NewRewardInventory struct {
 	Codes                []string
 	FaceValueMinor       int64
 	CostMinor            int64
+	CostRecorded         bool
+	RequestKey           string
 	Currency             string
 	ValidFrom            string
 	ValidUntil           string
@@ -114,7 +120,7 @@ type NewRewardInventory struct {
 	RuleFreezeRef        string
 }
 
-const rewardInventoryCols = `id,tenant_id,campaign_id,store_id,kind,name,benefit_slot,rule_version,allowed_evidence,rule_ref,total_qty,face_value_minor,cost_minor,currency,valid_from,valid_until,status,note,created_by,created_at,offer_id,action_id,action_revision,action_kind,reward_eligibility_ref,reward_eligible,rule_freeze_ref`
+const rewardInventoryCols = `id,tenant_id,campaign_id,store_id,kind,name,benefit_slot,rule_version,allowed_evidence,rule_ref,total_qty,face_value_minor,cost_minor,currency,valid_from,valid_until,status,note,created_by,created_at,offer_id,action_id,action_revision,action_kind,reward_eligibility_ref,reward_eligible,rule_freeze_ref,cost_recorded`
 
 func scanRewardInventory(allowed string, sc interface{ Scan(...any) error }) (RewardInventory, error) {
 	var r RewardInventory
@@ -124,7 +130,7 @@ func scanRewardInventory(allowed string, sc interface{ Scan(...any) error }) (Re
 	err := sc.Scan(&r.ID, &r.TenantID, &r.CampaignID, &storeID, &r.Kind, &r.Name, &r.BenefitSlot,
 		&r.RuleVersion, &allowed, &ruleRef, &r.TotalQty, &r.FaceValueMinor, &r.CostMinor,
 		&currency, &from, &until, &r.Status, &note, &r.CreatedBy, &r.CreatedAt,
-		&offerID, &actionID, &actionRevision, &actionKind, &eligRef, &eligible, &freezeRef)
+		&offerID, &actionID, &actionRevision, &actionKind, &eligRef, &eligible, &freezeRef, &r.CostRecorded)
 	if err != nil {
 		return RewardInventory{}, err
 	}
@@ -152,7 +158,7 @@ func (s *Store) CreateRewardInventory(tenantID string, in NewRewardInventory) (R
 	default:
 		return inv, fmt.Errorf("%w: unknown kind %q", ErrRewardInvalid, kind)
 	}
-	if in.FaceValueMinor < 0 || in.CostMinor < 0 || in.TotalQty < 0 {
+	if in.FaceValueMinor < 0 || in.CostMinor < 0 || in.TotalQty < 0 || (in.CostMinor > 0 && int64(in.TotalQty) > math.MaxInt64/in.CostMinor) {
 		return inv, fmt.Errorf("%w: negative amount or quantity", ErrRewardInvalid)
 	}
 	ev := dedupeEvidence(in.AllowedEvidence)
@@ -205,7 +211,7 @@ func (s *Store) CreateRewardInventory(tenantID string, in NewRewardInventory) (R
 		ID: newID("rinv_"), TenantID: tenantID, CampaignID: in.CampaignID,
 		StoreID: strings.TrimSpace(in.StoreID), Kind: kind, Name: name, BenefitSlot: slot,
 		RuleVersion: in.RuleVersion, AllowedEvidence: ev, RuleRef: strings.TrimSpace(in.RuleRef),
-		TotalQty: total, FaceValueMinor: in.FaceValueMinor, CostMinor: in.CostMinor,
+		TotalQty: total, FaceValueMinor: in.FaceValueMinor, CostMinor: in.CostMinor, CostRecorded: in.CostRecorded || in.CostMinor > 0,
 		Currency: strings.TrimSpace(in.Currency), ValidFrom: strings.TrimSpace(in.ValidFrom),
 		ValidUntil: strings.TrimSpace(in.ValidUntil), Status: RewardInventoryActive,
 		Note: strings.TrimSpace(in.Note), CreatedBy: in.CreatedBy, CreatedAt: now(),
@@ -231,13 +237,55 @@ func (s *Store) CreateRewardInventory(tenantID string, in NewRewardInventory) (R
 		return RewardInventory{}, err
 	}
 	defer tx.Rollback()
+	if in.RequestKey != "" {
+		digest := sha256.Sum256([]byte(tenantID + "/" + in.CampaignID + "/" + in.RequestKey))
+		inv.ID = "rinv_" + hex.EncodeToString(digest[:16])
+		var allowed string
+		old, readErr := scanRewardInventory(allowed, tx.QueryRow(`SELECT `+rewardInventoryCols+` FROM reward_inventory WHERE id=? AND tenant_id=?`, inv.ID, tenantID))
+		if readErr == nil {
+			if old.Name != inv.Name || old.RuleRef != inv.RuleRef || old.TotalQty != inv.TotalQty || old.FaceValueMinor != inv.FaceValueMinor || old.CostMinor != inv.CostMinor || old.CostRecorded != inv.CostRecorded || !reflect.DeepEqual(old.AllowedEvidence, inv.AllowedEvidence) {
+				return RewardInventory{}, fmt.Errorf("%w: request_payload_changed", ErrRewardConflict)
+			}
+			occupied, err := occupiedInTx(tx, old.ID)
+			if err != nil {
+				return RewardInventory{}, err
+			}
+			old.AvailableQty = old.TotalQty - occupied
+			if old.AvailableQty < 0 {
+				old.AvailableQty = 0
+			}
+			return old, nil
+		}
+		if !errors.Is(readErr, sql.ErrNoRows) {
+			return RewardInventory{}, readErr
+		}
+		var currentVersion int
+		var quantity, budget sql.NullInt64
+		var mode string
+		if err := tx.QueryRow(`SELECT version,total_quantity,cost_budget_minor,budget_mode FROM campaign_publish_configs WHERE campaign_id=? AND tenant_id=?`, inv.CampaignID, tenantID).Scan(&currentVersion, &quantity, &budget, &mode); err != nil {
+			return RewardInventory{}, err
+		}
+		if currentVersion != inv.RuleVersion {
+			return RewardInventory{}, fmt.Errorf("%w: rule_version_mismatch", ErrRewardConflict)
+		}
+		var committedQty, committedCost int64
+		if err := tx.QueryRow(`SELECT COALESCE(SUM(total_qty),0),COALESCE(SUM(total_qty*cost_minor),0) FROM reward_inventory WHERE campaign_id=? AND tenant_id=? AND rule_version=?`, inv.CampaignID, tenantID, inv.RuleVersion).Scan(&committedQty, &committedCost); err != nil {
+			return RewardInventory{}, err
+		}
+		if mode == "total_quantity" && (!quantity.Valid || committedQty+int64(inv.TotalQty) > quantity.Int64) {
+			return RewardInventory{}, fmt.Errorf("%w: promise_quantity_exceeded", ErrRewardInvalid)
+		}
+		if mode == "cost_budget" && (!inv.CostRecorded || !budget.Valid || committedCost+int64(inv.TotalQty)*inv.CostMinor > budget.Int64) {
+			return RewardInventory{}, fmt.Errorf("%w: promise_budget_exceeded_or_cost_unknown", ErrRewardInvalid)
+		}
+	}
 	if _, err := tx.Exec(
-		`INSERT INTO reward_inventory(`+rewardInventoryCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO reward_inventory(`+rewardInventoryCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		inv.ID, inv.TenantID, inv.CampaignID, inv.StoreID, inv.Kind, inv.Name, inv.BenefitSlot,
 		inv.RuleVersion, strings.Join(ev, ","), inv.RuleRef, inv.TotalQty, inv.FaceValueMinor,
 		inv.CostMinor, inv.Currency, inv.ValidFrom, inv.ValidUntil, inv.Status, inv.Note,
 		inv.CreatedBy, inv.CreatedAt, inv.OfferID, inv.ActionID, inv.ActionRevision,
-		inv.ActionKind, inv.RewardEligibilityRef, inv.RewardEligible, inv.RuleFreezeRef); err != nil {
+		inv.ActionKind, inv.RewardEligibilityRef, inv.RewardEligible, inv.RuleFreezeRef, inv.CostRecorded); err != nil {
 		return RewardInventory{}, err
 	}
 	for _, c := range codes {
@@ -271,51 +319,81 @@ func dedupeEvidence(in []string) []string {
 // ListRewardInventory returns the tenant's live batches for one campaign,
 // oldest first, each with availability (reserved+issued+redeemed occupy).
 func (s *Store) ListRewardInventory(tenantID, campaignID string) ([]RewardInventory, error) {
-	rows, err := s.DB.Query(
-		`SELECT `+rewardInventoryCols+`,
-			(SELECT COUNT(*) FROM reward_benefits b
-			  WHERE b.inventory_id = reward_inventory.id
-			    AND b.status IN `+rewardOccupiedStatuses+`)
-		FROM reward_inventory
-		WHERE tenant_id=? AND campaign_id=? AND status <> ?
-		ORDER BY created_at, id`, tenantID, campaignID, RewardInventoryRetired)
+	return s.ListRewardInventoryAt(tenantID, campaignID, time.Now().UTC())
+}
+
+// ListRewardInventoryAt projects availability without a sweep/write. Only a
+// parseable, due reserved_until can release a read-side occupancy; unknown
+// deadlines and issued/redeemed facts remain occupied.
+func (s *Store) ListRewardInventoryAt(tenantID, campaignID string, at time.Time) ([]RewardInventory, error) {
+	occupied, err := s.rewardOccupiedAt(tenantID, campaignID, "", at)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.DB.Query(`SELECT `+rewardInventoryCols+` FROM reward_inventory WHERE tenant_id=? AND campaign_id=? AND status<>? ORDER BY created_at,id`, tenantID, campaignID, RewardInventoryRetired)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := []RewardInventory{}
 	for rows.Next() {
-		occupied := 0
-		r, err := func() (RewardInventory, error) {
-			inv, scErr := scanRewardInventory("", compositeScan{rows, &occupied})
-			return inv, scErr
-		}()
+		inv, err := scanRewardInventory("", rows)
 		if err != nil {
 			return nil, err
 		}
-		r.AvailableQty = r.TotalQty - occupied
-		out = append(out, r)
+		inv.AvailableQty = inv.TotalQty - occupied[inv.ID]
+		out = append(out, inv)
 	}
 	return out, rows.Err()
 }
 
-// GetRewardInventory loads one batch inside the tenant scope.
+func rewardHoldExpiredAt(until string, at time.Time) bool {
+	deadline, err := time.Parse(time.RFC3339Nano, until)
+	return err == nil && !at.Before(deadline)
+}
+
+func (s *Store) rewardOccupiedAt(tenantID, campaignID, inventoryID string, at time.Time) (map[string]int, error) {
+	query := `SELECT inventory_id,status,reserved_until FROM reward_benefits WHERE tenant_id=? AND campaign_id=? AND status IN ` + rewardOccupiedStatuses
+	args := []any{tenantID, campaignID}
+	if inventoryID != "" {
+		query += ` AND inventory_id=?`
+		args = append(args, inventoryID)
+	}
+	rows, err := s.DB.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var id, status, until string
+		if err := rows.Scan(&id, &status, &until); err != nil {
+			return nil, err
+		}
+		if status != RewardStatusReserved || !rewardHoldExpiredAt(until, at) {
+			out[id]++
+		}
+	}
+	return out, rows.Err()
+}
+
+// GetRewardInventory reads the same time-aware occupancy as list/preflight.
 func (s *Store) GetRewardInventory(id, tenantID string) (RewardInventory, error) {
-	row := s.DB.QueryRow(
-		`SELECT `+rewardInventoryCols+`,
-			(SELECT COUNT(*) FROM reward_benefits b
-			  WHERE b.inventory_id = reward_inventory.id
-			    AND b.status IN `+rewardOccupiedStatuses+`)
-		FROM reward_inventory WHERE id=? AND tenant_id=?`, id, tenantID)
-	occupied := 0
-	inv, err := scanRewardInventory("", compositeScan{row, &occupied})
+	return s.GetRewardInventoryAt(id, tenantID, time.Now().UTC())
+}
+func (s *Store) GetRewardInventoryAt(id, tenantID string, at time.Time) (RewardInventory, error) {
+	inv, err := scanRewardInventory("", s.DB.QueryRow(`SELECT `+rewardInventoryCols+` FROM reward_inventory WHERE id=? AND tenant_id=?`, id, tenantID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return RewardInventory{}, ErrNotFound
 	}
 	if err != nil {
-		return RewardInventory{}, err
+		return inv, err
 	}
-	inv.AvailableQty = inv.TotalQty - occupied
+	occupied, err := s.rewardOccupiedAt(tenantID, inv.CampaignID, id, at)
+	if err != nil {
+		return inv, err
+	}
+	inv.AvailableQty = inv.TotalQty - occupied[id]
 	return inv, nil
 }
 
@@ -407,6 +485,7 @@ type RewardBenefit struct {
 	StoreID         string `json:"store_id"`
 	FaceValueMinor  int64  `json:"face_value_minor"`
 	CostMinor       int64  `json:"cost_minor"`
+	CostRecorded    bool   `json:"cost_recorded"`
 	Currency        string `json:"currency"`
 	ReservedAt      string `json:"reserved_at"`
 	ReservedUntil   string `json:"reserved_until"`
@@ -422,7 +501,7 @@ type RewardBenefit struct {
 	UpdatedAt       string `json:"updated_at"`
 }
 
-const rewardBenefitCols = `id,tenant_id,campaign_id,inventory_id,participation_id,benefit_slot,rule_version,evidence,code,status,store_id,face_value_minor,cost_minor,currency,reserved_at,reserved_until,issued_at,issued_by,redeemed_at,redeemed_by,reversed_at,reversed_by,reverse_reason,note,created_at,updated_at`
+const rewardBenefitCols = `id,tenant_id,campaign_id,inventory_id,participation_id,benefit_slot,rule_version,evidence,code,status,store_id,face_value_minor,cost_minor,currency,reserved_at,reserved_until,issued_at,issued_by,redeemed_at,redeemed_by,reversed_at,reversed_by,reverse_reason,note,created_at,updated_at,cost_recorded`
 
 func scanRewardBenefit(sc interface{ Scan(...any) error }) (RewardBenefit, error) {
 	var b RewardBenefit
@@ -430,7 +509,7 @@ func scanRewardBenefit(sc interface{ Scan(...any) error }) (RewardBenefit, error
 		&b.BenefitSlot, &b.RuleVersion, &b.Evidence, &b.Code, &b.Status, &b.StoreID,
 		&b.FaceValueMinor, &b.CostMinor, &b.Currency, &b.ReservedAt, &b.ReservedUntil,
 		&b.IssuedAt, &b.IssuedBy, &b.RedeemedAt, &b.RedeemedBy, &b.ReversedAt, &b.ReversedBy,
-		&b.ReverseReason, &b.Note, &b.CreatedAt, &b.UpdatedAt)
+		&b.ReverseReason, &b.Note, &b.CreatedAt, &b.UpdatedAt, &b.CostRecorded)
 	return b, err
 }
 
@@ -544,10 +623,12 @@ func (s *Store) beginRewardTx() (*sql.Tx, error) {
 // benefit. It runs inside every mutating entry point so stock frees lazily
 // and deterministically.
 func sweepDueInTx(tx *sql.Tx, tenantID, nowTS string) (int, error) {
+	at, err := time.Parse(time.RFC3339Nano, nowTS)
+	if err != nil {
+		return 0, err
+	}
 	rows, err := tx.Query(
-		`SELECT id, tenant_id FROM reward_benefits
-		 WHERE status='reserved' AND reserved_until <> '' AND reserved_until < ?`+tenantFilter(tenantID),
-		nowTS)
+		`SELECT id, tenant_id,reserved_until FROM reward_benefits WHERE status='reserved'` + tenantFilter(tenantID))
 	if err != nil {
 		return 0, err
 	}
@@ -555,11 +636,14 @@ func sweepDueInTx(tx *sql.Tx, tenantID, nowTS string) (int, error) {
 	var dues []due
 	for rows.Next() {
 		var d due
-		if err := rows.Scan(&d.id, &d.tenant); err != nil {
+		var until string
+		if err := rows.Scan(&d.id, &d.tenant, &until); err != nil {
 			rows.Close()
 			return 0, err
 		}
-		dues = append(dues, d)
+		if rewardHoldExpiredAt(until, at) {
+			dues = append(dues, d)
+		}
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -723,11 +807,11 @@ func postOpInTx(tx *sql.Tx, tenantID, benefitID, op, dedupKey, actor, storeID, r
 // processed result instead of failing.
 func insertBenefitInTx(tx *sql.Tx, b RewardBenefit) (RewardBenefit, error) {
 	_, err := tx.Exec(
-		`INSERT INTO reward_benefits(`+rewardBenefitCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO reward_benefits(`+rewardBenefitCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		b.ID, b.TenantID, b.CampaignID, b.InventoryID, b.ParticipationID, b.BenefitSlot,
 		b.RuleVersion, b.Evidence, b.Code, b.Status, b.StoreID, b.FaceValueMinor, b.CostMinor,
 		b.Currency, b.ReservedAt, b.ReservedUntil, b.IssuedAt, b.IssuedBy, b.RedeemedAt,
-		b.RedeemedBy, b.ReversedAt, b.ReversedBy, b.ReverseReason, b.Note, b.CreatedAt, b.UpdatedAt)
+		b.RedeemedBy, b.ReversedAt, b.ReversedBy, b.ReverseReason, b.Note, b.CreatedAt, b.UpdatedAt, b.CostRecorded)
 	if err != nil {
 		return RewardBenefit{}, err
 	}
@@ -829,6 +913,9 @@ func (s *Store) ReserveRewardBenefit(in RewardReserveInput, nowTS string) (Rewar
 	// HUI-1671 六到期 promise gate: 新承诺(首次预留/过期后重预留)按六期限
 	// 判定;进行中预留、活跃事实回读不是新承诺,不受影响。
 	if existing == nil || existing.Status == RewardStatusExpired {
+		if err := participationRewardPromiseGateInTx(tx, in.TenantID, in.CampaignID, in.ParticipationID, in.Slot, in.RuleVersion, existing); err != nil {
+			return ben, RewardOutcome{}, err
+		}
 		if err := expiryPromiseGate(in.Expiry, inv, nowTS); err != nil {
 			return ben, RewardOutcome{}, err
 		}
@@ -913,7 +1000,7 @@ func newReservedBenefit(inv RewardInventory, in RewardReserveInput, nowTS, until
 		ID: newID("rben_"), TenantID: in.TenantID, CampaignID: in.CampaignID,
 		InventoryID: inv.ID, ParticipationID: in.ParticipationID, BenefitSlot: in.Slot,
 		RuleVersion: inv.RuleVersion, Evidence: "", Status: RewardStatusReserved,
-		StoreID: inv.StoreID, FaceValueMinor: inv.FaceValueMinor, CostMinor: inv.CostMinor,
+		StoreID: inv.StoreID, FaceValueMinor: inv.FaceValueMinor, CostMinor: inv.CostMinor, CostRecorded: inv.CostRecorded,
 		Currency: inv.Currency, ReservedAt: nowTS, ReservedUntil: until,
 		Note: in.Note, CreatedAt: nowTS, UpdatedAt: nowTS,
 	}
@@ -1047,6 +1134,9 @@ func (s *Store) ConfirmRewardBenefit(in RewardConfirmInput) (RewardBenefit, Rewa
 		}
 	} else if occupied, _ := occupiedInTx(tx, inv.ID); occupied >= inv.TotalQty {
 		return ben, RewardOutcome{}, ErrRewardStock
+	}
+	if err := participationRewardPromiseGateInTx(tx, in.TenantID, in.CampaignID, in.ParticipationID, in.Slot, in.RuleVersion, existing); err != nil {
+		return ben, RewardOutcome{}, err
 	}
 	code := ""
 	targetID := ""
@@ -1307,22 +1397,28 @@ func (s *Store) ExpireDueRewardReservations(nowTS, tenantID string) (int, error)
 // number of self-reported publish attempts without a benefit. Face and cost
 // stay separate numbers: face is marketing face value, never actual cost.
 type RewardSummary struct {
-	CampaignID         string         `json:"campaign_id"`
-	AsOf               string         `json:"as_of"`
-	Counts             map[string]int `json:"counts"`
-	EvidenceGranted    map[string]int `json:"evidence_granted"`
-	PendingReview      int            `json:"pending_review"`
-	CommittedFaceMinor int64          `json:"committed_face_minor"`
-	CommittedCostMinor int64          `json:"committed_cost_minor"`
-	PendingFaceMinor   int64          `json:"pending_face_minor"`
-	PendingCostMinor   int64          `json:"pending_cost_minor"`
+	CampaignID              string         `json:"campaign_id"`
+	AsOf                    string         `json:"as_of"`
+	Counts                  map[string]int `json:"counts"`
+	EvidenceGranted         map[string]int `json:"evidence_granted"`
+	PendingReview           int            `json:"pending_review"`
+	CommittedFaceMinor      int64          `json:"committed_face_minor"`
+	CommittedCostMinor      int64          `json:"committed_cost_minor"`
+	PendingFaceMinor        int64          `json:"pending_face_minor"`
+	PendingCostMinor        int64          `json:"pending_cost_minor"`
+	CommittedCostUnrecorded int            `json:"committed_cost_unrecorded"`
+	PendingCostUnrecorded   int            `json:"pending_cost_unrecorded"`
 }
 
 // RewardSummary recomputes everything from the tables. It is a read, not a
 // write; after a restart the same numbers fall out of the same rows.
 func (s *Store) RewardSummary(tenantID, campaignID string) (RewardSummary, error) {
+	return s.RewardSummaryAt(tenantID, campaignID, time.Now().UTC())
+}
+
+func (s *Store) RewardSummaryAt(tenantID, campaignID string, at time.Time) (RewardSummary, error) {
 	sum := RewardSummary{
-		CampaignID: campaignID, AsOf: now(),
+		CampaignID: campaignID, AsOf: at.UTC().Format(time.RFC3339Nano),
 		Counts: map[string]int{
 			RewardStatusReserved: 0, RewardStatusIssued: 0, RewardStatusRedeemed: 0,
 			RewardStatusReversed: 0, RewardStatusExpired: 0,
@@ -1333,17 +1429,21 @@ func (s *Store) RewardSummary(tenantID, campaignID string) (RewardSummary, error
 		},
 	}
 	rows, err := s.DB.Query(
-		`SELECT status, evidence, face_value_minor, cost_minor FROM reward_benefits
+		`SELECT status, evidence, face_value_minor, cost_minor, cost_recorded,reserved_until FROM reward_benefits
 		 WHERE tenant_id=? AND campaign_id=?`, tenantID, campaignID)
 	if err != nil {
 		return RewardSummary{}, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var status, evidence string
+		var status, evidence, until string
 		var face, cost int64
-		if err := rows.Scan(&status, &evidence, &face, &cost); err != nil {
+		var costRecorded bool
+		if err := rows.Scan(&status, &evidence, &face, &cost, &costRecorded, &until); err != nil {
 			return RewardSummary{}, err
+		}
+		if status == RewardStatusReserved && rewardHoldExpiredAt(until, at) {
+			status = RewardStatusExpired
 		}
 		sum.Counts[status]++
 		switch status {
@@ -1353,9 +1453,15 @@ func (s *Store) RewardSummary(tenantID, campaignID string) (RewardSummary, error
 			}
 			sum.CommittedFaceMinor += face
 			sum.CommittedCostMinor += cost
+			if !costRecorded {
+				sum.CommittedCostUnrecorded++
+			}
 		case RewardStatusReserved:
 			sum.PendingFaceMinor += face
 			sum.PendingCostMinor += cost
+			if !costRecorded {
+				sum.PendingCostUnrecorded++
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -1413,4 +1519,14 @@ func (s *Store) ListRewardReviewRequests(tenantID, campaignID string) ([]RewardR
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// RewardBenefitForParticipation is the existing ledger's exact allocation,
+// including reserved/expired/issued facts. It never allocates or sweeps stock.
+func (s *Store) RewardBenefitForParticipation(tenantID, campaignID, participationID, slot string) (RewardBenefit, error) {
+	b, err := scanRewardBenefit(s.DB.QueryRow(`SELECT `+rewardBenefitCols+` FROM reward_benefits WHERE tenant_id=? AND campaign_id=? AND participation_id=? AND benefit_slot=?`, tenantID, campaignID, participationID, slot))
+	if errors.Is(err, sql.ErrNoRows) {
+		return RewardBenefit{}, ErrNotFound
+	}
+	return b, err
 }

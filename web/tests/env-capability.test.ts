@@ -72,6 +72,28 @@ describe("parseActionCapabilities:白名单解析 3535 公开投影", () => {
 });
 
 describe("pickRoute:环境过滤与诚实分级", () => {
+  it("内容交接只选择声明需要内容版本的路线，不借纯链接的可用性", () => {
+    const both = [
+      route({ method: "link_share", required_inputs: [], promised: true }),
+      route({ method: "manual_material", required_inputs: ["content_pack_version"], promised: false }),
+    ];
+    expect(pickRoute(both, "ios_safari", "media")?.route?.method).toBe("manual_material");
+    const mediaPending = [both[0], { ...both[1], allowed: false, pending_external: true }];
+    expect(pickRoute(mediaPending, "ios_safari", "media")?.kind).toBe("pending");
+    const mediaRefused = [both[0], { ...both[1], allowed: false, reason_text: "素材路线未准入" }];
+    expect(pickRoute(mediaRefused, "ios_safari", "media")?.kind).toBe("refused");
+    expect(pickRoute([both[0]], "ios_safari", "media")?.route).toBeNull();
+  });
+
+  it("纯链接只选择无需内容版本的路线，媒体路线停用不影响独立链接", () => {
+    const both = [
+      route({ method: "manual_material", required_inputs: ["content_pack_version"], emergency_disabled: true }),
+      route({ method: "link_share", required_inputs: [], promised: true }),
+    ];
+    expect(pickRoute(both, "ios_safari", "link_share")?.kind).toBe("ok");
+    expect(pickRoute(both, "ios_safari", "link_share")?.route?.method).toBe("link_share");
+  });
+
   const routes: CapabilityRoute[] = [
     route({ environment: "ios_safari", allowed: true, promised: true, method: "direct_open" }),
     route({ environment: "desktop_browser", allowed: true, promised: true, method: "h5_share" }),

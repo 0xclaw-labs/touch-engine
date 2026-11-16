@@ -18,6 +18,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useStoreWorkspace } from "@/components/work/store-workspace-context";
+import { catalogChoices, workspaceHref } from "@/lib/work/store-workspace";
 import { useParams } from "next/navigation";
 import { failureText, useSession } from "@/components/work/merchant-session";
 import { surfaceLabel } from "@/lib/product-finish";
@@ -113,6 +115,8 @@ export default function StoreChannelsPage() {
   const params = useParams<{ id: string }>();
   const storeId = params?.id ?? "";
   const session = useSession();
+  const workspace = useStoreWorkspace();
+  const [catalogQuery, setCatalogQuery] = useState("");
   const canEdit = session.role === "org_owner" || session.role === "staff" || session.role === "store_manager";
 
   const [phase, setPhase] = useState<"loading" | "error" | "ready">("loading");
@@ -123,6 +127,7 @@ export default function StoreChannelsPage() {
   const [notice, setNotice] = useState("");
   const [saveError, setSaveError] = useState("");
   const [stale, setStale] = useState(false);
+  const [conflictBackup, setConflictBackup] = useState<DraftItem[] | null>(null);
   const [reloading, setReloading] = useState(false);
   const [refreshError, setRefreshError] = useState("");
   const [dirty, setDirty] = useState(false);
@@ -194,6 +199,8 @@ export default function StoreChannelsPage() {
     });
   }, [load, storeId]);
 
+  useEffect(() => { if (workspace?.refresh) void loadPacks(); }, [workspace?.refresh, loadPacks]);
+
   function patchDraft(index: number, patch: Partial<DraftItem>) {
     setDrafts((rows) =>
       rows.map((row, i) => {
@@ -223,6 +230,11 @@ export default function StoreChannelsPage() {
     if (!doc || !newCode) return;
     const entry = doc.catalog.find((item) => item.code === newCode);
     if (!entry) return;
+    if (entry.code === "A17" || entry.code === "A18") {
+      if (workspace) workspace.open("services");
+      else window.location.assign(`/work/stores/${encodeURIComponent(storeId)}/services`);
+      return;
+    }
     const row: DraftItem = {
       action_id: "",
       catalog_code: entry.code,
@@ -250,13 +262,14 @@ export default function StoreChannelsPage() {
       setSaveError(blocked.blocker || "请先补全带提示的动作行。");
       return;
     }
-    const body = buildPutBody(draftsToChannelItems(drafts), revision);
+    const body = { ...buildPutBody(draftsToChannelItems(drafts), revision), publication_mode: "draft" };
     const res = await session.api("PUT", `stores/${storeId}/actions`, body);
     if (!res.ok) {
       // 409 是独立剧本：冲突提示 + 停用保存 + 只能走刷新；绝不吞成泛化失败。
       const failure = saveFailure(res.status, res.data);
       if (failure.kind === "conflict") {
         setStale(true);
+        setConflictBackup(drafts);
         setSaveError(failure.text);
       } else {
         setSaveError(failure.text);
@@ -265,8 +278,9 @@ export default function StoreChannelsPage() {
     }
     const data = res.data as unknown as ChannelsDoc;
     applyConfig(data);
+    workspace?.saved();
     setStale(false);
-    setNotice(`渠道动作已保存，当前是配置第 ${data.config_revision} 版。顾客门店页使用的是已启用的动作。`);
+    setNotice(`服务配置已保存为第 ${data.config_revision} 版。请在本工作区预览并发布顾客页。`);
   }
 
   async function runValidate(index: number) {
@@ -313,13 +327,14 @@ export default function StoreChannelsPage() {
 
   return (
     <main>
+      {!workspace ? <Link href={workspaceHref(storeId, "channels")}>返回本店工作区</Link> : null}
       <h1 className="tk-title">渠道动作 · {doc.store_name}</h1>
       <p className="tk-lead">
         门店的顾客入口在这里逐项配置：点评、关注、Wi-Fi、加微信、团购等。
         每个动作是独立实例，同一种类可以配多条，互不覆盖。
       </p>
       <p className="tk-note">
-        顾客门店码 {doc.store_code}。当前是配置第 {revision} 版{dirty ? "（有未保存修改）" : ""}。
+        当前是配置第 {revision} 版{dirty ? "（有未保存修改）" : ""}。
         顾客侧页面由门店首页发布版本另行控制。
       </p>
       {notice ? <p className="tk-note" data-state="notice">{notice}</p> : null}
@@ -335,9 +350,13 @@ export default function StoreChannelsPage() {
         </p>
       ) : null}
 
+      {conflictBackup && !stale ? <p className="tk-warn">已读取最新版本，你刚才的修改仍可恢复。
+        <button className="tk-quiet" onClick={() => {setDrafts(conflictBackup);setDirty(true);setConflictBackup(null);}}>恢复我的修改，再核对保存</button>
+        <button className="tk-quiet" onClick={() => setConflictBackup(null)}>放弃我刚才的修改</button>
+      </p> : null}
       <ul className="tk-list">
         {drafts.map((row, index) => (
-          <li key={row.action_id !== "" ? row.action_id : `new-${index}-${row.order}`}>
+          <li id={`action-${row.action_id}`} key={row.action_id !== "" ? row.action_id : `new-${index}-${row.order}`}>
             <strong>{row.label || row.catalog_label}</strong>
             <span className="tk-note"> {row.catalog_code} · {row.catalog_label} · 目标：{targetSummary(row.target_ref)}</span>
             {row.enabled ? <span className="tk-note">已启用</span> : <span className="tk-unknown">已停用</span>}
@@ -382,7 +401,7 @@ export default function StoreChannelsPage() {
               >
                 <option value="">不绑定内容包</option>
                 {row.content_binding_ref !== "" && !packs.some((p) => `pack:${p.packId}` === row.content_binding_ref) ? (
-                  <option value={row.content_binding_ref}>{row.content_binding_ref}（不在已采用列表）</option>
+                  <option value={row.content_binding_ref}>原有内容引用（当前不可重新选择，保持原绑定）</option>
                 ) : null}
                 {packs.map((p) => (
                   <option key={p.packId} value={`pack:${p.packId}`}>
@@ -414,13 +433,14 @@ export default function StoreChannelsPage() {
 
       {canEdit ? (
         <div className="tk-form tk-section">
-          <h2 className="tk-section-title">新增动作</h2>
+          <h2 className="tk-section-title">添加服务（完整目录）</h2>
+          <input className="tk-input" aria-label="搜索服务目录" placeholder="搜索点评、关注、平台名称或目录编号" value={catalogQuery} onChange={event => setCatalogQuery(event.target.value)} />
           <p className="tk-note">同一个目录项可以配置多条（例如五家平台的点评、多个关注账号）。</p>
           <select className="tk-input" value={newCode} onChange={(event) => setNewCode(event.target.value)}>
             <option value="">选择目录项…</option>
-            {catalog.map((entry) => (
+            {catalogChoices(catalog, catalogQuery).map((entry) => (
               <option key={entry.code} value={entry.code}>
-                {entry.code} {entry.label}{configuredCodes.has(entry.code) ? "（已有，可再加）" : ""}
+                {entry.code} {entry.label} {Number(entry.code.slice(1)) <= 21 ? "必需目录" : "建议补充"}{configuredCodes.has(entry.code) ? "（已有，可再加）" : ""}
               </option>
             ))}
           </select>
@@ -439,26 +459,26 @@ export default function StoreChannelsPage() {
       ) : null}
 
       <div className="tk-section">
-        <h2 className="tk-section-title">目录缺口</h2>
+        <h2 className="tk-section-title">还有哪些服务可添加</h2>
         {missing.length === 0 ? (
-          <p className="tk-note">30 项目录里这家店配置的项目都已覆盖。</p>
+          <p className="tk-note">本店已使用全部目录类型，仍可添加同类服务实例。</p>
         ) : (
           <p className="tk-note">
-            还未配置：{missing.map((entry) => `${entry.code} ${entry.label}`).join("、")}。目录支持不等于平台侧全部可执行，具体以各渠道能力为准。
+            按本店需要选择即可，不要求全部启用：{missing.map((entry) => `${entry.code} ${entry.label}`).join("、")}。目录支持不等于平台侧全部可执行，具体以各渠道能力为准。
           </p>
         )}
       </div>
 
-      <div className="tk-section">
+      <details className="tk-section"><summary>平台授权说明</summary>
         <h2 className="tk-section-title">高级权限与平台授权</h2>
         <p className="tk-note">
           平台授权、AppSecret 等凭据不在这页存储或展示。普通链接目标与内容包绑定在上面配置；
           平台专属目标与授权由对应平台的接入配置负责（授权与凭据另有专门入口）。
           本页任何动作都不会代顾客发布、关注、加群或收费。
         </p>
-      </div>
+      </details>
 
-      <p className="tk-note">
+      <p className="tk-note" hidden={!!workspace}>
         <Link href={`/work/stores/${storeId}/services`} className="tk-quiet">Wi-Fi / 加微信 / 社群等连接类服务</Link>
         {" · "}
         <Link href={`/work/stores/${storeId}/page`} className="tk-quiet">门店首页设置(栏目/发布/回滚)</Link>

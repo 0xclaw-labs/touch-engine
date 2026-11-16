@@ -42,7 +42,7 @@ describe("屏1 面板:不复制基线区块", () => {
   });
 
   it("领取条件文案:店员确认后才发放", () => {
-    expect(component.includes("店员确认")).toBe(true);
+    expect(component.includes("本次认可的核验方式")).toBe(true);
   });
 });
 

@@ -21,6 +21,8 @@ describe("campaign share", () => {
     expect(text).toContain("湖滨店");
     expect(text).toContain("https://example.com/c/ABCDEFGHJKLM");
     expect(text).not.toContain("2026-10-21T02:00:00");
+    expect(text).toContain("2026年10月21日 10:00");
+    expect(text).toContain("北京时间 UTC+8");
   });
 
   it("only shares an enabled link", () => {

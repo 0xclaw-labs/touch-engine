@@ -688,3 +688,93 @@ func TestPublishConfigEnableHappyPathSnapshotAndPause(t *testing.T) {
 		t.Fatalf("trail = %v", actions)
 	}
 }
+
+func TestInventoryPrepareUsesPromiseWithoutTechnicalInputs(t *testing.T) {
+	f, _ := newCfgFixture(t, true)
+	spec := f.seedEnableableWorld(t, 1)
+	spec.Reward.StoreIDs = []string{f.store1ID}
+	// Existing seeded inventory consumes all 50 places, so the server must refuse
+	// another batch rather than silently increasing the merchant's promise.
+	raw, _ := json.Marshal(spec)
+	if code, _ := f.owner(t, "PUT", "/api/v1/campaigns/"+f.camp1ID+"/publish-config", string(raw)); code != 200 {
+		t.Fatalf("save %d", code)
+	}
+	path := "/api/v1/campaigns/" + f.camp1ID + "/reward-inventory/prepare"
+	body := `{"request_key":"business-prepare-1","name":"优惠库存","quantity":1,"face_value_minor":500}`
+	if code, _ := f.do(t, "POST", path, "sess-staff-a", f.tenA, body); code != 403 {
+		t.Fatalf("staff budget accepted %d", code)
+	}
+	if code, _ := f.owner(t, "POST", path, body); code != 422 {
+		t.Fatalf("promise exceeded accepted %d", code)
+	}
+	if code, _ := f.owner(t, "POST", path, `{"request_key":"fake","name":"伪造","quantity":1,"benefit_slot":"fake"}`); code != 400 {
+		t.Fatalf("technical override accepted %d", code)
+	}
+	spec.Reward.TotalQuantity = intPtr(100)
+	if code, _ := f.owner(t, "PUT", "/api/v1/campaigns/"+f.camp1ID+"/publish-config", mustJSON(t, spec)); code != 200 {
+		t.Fatalf("change promise %d", code)
+	}
+	code, prepared := f.owner(t, "POST", path, body)
+	if code != 200 || prepared["rule_version"] != float64(2) || prepared["store_id"] != f.store1ID || prepared["cost_recorded"] != false {
+		t.Fatalf("business prepare %d %+v", code, prepared)
+	}
+	code, replay := f.owner(t, "POST", path, body)
+	if code != 200 || replay["id"] != prepared["id"] {
+		t.Fatalf("prepare retry duplicated %d %+v", code, replay)
+	}
+	code, recovered := f.owner(t, "GET", path+"?request_key=business-prepare-1", "")
+	if code != 200 || recovered["id"] != prepared["id"] || recovered["total_qty"] != float64(1) {
+		t.Fatalf("read-only recovery of original batch: %d %+v", code, recovered)
+	}
+	if code, _ := f.do(t, "GET", path+"?request_key=business-prepare-1", "sess-owner-b", f.tenB, ""); code != 404 {
+		t.Fatalf("wrong tenant recovered inventory: %d", code)
+	}
+	if code, _ := f.owner(t, "GET", path+"?request_key=never-submitted", ""); code != 404 {
+		t.Fatalf("unknown preparation created inventory: %d", code)
+	}
+	if code, _ := f.owner(t, "POST", "/api/v1/campaigns/"+f.camp1ID+"/reward-inventory", `{"kind":"store_coupon","name":"绕规则","benefit_slot":"fake","rule_version":2,"allowed_evidence":["staff_observed_submission"],"total_qty":1}`); code != 422 {
+		t.Fatalf("legacy input bypass accepted %d", code)
+	}
+
+}
+
+func TestCampaignAvailabilityUsesBusinessWindow(t *testing.T) {
+	f, _ := newCfgFixture(t, true)
+	code, out := f.owner(t, "GET", "/api/v1/campaigns/"+f.campPast, "")
+	if code != 200 {
+		t.Fatalf("read %d", code)
+	}
+	available, ok := out["availability"].(map[string]any)
+	if !ok || available["state"] != "expired" || available["can_start"] != false {
+		t.Fatalf("past campaign main state must be expired: %+v", out)
+	}
+}
+
+func TestCampaignPublishCannotSkipPromisePreflight(t *testing.T) {
+	f, _ := newCfgFixture(t, true)
+	spec := f.seedEnableableWorld(t, 1)
+	spec.Reward.StoreIDs = []string{f.store1ID}
+	if code, _ := f.owner(t, "PUT", "/api/v1/campaigns/"+f.camp1ID+"/publish-config", mustJSON(t, spec)); code != 200 {
+		t.Fatalf("save %d", code)
+	}
+	code, out := f.owner(t, "POST", "/api/v1/campaigns/"+f.camp1ID+"/status", `{"status":"active"}`)
+	if code != 422 || out["error"] != "promise_not_enabled" {
+		t.Fatalf("publish skipped promise: %d %+v", code, out)
+	}
+	_, unchanged := f.owner(t, "GET", "/api/v1/campaigns/"+f.camp1ID, "")
+	if unchanged["status"] != "draft" {
+		t.Fatalf("rejected publish changed lifecycle: %+v", unchanged)
+	}
+	if code, out := f.owner(t, "POST", "/api/v1/campaigns/"+f.camp1ID+"/publish-config/enable", ""); code != 200 {
+		t.Fatalf("enable %d %+v", code, out)
+	}
+	_, inventory := f.owner(t, "GET", "/api/v1/campaigns/"+f.camp1ID+"/reward-inventory", "")
+	invID := inventory["items"].([]any)[0].(map[string]any)["id"].(string)
+	if code, _ := f.owner(t, "POST", "/api/v1/campaigns/"+f.camp1ID+"/reward-inventory/"+invID+"/status", `{"status":"paused"}`); code != 200 {
+		t.Fatalf("pause inventory %d", code)
+	}
+	if code, out := f.owner(t, "POST", "/api/v1/campaigns/"+f.camp1ID+"/status", `{"status":"active"}`); code != 422 || out["error"] != "benefit_stock_missing" {
+		t.Fatalf("publish with paused inventory %d %+v", code, out)
+	}
+
+}

@@ -27,6 +27,9 @@ func adapterTestDB(t *testing.T) *sql.DB {
 	if _, err := d.Exec(`INSERT INTO stores (id, tenant_id, name, created_at, updated_at) VALUES ('st_1','tnt_1','seed-store','2026-11-11T00:00:00Z','2026-11-11T00:00:00Z')`); err != nil {
 		t.Fatalf("seed store: %v", err)
 	}
+	if _, err := d.Exec(`INSERT INTO store_storefronts(store_id,tenant_id,store_code,created_at,updated_at) VALUES ('st_1','tnt_1','fixture-store','2026-11-11T00:00:00Z','2026-11-11T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
 	return d
 }
 
@@ -63,7 +66,7 @@ func TestDouyinPrepareRequiresClientKey(t *testing.T) {
 
 func TestDouyinPrepareH5ShareParams(t *testing.T) {
 	d := adapterTestDB(t)
-	a := NewDouyinAdapter(d, DouyinConfig{ClientKey: "ck_1", AppRef: "app_1"})
+	a := NewDouyinAdapter(d, DouyinConfig{Signer: fakeDouyinSigner{}, ClientKey: "ck_1", AppRef: "app_1"})
 	res, err := a.Prepare(context.Background(), douyinRequest("h5_share"))
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
@@ -78,21 +81,10 @@ func TestDouyinPrepareH5ShareParams(t *testing.T) {
 	if act.Params["media_url"] != "https://media.example/v" {
 		t.Fatalf("media url = %q", act.Params["media_url"])
 	}
-	for k := range act.Params {
-		// 票面红线:不自造签名协议——无 signer 时绝不出现签名字段。
-		if k == "sign" || k == "signature" || k == "open_ticket" {
-			t.Fatalf("invented signature field %q present", k)
-		}
+	if act.Params["signature"] == "" || act.Params["state"] != act.Params["share_id"] || act.Params["video_path"] != "https://media.example/v" {
+		t.Fatalf("official signature/media/state missing: %+v", act.Params)
 	}
-	found := false
-	for _, u := range res.UnsupportedFields {
-		if contains(u, "官方签名") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("missing honest signature-gap note in unsupported fields: %v", res.UnsupportedFields)
-	}
+
 }
 
 func contains(s, sub string) bool {
@@ -109,7 +101,7 @@ func contains(s, sub string) bool {
 func TestDouyinShareIDIdempotentAndExpiry(t *testing.T) {
 	d := adapterTestDB(t)
 	now := time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)
-	a := NewDouyinAdapter(d, DouyinConfig{ClientKey: "ck_1", ShareTTL: time.Hour, Now: func() time.Time { return now }})
+	a := NewDouyinAdapter(d, DouyinConfig{Signer: fakeDouyinSigner{}, ClientKey: "ck_1", ShareTTL: time.Hour, Now: func() time.Time { return now }})
 	r1, err := a.Prepare(context.Background(), douyinRequest("h5_share"))
 	if err != nil {
 		t.Fatalf("prepare1: %v", err)
@@ -142,7 +134,7 @@ func TestDouyinShareIDIdempotentAndExpiry(t *testing.T) {
 
 func TestDouyinShareIDRevokedOnContentChange(t *testing.T) {
 	d := adapterTestDB(t)
-	a := NewDouyinAdapter(d, DouyinConfig{ClientKey: "ck_1"})
+	a := NewDouyinAdapter(d, DouyinConfig{Signer: fakeDouyinSigner{}, ClientKey: "ck_1"})
 	r1, err := a.Prepare(context.Background(), douyinRequest("h5_share"))
 	if err != nil {
 		t.Fatalf("prepare1: %v", err)
@@ -159,7 +151,7 @@ func TestDouyinShareIDRevokedOnContentChange(t *testing.T) {
 }
 
 func TestDouyinSubmitAndCallbackUnsupported(t *testing.T) {
-	a := NewDouyinAdapter(nil, DouyinConfig{ClientKey: "ck_1"})
+	a := NewDouyinAdapter(nil, DouyinConfig{Signer: fakeDouyinSigner{}, ClientKey: "ck_1"})
 	if err := a.Submit(context.Background(), publishhandoff.Handoff{}, publishhandoff.PrepareResult{}); !isUnsupported(err) {
 		t.Fatalf("submit err = %v", err)
 	}
@@ -188,7 +180,7 @@ func (f fakeDouyinQuery) QueryShare(ctx context.Context, shareID string) (string
 
 func TestDouyinQueryUnknownWithoutSource(t *testing.T) {
 	d := adapterTestDB(t)
-	a := NewDouyinAdapter(d, DouyinConfig{ClientKey: "ck_1"})
+	a := NewDouyinAdapter(d, DouyinConfig{Signer: fakeDouyinSigner{}, ClientKey: "ck_1"})
 	out, err := a.Query(context.Background(), douyinRequest("h5_share").Handoff.Handoff)
 	if err != nil {
 		t.Fatalf("query: %v", err)
@@ -200,7 +192,7 @@ func TestDouyinQueryUnknownWithoutSource(t *testing.T) {
 
 func TestDouyinQueryPublishedMintsBoundReceipt(t *testing.T) {
 	d := adapterTestDB(t)
-	a := NewDouyinAdapter(d, DouyinConfig{ClientKey: "ck_1", AppRef: "app_1", Query: fakeDouyinQuery{state: "published", published: true, item: "item_9"}})
+	a := NewDouyinAdapter(d, DouyinConfig{Signer: fakeDouyinSigner{}, ClientKey: "ck_1", AppRef: "app_1", Query: fakeDouyinQuery{state: "published", published: true, item: "item_9"}})
 	h := douyinRequest("h5_share").Handoff.Handoff
 	// Prepare 先铸 share_id 映射(StartAction 真实时序)。
 	if _, err := a.Prepare(context.Background(), douyinRequest("h5_share")); err != nil {
@@ -231,7 +223,7 @@ func TestDouyinQueryPublishedMintsBoundReceipt(t *testing.T) {
 
 func TestDouyinQueryFailureStaysUnknown(t *testing.T) {
 	d := adapterTestDB(t)
-	a := NewDouyinAdapter(d, DouyinConfig{ClientKey: "ck_1", Query: fakeDouyinQuery{err: errFake{}}})
+	a := NewDouyinAdapter(d, DouyinConfig{Signer: fakeDouyinSigner{}, ClientKey: "ck_1", Query: fakeDouyinQuery{err: errFake{}}})
 	out, err := a.Query(context.Background(), douyinRequest("h5_share").Handoff.Handoff)
 	if err != nil {
 		t.Fatalf("query must not surface transport errors as state changes: %v", err)
@@ -244,3 +236,12 @@ func TestDouyinQueryFailureStaysUnknown(t *testing.T) {
 type errFake struct{}
 
 func (errFake) Error() string { return "network down" }
+
+type fakeDouyinSigner struct{}
+
+func (fakeDouyinSigner) SignShare(_ context.Context, in DouyinShareSignInput) (map[string]string, error) {
+	return map[string]string{"signature": "fixture-signature", "nonce_str": "fixture-nonce", "timestamp": in.TimestampSec}, nil
+}
+func (fakeDouyinSigner) NewShareID(context.Context) (string, error) {
+	return newAdapterID("fixture_share_"), nil
+}

@@ -151,7 +151,7 @@ var requiredEvidence = map[State]map[EvidenceSource]bool{
 	StateSubmitting:        {EvidenceSystemAdapter: true},
 	StateAwaitingReview:    {EvidenceStaffObservation: true},
 	StatePlatformConfirmed: {EvidenceOfficialReceipt: true},
-	StateUnknown:           {EvidenceSystemTimeout: true},
+	StateUnknown:           {EvidenceSystemTimeout: true, EvidenceSystemAdapter: true},
 	StateCanceled:          {EvidenceCustomerAction: true, EvidenceStaffObservation: true},
 	StateFailed:            {EvidenceSystemAdapter: true},
 }

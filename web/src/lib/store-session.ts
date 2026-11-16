@@ -2,7 +2,8 @@
 //
 // 纪律:
 //   - 进门 POST /api/public/actions/{id}/sessions 是幂等恢复(同浏览器同
-//     actionId 重放回原会话);浏览路径(C1/C3)绝不调用——只有内容视图进门用;
+//     actionId 重放回原会话);只在内容预览或顾客主动打开分享服务时调用,
+//     浏览门店及Wi-Fi/社群等普通服务不创建动作会话;
 //   - 幂等键按 actionId 在组件会话内稳定(防双击/重试双开;刷新即新会话,
 //     服务端 visitor cookie 兜底同浏览器恢复);
 //   - 恢复凭据明文只在签发响应出现一次,只经返回值进内存,永不写
@@ -49,6 +50,7 @@ export type SessionResult =
   | { error: "network" }
   | { error: "not_found" }
   | { error: "action_unavailable" }
+  | { error: "invalid_state" }
   | { error: "frozen" }
   | { error: "session_ended" }
   | { error: "stale_version" }
@@ -96,6 +98,8 @@ function sessionErrorOf(status: number, data: Record<string, unknown> | null): S
       return { error: "not_found" };
     case "action_unavailable":
       return { error: "action_unavailable" };
+    case "invalid_state":
+      return { error: "invalid_state" };
     case "frozen":
       return { error: "frozen" };
     case "session_ended":
@@ -128,17 +132,17 @@ function idempotencyKeyFor(actionId: string): string {
 }
 
 /**
- * 内容视图进门:显式动作会话创建或同浏览器恢复(3546 幂等语义)。
+ * 内容预览/分享服务进门:显式动作会话创建或同浏览器恢复(3546 幂等语义)。
  * 这一步不建参与、不占库存——参与升级是单独的显式 POST participations。
  */
 export async function startOrResumeSession(
   actionId: string,
-  opts: { source?: string; contentPackVersion?: string; expectedActionRevision?: number } = {},
+  opts: { source?: "nfc" | "qr" | "shorturl" | "manual"; contentPackVersion?: string; expectedActionRevision?: number } = {},
 ): Promise<SessionResult> {
   const { status, data } = await postJson(
     `/api/public/actions/${encodeURIComponent(actionId)}/sessions`,
     {
-      touchpoint_source: opts.source ?? "web",
+      touchpoint_source: opts.source ?? "manual",
       content_pack_version: opts.contentPackVersion ?? "",
       expected_action_revision: opts.expectedActionRevision ?? 0,
       idempotency_key: idempotencyKeyFor(actionId),

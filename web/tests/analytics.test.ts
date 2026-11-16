@@ -201,3 +201,66 @@ describe("费用对账渲染数据", () => {
     expect(cr.subscription_paid_minor).toBeUndefined();
   });
 });
+
+
+describe("HUI-4665 空库与缺失事实", () => {
+  it("旧服务无筛选返回 null 时，不访问空对象", () => {
+    const stage = { applied_filters: [] } as unknown as FunnelStage;
+    expect(stageNotAppliedLabels(stage, null as unknown as Record<string, string>)).toEqual([]);
+  });
+  it("证据类别缺失时保持未知，不补业务零", () => {
+    const evidence = { by_class: {}, note: "未读到" } as EvidencePanel;
+    expect(evidenceRowList(evidence).map(row => row.count)).toEqual(["未知", "未知", "未知"]);
+  });
+  it("缺费用或非有限数不是零或 NaN 金额", () => {
+    expect(formatMinor(undefined as unknown as number)).toBe("未知");
+    expect(formatMinor(null as unknown as number)).toBe("未知");
+    expect(formatMinor(Number.NaN)).toBe("未知");
+  });
+});
+
+import { parseOperationsResponse, readAnalytics } from "../src/lib/analytics";
+
+const emptyWire = () => ({
+  window: { start: "2026-11-14T00:00:00Z", end: "2026-11-14T12:00:00Z" },
+  scope: { tenant_id: "tenant-empty" }, filter_echo: null,
+  funnel: [], inventory: null, evidence: { by_class: {} }, cost: {},
+  anomalies: {}, notes: {}, dimensions: {},
+});
+
+describe("HUI-4665 读边界", () => {
+  it("兼容旧空集合，缺增量面板保留未知，不用零伪造", () => {
+    const parsed = parseOperationsResponse(emptyWire(), "tenant-empty");
+    expect(parsed.inventory).toEqual([]);
+    expect(parsed.filter_echo).toEqual({});
+    expect(parsed.evidence_layers.layers).toEqual([]);
+    expect(parsed.cost.reward_cost_minor).toBeUndefined();
+    expect(leadsPanelRows(parsed.leads).every(row => row.value === "未知")).toBe(true);
+  });
+  it("拒绝错误租户和损坏的列表，而不是沿用旧数据", () => {
+    expect(() => parseOperationsResponse(emptyWire(), "other-tenant")).toThrow();
+    expect(() => parseOperationsResponse({ ...emptyWire(), inventory: {} }, "tenant-empty")).toThrow();
+    expect(() => parseOperationsResponse(null, "tenant-empty")).toThrow();
+  });
+  it("汇总失败不抹掉已读取的经营事实", async () => {
+    const result = await readAnalytics(async (_method, path) => {
+      if (!path.startsWith("dashboard/operations")) throw new Error("catalog unavailable");
+      return { ok: true, status: 200, data: emptyWire() };
+    }, "tenant-empty", "query");
+    expect(result.phase).toBe("ready");
+    if (result.phase === "ready") {
+      expect(result.catalog).toBeNull();
+      expect(result.data.scope.tenant_id).toBe("tenant-empty");
+      expect(result.catalogNote).toContain("重试");
+    }
+  });
+  it.each([[401, "forbidden"], [403, "forbidden"], [404, "disabled"], [503, "error"]])("HTTP %s 分辨为 %s", async (status, phase) => {
+    const result = await readAnalytics(async () => ({ ok: false, status: Number(status), data: {} }), "tenant-empty", "query");
+    expect(result.phase).toBe(phase);
+  });
+  it("成功但契约损坏时可重试，不伪装空统计", async () => {
+    const result = await readAnalytics(async () => ({ ok: true, status: 200, data: {} }), "tenant-empty", "query");
+    expect(result.phase).toBe("error");
+    if (result.phase === "error") expect(result.message).toContain("不完整");
+  });
+});

@@ -11,6 +11,8 @@
 //     fixture 只进 tests/ 做本地契约验证;生产路径读不到端点时页面整区
 //     不渲染,不伪建素材/价格/入口。
 
+import type { ServiceEntry } from "@/lib/store-service-panels";
+
 export interface StorefrontStoreView {
   name: string;
   address: string;
@@ -338,6 +340,7 @@ export interface ServicesPayload {
   schema_version?: unknown;
   store_code?: unknown;
   items?: unknown;
+  services?: unknown;
 }
 
 export interface ServiceItemView {
@@ -345,27 +348,41 @@ export interface ServiceItemView {
   kind: string;
   title: string;
   note: string;
+  entry?: ServiceEntry;
   /** 按需取字段(ssid/password/wechat_id/group_number…);缺失返回空串。 */
   field: (name: string) => string;
 }
 
-/** 4589 services 读取草案契约:按 action_id 索引;结构不完整返回 null。 */
+/** 读取已发布服务真源，保留旧 items/action_id 兼容。 */
 export function parseServices(payload: unknown): Map<string, ServiceItemView> | null {
   if (payload === null || typeof payload !== "object") return null;
   const rec = payload as Record<string, unknown>;
-  if (!Array.isArray(rec.items)) return null;
+  const rows = Array.isArray(rec.services) ? rec.services : rec.items;
+  if (!Array.isArray(rows)) return null;
   const out = new Map<string, ServiceItemView>();
-  for (const item of rec.items) {
+  for (const item of rows) {
     if (item === null || typeof item !== "object") continue;
     const row = item as Record<string, unknown>;
-    const actionId = str(row.action_id);
+    const serviceId = str(row.service_id);
+    const actionId = serviceId || str(row.action_id);
     if (actionId === "") continue;
-    const fields = (row.fields !== null && typeof row.fields === "object" ? row.fields : {}) as Record<string, unknown>;
+    const fields = { ...row, ...(row.fields !== null && typeof row.fields === "object" ? row.fields : {}), ...(row.wifi !== null && typeof row.wifi === "object" ? row.wifi : {}) } as Record<string, unknown>;
+    const guidance = row.guidance && typeof row.guidance === "object" ? row.guidance as Record<string, unknown> : {};
+    const strings = (value: unknown) => Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+    const entry: ServiceEntry | undefined = serviceId ? {
+      service_id: serviceId, kind: str(row.kind), label: str(row.label), platform: str(row.platform), catalog_code: str(row.catalog_code), variant: str(row.variant),
+      target_url: str(row.target_url), admission: str(row.admission),
+      wifi: { ssid: str(fields.ssid), password: str(fields.password), encryption: str(fields.encryption) },
+      qr_url: str(row.qr_url), wechat_id: str(row.wechat_id), wecom_url: str(row.wecom_url), source_note: str(row.source_note),
+      group_no: str(row.group_no), invite_url: str(row.invite_url), approval_note: str(row.approval_note),
+      guidance: { title: str(guidance.title), steps: strings(guidance.steps), notices: strings(guidance.notices) },
+    } : undefined;
     out.set(actionId, {
       actionId,
       kind: str(row.kind),
-      title: str(row.title),
+      title: str(row.label) || str(row.title),
       note: str(row.note),
+      entry,
       field: (name: string) => str(fields[name]),
     });
   }

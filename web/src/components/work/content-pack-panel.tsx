@@ -153,11 +153,11 @@ export function ContentPackPanel({ campaignId }: { campaignId: string }) {
   return (
     <section id="content-packs" className="tk-section">
       <h2 className="tk-section-title">活动内容</h2>
-      <p className="tk-note">候选内容先预览,再点「采用这一版」。采用后顾客碰一碰拿到的就是这一版,不会自己换片。</p>
+      <p className="tk-note">候选内容先预览，再点「采用这一版」。当前采用为已选用待发布；线上是否使用，以活动已发布版本为准，既有顾客会话保留原快照。</p>
       {phase === "loading" ? <p className="tk-state" data-state="loading">{surfaceLabel("loading")}</p> : null}
       {phase === "empty" ? (
         <p className="tk-state" data-state="empty">
-          这个活动还没有内容包。去<a href="/work/materials">素材页</a>上传已有内容或从素材库选择。
+          这个活动还没有内容包。去<a href={`/work/materials?campaign=${encodeURIComponent(campaignId)}`}>素材页</a>上传已有内容或从素材库选择。
         </p>
       ) : null}
       {phase === "error" ? (
@@ -198,7 +198,7 @@ export function ContentPackPanel({ campaignId }: { campaignId: string }) {
                         ) : null}
                         {adoption ? (
                           <p className="tk-note tk-ok" data-field="adopted-note">
-                            当前采用({adoption.platform}):第 {version.version_no} 版,顾客看到的就是这一版。
+                            当前采用({adoption.platform}):第 {version.version_no} 版 · 已选用待发布，线上使用以活动发布版本为准。
                           </p>
                         ) : null}
                         <div className="tk-row">

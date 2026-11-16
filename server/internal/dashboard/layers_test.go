@@ -159,6 +159,7 @@ func TestLeadsPanelHonestBuckets(t *testing.T) {
 func TestCostReconciliationSeparatesStreams(t *testing.T) {
 	paid := int64(29900)
 	hw := int64(120000)
+	refund := int64(20000)
 	resp := BuildOperations(layersWindow(), Scope{TenantID: "t1"}, OpsFacts{
 		CostRecon: CostReconciliationFacts{
 			SubscriptionPaidMinor: &paid, SubscriptionPaidOrders: 1, SubscriptionFailedOrders: 2,
@@ -167,7 +168,7 @@ func TestCostReconciliationSeparatesStreams(t *testing.T) {
 			AIRefundedMinor: 60, AIRefundedCount: 1,
 			AIFailedMinor: 30, AIFailedCount: 1,
 			HardwarePaidMinor: &hw, HardwarePaidOrders: 2,
-			HardwareRefundMinor: 20000, HardwareRefunds: 1,
+			HardwareRefundMinor: &refund, HardwareRefunds: 1,
 		},
 	}, FilterSet{})
 	cr := resp.CostReconciliation
@@ -180,7 +181,7 @@ func TestCostReconciliationSeparatesStreams(t *testing.T) {
 	if cr.AIConsumedMinor != 500 || cr.AIRefundedMinor != 60 || cr.AIFailedMinor != 30 || cr.AIConfirmedMinor != 120 {
 		t.Fatalf("AI states must be listed apart: %+v", cr)
 	}
-	if cr.HardwareRefundMinor != 20000 {
+	if cr.HardwareRefundMinor == nil || *cr.HardwareRefundMinor != 20000 {
 		t.Fatalf("refunds listed apart, not netted into paid: %+v", cr)
 	}
 	if !strings.Contains(cr.FaceNote, "面额") {

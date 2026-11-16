@@ -197,6 +197,36 @@ func TestOpsSupportAccessJourney(t *testing.T) {
 	}
 }
 
+func TestOpsSupportCloseOwnIntentCannotBeExecutedByAnotherOperator(t *testing.T) {
+	f := opsFixture(t)
+	// 两个账号都持有平台管理授权。这里防的是共享会话换号后执行旧意图，
+	// 不是借无权账号的 403 让测试看起来通过。
+	status, out := f.doService(t, "POST", "/api/v1/ops-grants", "svc-ops-console", "ops-service-token",
+		fmt.Sprintf(`{"tenant_id":%q,"principal_ref":"usr_owner_b","commands":[%s],"expires_at":"2027-01-01T00:00:00Z","reason":"工程第二运营人"}`, f.tenB, opsCommandList()))
+	if status != 201 {
+		t.Fatalf("second operator grant=%d %v", status, out)
+	}
+	status, out = f.do(t, "POST", "/api/v1/ops/support-access", "sess-owner-a", f.tenA,
+		fmt.Sprintf(`{"tenant_id":%q,"reason":"工程支持","ttl_minutes":60}`, f.tenB))
+	if status != 201 {
+		t.Fatalf("support open=%d %v", status, out)
+	}
+	id := out["support_access"].(map[string]any)["id"].(string)
+	body := `{"reason":"结束自己的支持访问","own_access_only":true}`
+	status, out = f.do(t, "POST", "/api/v1/ops/support-access/"+id+"/close", "sess-owner-b", f.tenB, body)
+	if status != 403 {
+		t.Fatalf("another privileged identity must not execute original own-access intent: %d %v", status, out)
+	}
+	row, err := f.s.St.GetSupportAccess(id)
+	if err != nil || row.ClosedAt != "" {
+		t.Fatalf("rejected own-access intent changed original grant: %+v err=%v", row, err)
+	}
+	status, out = f.do(t, "POST", "/api/v1/ops/support-access/"+id+"/close", "sess-owner-a", f.tenA, body)
+	if status != 200 {
+		t.Fatalf("original operator should close own grant: %d %v", status, out)
+	}
+}
+
 func TestOpsTenantSuspendRevisionGuardAndReplay(t *testing.T) {
 	f := opsFixture(t)
 	tenB := f.tenB

@@ -19,6 +19,7 @@ import { useParams, useSearchParams } from "next/navigation";
 import { classifyEntry, failureState } from "@/lib/public-state";
 import { publicVisitorCopy } from "@/lib/account-separation";
 import { publicVisitorColumns } from "@/lib/visitor-experience";
+import { PublishedStoreServices } from "@/components/customer/PublishedStoreServices";
 import {
   activityCards,
   groupActions,
@@ -132,7 +133,7 @@ function StorefrontHomeInner() {
             {view.store.openingHours && <p className="tk-note">营业时间:{view.store.openingHours}</p>}
           </header>
         )}
-        <p data-testid="visitor-note" className="tk-note">{visitorNote.text}</p>
+        <p data-testid="visitor-note" className="tk-note">可以直接查看和使用门店服务。</p>
 
         {uiState !== "available" && (
           <div data-testid="degraded-state">
@@ -157,6 +158,8 @@ function StorefrontHomeInner() {
             {storeNotice && (
               <p className="tk-warn" data-testid="store-closed">{storeNotice}</p>
             )}
+
+            {actionsOpen && <PublishedStoreServices storeCode={storeCode} listedActionIds={view.actions.map((action) => action.actionId)} />}
 
             {actionsOpen && groups.length > 0 && (
               <div data-testid="storefront-actions" className="tk-gap">
@@ -224,12 +227,13 @@ function StorefrontHomeInner() {
               </section>
             )}
 
-            <footer className="tk-row tk-gap" data-testid="storefront-footer">
-              <a className="tk-quiet" data-testid="benefits-link" href={`/s/${encodeURIComponent(view.storeCode)}/benefits`}>我的权益与凭证</a>
-              <a className="tk-quiet" data-testid="privacy-link" href={`/s/${encodeURIComponent(view.storeCode)}/privacy`}>隐私与授权</a>
-            </footer>
+
           </>
         )}
+        <footer className="tk-row tk-gap" data-testid="storefront-footer">
+          <a className="tk-quiet" data-testid="benefits-link" href={`/s/${encodeURIComponent(storeCode)}/benefits`}>我的权益与凭证</a>
+          <a className="tk-quiet" data-testid="privacy-link" href={`/s/${encodeURIComponent(storeCode)}/privacy`}>隐私与授权</a>
+        </footer>
       </div>
     </main>
   );

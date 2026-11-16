@@ -68,7 +68,7 @@ func TestLeadFormStatesPurposeSeparatelyFromMarketing(t *testing.T) {
 		t.Fatalf("notice = %v", form["notice"])
 	}
 	required, _ := form["required_fields"].([]any)
-	if len(required) != 2 || required[0] != "name" || required[1] != "phone" {
+	if len(required) != 1 || required[0] != "phone" {
 		t.Fatalf("required = %v", form["required_fields"])
 	}
 }

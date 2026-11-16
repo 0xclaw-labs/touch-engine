@@ -43,6 +43,8 @@ export interface PublishConfigRecord {
   status?: string;
   spec?: PublishSpec;
   enabled_version?: number;
+  published_status?: "enabled" | "paused" | "not_enabled" | "unknown";
+  paused_at?: string;
   disclosure?: string;
 }
 
@@ -193,6 +195,7 @@ export interface RefusalCopy {
 export function refusalCopy(status: number, data: Record<string, unknown>): RefusalCopy {
   const field = typeof data.field === "string" ? data.field : "";
   const byReason: Record<string, string> = {
+    promise_not_enabled: "活动承诺尚未启用。请在下方「活动承诺」保存配置、准备关联库存并完成启用检查，再发布活动。",
     customer_copy_missing: "顾客还没有被告知完成之后怎么领。请在「顾客文案」里写清楚。",
     content_not_ready: "选中的内容还不是本活动已采用的版本。先在「活动内容」里采用,再回来选它。",
     content_blocked: "这块内容已停止分发(授权或内容有问题)。请换一版已采用的内容。",
@@ -202,7 +205,7 @@ export function refusalCopy(status: number, data: Record<string, unknown>): Refu
     no_runnable_channel: "还没有任何一条可用的发布渠道。至少选一条准入有效的渠道才能启用。",
     benefit_ref_missing: "奖励还没有对应批次。请先在奖励页建好这个活动的券批次,再回来启用。",
     benefit_version_mismatch: "奖励批次还绑在旧版本上。改过配置后要回奖励页把批次对到最新版本。",
-    benefit_stock_missing: "奖励库存已经没了。补库存或调低名额之后再启用。",
+    benefit_stock_missing: "当前没有可发放的库存：请检查是否已用完、已暂停或尚未到使用期。补库存须沿用已保存承诺；未来使用期请到期后启用。",
     window_conflict: "领取时间没有落在活动期内,或兑换结束早于领取结束。请调整时间。",
     campaign_ended: "活动已经结束,不能启用。请新建活动或调整活动期限。",
     store_mismatch: "可用门店里有不存在或不属于本活动的门店。请重新勾选门店。",
@@ -214,6 +217,7 @@ export function refusalCopy(status: number, data: Record<string, unknown>): Refu
       text: "点评渠道不能作为奖励任务:点评入口只帮顾客找到门店自主评价,不挂奖励。请在「发布方式」里取消勾选点评渠道。",
     };
   }
+  if (status === 409 && data.error === "version_mismatch") return {field:"form",text:"草稿或线上版本已经更新。请刷新查看本次版本，再检查并确认启用。"};
   const fallback = "这次启用没有完成。请检查上面标红的配置,再试一次。";
   if (status === 422 && reason && byReason[reason]) {
     return { field: field || "form", text: byReason[reason] };
@@ -240,7 +244,7 @@ export function defaultSpec(mode = MODES[0]): PublishSpec {
     customer_copy: "",
     reward: {
       kind: "store_coupon",
-      slot: "",
+      slot: "first_publish",
       budget_mode: "total_quantity",
       // 显式 0:草稿允许不完整,但预算口径「数量模式必须带数值」是形状约束;
       // 商家保存前改成真实名额,启用时服务端仍按库存真值把关。
@@ -283,7 +287,7 @@ export function windowProblem(spec: PublishSpec): string {
 // datetime-local 输入值 → RFC3339(服务端契约);空串原样返回。
 export function toRFC3339(localValue: string): string {
   if (!localValue) return "";
-  const d = new Date(localValue);
+  const d = new Date(`${localValue}+08:00`);
   if (Number.isNaN(d.getTime())) return "";
   return d.toISOString();
 }
@@ -291,10 +295,10 @@ export function toRFC3339(localValue: string): string {
 // RFC3339 → datetime-local 输入值(草稿回填)。
 export function fromRFC3339(value: string): string {
   if (!value) return "";
-  const d = new Date(value);
+  const d = new Date(new Date(value).getTime() + 8 * 60 * 60 * 1000);
   if (Number.isNaN(d.getTime())) return "";
   const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
 }
 
 // 选中的渠道记录里的准入展示:可用的给绿灯,不可用的给缺项原因(商家语言)。

@@ -2,336 +2,164 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { failureText, useSession } from "@/components/work/merchant-session";
-import { surfaceLabel } from "@/lib/product-finish";
+import { ensureContentPack, productionPayload, quoteIsUsable, type ProductionPayload, type ProductionQuote } from "@/lib/work/content-editor-flow";
 
-// HUI-4595 门店真实制作接线(/work/materials「帮我制作」区)。
-// 纪律(票面/裁定书,复用 production-panel/production.ts 诚实表述家风):
-//   - 能力如实申报:受信生产方未注册=按钮禁用+原因,绝不伪进度;
-//   - 发起前必须已有「已确认报价引用」(quote_ref,来自账单权威;wave2 集成
-//     后权威=本仓账单投影,核验不过发起即拒);账单权威未接入时如实标注
-//     「报价须先经账单权威确认,费用状态以账单为准」;
-//   - 反复恢复同一制作请求不新建制作工程:幂等键自动生成并在成功后原样
-//     展示,重试走同一键(同一发起只回同一 handoff);
-//   - 状态独立可辨:未提交/处理中/已产出/失败/已取消;task_ref 是真实平台
-//     任务号,没有就不显示,不伪造;
-//   - 回流产物只进候选:预览在门店内容包抽屉,采用必须显式;本区不自动
-//     采用/外发;顾客触碰零新生成零计费。
-
-interface PackOption {
-  id: string;
-  title: string;
-  legacy?: boolean;
+interface Handoff { id: string; status: string; task_ref?: string; note?: string; created_at?: string; quote_verified?: boolean; results?: { id: string; outcome: string; version_id?: string; reason?: string }[] }
+interface Caps { production_available: boolean; reason?: string }
+function randomKey() { return `content-${crypto.randomUUID()}`; }
+function statusCopy(status: string) { return ({ recorded: "已登记，尚未确认任务受理", submitted: "处理中", produced: "已产出，待预览采用", failed: "制作失败", canceled: "已取消" } as Record<string, string>)[status] || "状态待核实"; }
+function productionFailure(status: number, data: Record<string, unknown>) {
+  const messages: Record<string, string> = {
+    payment_authorization_required: "当前账号没有制作付款授权。请有付款权限的负责人确认费用；已保存的内容仍可继续编辑。",
+    quote_expired: "报价已过期。请重新获取并核对费用后确认，本次没有新建制作任务。",
+    quote_changed: "报价或预占状态与原确认不一致。请先回查原账单和制作记录，不要另建收费请求。",
+    quote_conflict: "原报价或请求状态尚需核实。请刷新回查同一请求，避免重复付款。",
+    billing_insufficient_funds: "当前付款账户可用额度不足。请到原账单中心处理后恢复同一请求。",
+    quote_projection_pending: "账务已确认预占，制作记录正在同步。请恢复同一请求，不要重新付款。",
+    quote_configuration_missing: "当前组织的制作付款账户或交付服务尚未接通。请联系服务支持完成接线后重试。",
+    production_unavailable: "制作服务暂不可用，本次未新预占费用。请稍后恢复同一请求。",
+  };
+  return messages[String(data.error)] || failureText(status, data);
+}
+function taskTitle(h: Handoff) {
+  try { const brief = JSON.parse(h.note || "{}"); if (typeof brief.title === "string" && brief.title.trim()) return brief.title; }
+  catch { /* Existing tasks may carry a plain-text brief. */ }
+  return h.note?.trim().slice(0, 100) || "内容制作";
 }
 
-interface ProductionResultRow {
-  id: string;
-  source_app?: string;
-  event_id?: string;
-  outcome: string;
-  task_ref?: string;
-  result_revision?: number;
-  charge_ref?: string;
-  version_id?: string;
-  reason?: string;
-  created_at?: string;
-}
-
-interface ProductionHandoffRow {
-  id: string;
-  pack_id?: string;
-  content_pack_ref?: string;
-  content_binding_ref?: string;
-  quote_ref: string;
-  quote_verified: boolean;
-  status: string;
-  task_ref?: string;
-  last_charge_ref?: string;
-  last_result_revision?: number;
-  note?: string;
-  created_at?: string;
-  results?: ProductionResultRow[];
-}
-
-interface Capabilities {
-  production_available: boolean;
-  producer_configured: boolean;
-  quote_authority_configured: boolean;
-  task_authority_configured: boolean;
-  reason?: string;
-}
-
-function statusCopy(status: string): string {
-  switch (status) {
-    case "recorded":
-      return "已登记(未提交)";
-    case "submitted":
-      return "处理中";
-    case "produced":
-      return "已产出(待采用)";
-    case "failed":
-      return "失败";
-    case "canceled":
-      return "已取消";
-    default:
-      return status;
-  }
-}
-
-function outcomeCopy(outcome: string): string {
-  switch (outcome) {
-    case "produced":
-      return "产出候选";
-    case "failed":
-      return "失败回执";
-    case "canceled":
-      return "取消回执";
-    default:
-      return outcome;
-  }
-}
-
-function randomKey(): string {
-  const rnd = Math.random().toString(36).slice(2, 10);
-  return `cph-${Date.now().toString(36)}-${rnd}`;
-}
-
-export function StoreProductionPanel({ storeId }: { storeId: string }) {
+export function StoreProductionPanel({ storeId, campaignId, packId, title = "门店内容", brief = {}, onChanged }: {
+  storeId: string; campaignId?: string; packId?: string; title?: string; brief?: Record<string, unknown>; onChanged?: () => void;
+}) {
   const session = useSession();
-  const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
-  const [error, setError] = useState("");
-  const [caps, setCaps] = useState<Capabilities | null>(null);
-  const [packs, setPacks] = useState<PackOption[]>([]);
-  const [handoffs, setHandoffs] = useState<ProductionHandoffRow[]>([]);
-  const [packID, setPackID] = useState("");
-  const [quoteRef, setQuoteRef] = useState("");
-  const [idempotencyKey, setIdempotencyKey] = useState(randomKey);
+  const storageKey = `touch-content-production:${session.tenantId}:${storeId}:${campaignId || "store"}`;
+  const note = JSON.stringify(brief);
+  const [caps, setCaps] = useState<Caps | null>(null);
+  const [handoffs, setHandoffs] = useState<Handoff[]>([]);
+  const [quote, setQuote] = useState<(ProductionQuote & { offer_token: string }) | null>(null);
+  const [quotedNote, setQuotedNote] = useState("");
+  const [quotePack, setQuotePack] = useState("");
+  const [requestKey, setRequestKey] = useState("");
+  const [pending, setPending] = useState<ProductionPayload | null>(null);
   const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState("");
-  const [noteKind, setNoteKind] = useState<"ok" | "unknown" | "danger">("ok");
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [listError, setListError] = useState("");
 
   const load = useCallback(async () => {
-    setPhase("loading");
-    const capsRes = await session.api("GET", `stores/${storeId}/content-production-handoffs/capabilities`).catch(() => null);
-    if (capsRes && capsRes.ok) {
-      setCaps(capsRes.data as unknown as Capabilities);
-    } else {
-      // 能力读不到 = 不可用如实呈现,不猜。
-      setCaps(null);
-    }
-    const packsRes = await session.api("GET", `stores/${storeId}/content-packs`).catch(() => null);
-    if (packsRes && packsRes.ok && Array.isArray(packsRes.data.items)) {
-      const options = (packsRes.data.items as PackOption[]).filter((p) => !p.legacy);
-      setPacks(options);
-      setPackID((cur) => cur || options[0]?.id || "");
-    } else {
-      setPacks([]);
-    }
-    const listRes = await session.api("GET", `stores/${storeId}/content-production-handoffs`).catch(() => null);
-    setHandoffs(listRes && listRes.ok && Array.isArray(listRes.data.handoffs) ? (listRes.data.handoffs as ProductionHandoffRow[]) : []);
-    setError("");
-    setPhase("ready");
+    const [cap, list] = await Promise.all([
+      session.api("GET", `stores/${storeId}/content-production-handoffs/capabilities`),
+      session.api("GET", `stores/${storeId}/content-production-handoffs`),
+    ]);
+    setCaps(cap.ok ? cap.data as unknown as Caps : null);
+    if (!list.ok) { setListError(failureText(list.status, list.data)); return; }
+    setHandoffs(Array.isArray(list.data.handoffs) ? list.data.handoffs as Handoff[] : []);
+    setListError("");
   }, [session, storeId]);
-
   useEffect(() => {
-    void load().catch(() => {
-      setError("没有连上服务。制作能力与发起记录没有读到,不把它们当成空。");
-      setPhase("error");
-    });
-  }, [load]);
-
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
-    if (!packID || !quoteRef.trim()) {
-      setError("先选内容包并填入已确认的报价引用,再发起制作。");
-      return;
-    }
-    setBusy(true);
-    setError("");
-    setNote("");
+    setQuote(null); setError(""); setNotice("");
     try {
-      const res = await session.api("POST", `stores/${storeId}/content-production-handoffs`, {
-        content_pack_ref: `pack:${packID}`,
-        quote_ref: quoteRef.trim(),
-        idempotency_key: idempotencyKey,
-      });
-      const data = (res.data ?? {}) as {
-        handoff?: ProductionHandoffRow;
-        replayed?: boolean;
-        notes?: string[];
-        error?: string;
-        message?: string;
-      };
-      if (res.status === 201 || res.status === 200) {
-        const h = data.handoff;
-        const taskNote = h?.task_ref ? `任务 ${h.task_ref}` : "";
-        setNoteKind("ok");
-        setNote(
-          (data.replayed ? "同一发起已存在,返回原记录(不重复建工程、不重复报价)。" : "发起已记录。") +
-            (h?.status === "submitted" ? `已提交平台任务${taskNote ? "(" + taskNote + ")" : ""},处理中。` : "") +
-            (h && h.status !== "submitted" ? "公共任务权威未接通,制作暂不开始——这是如实的未接通状态。" : "") +
-            (data.notes && data.notes.length ? " " + data.notes.join(" ") : ""),
-        );
-        // 成功后换新幂等键:下一次发起是新的制作请求。
-        setIdempotencyKey(randomKey());
-        setQuoteRef("");
-        await load();
-        return;
-      }
-      if (res.status === 503) {
-        // 诚实降级:发起已落库,但生产方/权威未接通,制作没有开始。
-        setNoteKind("unknown");
-        setNote(
-          (data.message || "制作生产方尚未接入:这次发起已记下但没有送去做。") +
-            (data.notes && data.notes.length ? " " + data.notes.join(" ") : ""),
-        );
-        setIdempotencyKey(randomKey());
-        await load();
-        return;
-      }
-      setError(failureText(res.status, data));
-    } catch {
-      setError("没有完成(没有连上服务)。这次发起还没有提交。");
-    } finally {
-      setBusy(false);
+      const saved = JSON.parse(localStorage.getItem(storageKey) || "null") as { key?: string; pending?: ProductionPayload } | null;
+      setRequestKey(saved?.key || randomKey()); setPending(saved?.pending || null);
+    } catch { setRequestKey(randomKey()); setPending(null); }
+    void load().catch(() => setListError("制作记录尚未读到，请刷新回查；不能把断网当作没有任务。"));
+  }, [storageKey, load]);
+
+  async function getQuote() {
+    if (!title.trim() || !String(brief.body || "").trim() || !String(brief.store_name || "").trim()) {
+      setError("请先补充标题、正文和门店资料，再获取当前用途的制作报价。"); return;
     }
+    setBusy(true); setError(""); setNotice(""); setQuote(null);
+    try {
+      const packsResult = await session.api("GET", `stores/${storeId}/content-packs`);
+      if (!packsResult.ok) throw new Error(failureText(packsResult.status, packsResult.data));
+      const packs = Array.isArray(packsResult.data.items) ? packsResult.data.items as { id: string; title: string; legacy?: boolean; campaign_id?: string }[] : [];
+      const targetPack = packId || await ensureContentPack(session.api, storeId, packs, title, campaignId);
+      // A deliberate new quote after a prior offer gets a fresh usage key.
+      const key = quotedNote ? randomKey() : requestKey || randomKey();
+      setQuotedNote("");
+      setRequestKey(key); localStorage.setItem(storageKey, JSON.stringify({ key }));
+      const res = await session.api("POST", `stores/${storeId}/content-production-handoffs/quote`, { content_pack_ref: `pack:${targetPack}`, idempotency_key: key, note });
+      if (!res.ok) {
+        setError(productionFailure(res.status, res.data));
+        if (res.data.can_requote === true) { const renewedKey=randomKey(); setRequestKey(renewedKey); localStorage.setItem(storageKey, JSON.stringify({ key: renewedKey })); }
+        return;
+      }
+      const next = res.data.quote as ProductionQuote & { offer_token: string };
+      if (!quoteIsUsable(next) || !next.offer_token) { setError("公共账务报价缺少金额、付款主体、交付内容或有效期，请稍后重新获取。没有开始制作或预占。"); return; }
+      setQuote(next); setQuotedNote(note); setQuotePack(targetPack);
+      setNotice(String(res.data.notice || "尚未预占或扣费。请核对报价后明确确认。"));
+    } catch (e) { setError(e instanceof Error ? e.message : "报价响应未确认，请重试获取同一请求。不会开始收费制作。"); }
+    finally { setBusy(false); }
   }
 
-  const retryHandoff = useCallback(async (handoffId: string) => {
-    setBusy(true);
-    setError("");
-    setNote("");
-    try {
-      const res = await session.api("POST", `stores/${storeId}/content-production-handoffs/${handoffId}/retry`, {});
-      const data = (res.data ?? {}) as { handoff?: ProductionHandoffRow; notes?: string[]; message?: string };
-      if (res.ok) {
-        setNoteKind("ok");
-        setNote((data.notes && data.notes.join(" ")) || "重试提交成功,处理中。");
-      } else {
-        setNoteKind("unknown");
-        setNote(data.message || failureText(res.status, data));
-      }
-    } catch {
-      setError("重试没有完成(没有连上服务)。原发起保持已登记状态。");
-    } finally {
-      setBusy(false);
-      await load().catch(() => {});
+  async function submit(payload: ProductionPayload) {
+    setBusy(true); setError("");
+    // Save before sending: a lost response/reload must replay identical payload.
+    try { localStorage.setItem(storageKey, JSON.stringify({ key: payload.idempotency_key, pending: payload })); }
+    catch {
+      setError("此浏览器暂时无法保存原请求，本次尚未提交或预占费用。请恢复浏览器存储后再确认。");
+      setBusy(false); return;
     }
-  }, [session, storeId, load]);
-
-  return (
-    <section className="tk-section" data-testid="store-production-panel" data-store-id={storeId}>
-      <h3 className="tk-label">发起真实制作(不需要先有活动或已采用内容)</h3>
-      <p className="tk-note">
-        选一个内容包(可以是空包),填入账单里已确认的报价引用,提交后由受信制作生产方按真实任务制作;成片回到候选区预览后由你明确采用。
-      </p>
-      {phase === "loading" ? <p className="tk-state" data-state="loading">{surfaceLabel("loading")}</p> : null}
-      {phase === "error" ? (
-        <p className="tk-state tk-danger" data-state="error">
-          {error}
-          <button className="tk-quiet" type="button" data-action="retry" onClick={() => void load()}>重试</button>
-        </p>
-      ) : null}
-      {phase === "ready" ? (
-        <>
-          <p className="tk-note tk-unknown" data-field="produce-reason">
-            {caps ? caps.reason : "制作能力没有读到:发起按钮先保持不可用。上传已有内容和从素材库选择不受影响。"}
-          </p>
-          <form className="tk-form" data-entry="production-initiate" onSubmit={(event) => void submit(event)}>
-            <label className="tk-label">
-              内容包
-              <select
-                className="tk-select"
-                aria-label="选择内容包"
-                value={packID}
-                onChange={(event) => setPackID(event.target.value)}
-                required
-              >
-                <option value="">选择内容包</option>
-                {packs.map((p) => (
-                  <option key={p.id} value={p.id}>{p.title}</option>
-                ))}
-              </select>
-            </label>
-            {packs.length === 0 ? (
-              <p className="tk-note tk-unknown">这个门店还没有内容包。先在下面「新包」里起个名字——空包也能发起首次制作。</p>
-            ) : null}
-            <label className="tk-label">
-              已确认报价引用(quote_ref,来自账单中心)
-              <input
-                className="tk-input"
-                name="quote_ref"
-                type="text"
-                value={quoteRef}
-                onChange={(event) => setQuoteRef(event.target.value)}
-                aria-label="已确认报价引用"
-                required
-              />
-            </label>
-            <p className="tk-note" data-field="quote-note">
-              报价在生成前确认、生成前可见;重复提交同一发起不会重复计费。
-              {caps && !caps.quote_authority_configured ? " 账单权威未接入:报价引用须先经账单权威确认并落进投影,否则发起会被拒;费用状态以账单为准。" : ""}
-            </p>
-            <button
-              className="tk-button"
-              type="submit"
-              data-action="produce"
-              disabled={busy || !caps?.production_available}
-            >
-              发起制作
-            </button>
-            <p className="tk-note" data-field="idempotency-note">本次发起凭据:{idempotencyKey}(重试走同一凭据,不会建两个制作工程)</p>
-          </form>
-          {note ? (
-            <p className={noteKind === "ok" ? "tk-note tk-ok" : "tk-note tk-unknown"} data-field="production-result">{note}</p>
-          ) : null}
-          {error && phase === "ready" ? <p className="tk-danger" data-state="error">{error}</p> : null}
-
-          <ul className="tk-list" data-field="handoff-list">
-            {handoffs.length === 0 ? (
-              <p className="tk-note">这个门店还没有制作发起记录。</p>
-            ) : null}
-            {handoffs.map((h) => (
-              <li key={h.id} data-handoff-id={h.id} data-status={h.status}>
-                <p className="tk-note">
-                  发起 {h.id} · {statusCopy(h.status)}
-                  {h.quote_verified ? " · 报价已核验" : " · 报价按申报记录(费用以账单为准)"}
-                </p>
-                <p className="tk-note">
-                  内容包 {h.content_pack_ref ?? h.pack_id}
-                  {h.task_ref ? ` · 平台任务 ${h.task_ref}` : " · 尚无平台任务(未接通不伪造)"}
-                  {h.last_charge_ref ? ` · 费用引用 ${h.last_charge_ref}` : ""}
-                </p>
-                {/* Walk E 走查收口：登记(未提交)行的重试面——同一凭据重试提交，
-                    不新建工程、不重新核价。 */}
-                {h.status === "recorded" ? (
-                  <button
-                    className="tk-quiet"
-                    type="button"
-                    data-action="retry-handoff"
-                    disabled={busy}
-                    onClick={() => void retryHandoff(h.id)}
-                  >
-                    重试提交(同一凭据,不新建工程)
-                  </button>
-                ) : null}
-                {(h.results ?? []).length > 0 ? (
-                  <ul className="tk-list">
-                    {(h.results ?? []).map((r) => (
-                      <li key={r.id} data-result-id={r.id} data-outcome={r.outcome}>
-                        <p className="tk-note">
-                          {outcomeCopy(r.outcome)} 第 {r.result_revision} 期
-                          {r.version_id ? " · 已登记候选(到上方门店内容包预览、采用)" : ""}
-                          {r.reason ? ` · ${r.reason}` : ""}
-                        </p>
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : null}
-    </section>
-  );
+    setPending(payload);
+    try {
+      const res = await session.api("POST", `stores/${storeId}/content-production-handoffs`, payload);
+      const h = res.data.handoff as Handoff | undefined;
+      if (!h) {
+        setError(productionFailure(res.status, res.data));
+        if (res.data.can_requote === true) {
+          setPending(null); setQuote(null); setQuotedNote(note);
+          localStorage.setItem(storageKey, JSON.stringify({ key: randomKey() }));
+        }
+        return;
+      }
+      setNotice(`${res.data.replayed ? "已找回同一制作请求，不重复预占或创建任务。" : "制作请求已登记。"}${statusCopy(h.status)}。成片只进入候选，需预览后明确采用。`);
+      setPending(null); setQuote(null); setQuotedNote("");
+      const key = randomKey(); setRequestKey(key);
+      try { localStorage.setItem(storageKey, JSON.stringify({ key })); } catch { /* The persisted original request remains safe to replay. */ }
+      await load().catch(() => setListError("制作请求已登记，列表暂未刷新。请刷新制作状态回查原记录。")); onChanged?.();
+    } catch { setError("制作结果尚未确认。已保留同一请求，请点「恢复同一请求」回查；不要重新付款或新建制作。"); }
+    finally { setBusy(false); }
+  }
+  async function retry(id: string) {
+    setBusy(true); setError("");
+    try {
+      const res = await session.api("POST", `stores/${storeId}/content-production-handoffs/${id}/retry`, {});
+      if (!res.ok) setError(productionFailure(res.status, res.data));
+      else setNotice("已恢复同一制作任务，公共任务按同一凭据去重；不会重复预占。");
+      await load(); onChanged?.();
+    } catch { setError("任务受理结果尚未确认，请刷新回查同一记录。"); }
+    finally { setBusy(false); }
+  }
+  const currentQuote = quotedNote === note && quoteIsUsable(quote);
+  return <section className="tk-section" data-testid="store-production-panel" data-store-id={storeId}>
+    <h3 className="tk-label">当前用途，就地报价制作</h3>
+    <p className="tk-note">复用上方文案与平台。首次所需内容包由系统准备；获取报价不会预占或扣费，明确确认后按公共账务合同预占。</p>
+    <p className="tk-note tk-unknown" data-field="produce-reason">{caps?.reason || "制作能力尚未读到，请刷新重试。上传与选择已有内容仍可使用。"}</p>
+    {!pending ? <button type="button" className="tk-button" data-action="request-quote" disabled={busy || !caps?.production_available} onClick={() => void getQuote()}>获取制作报价</button> : null}
+    {quote ? <div className="tk-section" data-field="production-quote">
+      <p className="tk-note">交付内容：{quote.deliverables}</p>
+      <p className="tk-note">金额：{quote.currency} {(quote.amount_minor / 100).toFixed(2)}</p>
+      <p className="tk-note">付款安排：使用「{quote.payer_context || session.tenantName || "当前组织"}」配置的制作付款账户。</p>
+      <details><summary>核对付款账户</summary><p className="tk-note">账户标识：{quote.payer}。账户名称未由账务服务返回，请有付款权限的负责人核对。</p></details>
+      <p className="tk-note">报价有效期：{new Date(quote.expires_at).toLocaleString("zh-CN")}</p>
+      <p className="tk-note">确认后预占上述费用并提交制作，结算由原公共账务与生产方完成。回流候选不会自动采用或上线。</p>
+      {!currentQuote ? <p className="tk-unknown">用途资料已变化或报价已过期，请重新获取并确认。</p> : null}
+      <button type="button" className="tk-button" data-action="produce" disabled={busy || !currentQuote || Boolean(pending)} onClick={() => {
+        if (currentQuote && quote) void submit(productionPayload(quotePack, quote, requestKey, note));
+      }}>确认费用并提交制作</button>
+    </div> : null}
+    {pending ? <div className="tk-section"><p className="tk-note tk-unknown">有一笔已确认请求待回查。恢复只发送原始负载，不重新获取报价或预占第二笔费用。</p><button type="button" className="tk-button" disabled={busy} onClick={() => void submit(pending)}>恢复同一请求</button></div> : null}
+    {notice ? <p className="tk-note" role="status">{notice}</p> : null}
+    {error ? <p className="tk-danger" role="alert">{error}</p> : null}
+    {listError ? <p className="tk-danger">{listError}</p> : null}
+    <button type="button" className="tk-quiet" onClick={() => void load().catch(() => setListError("制作记录尚未读到，请稍后重试。"))}>刷新制作状态</button>
+    <ul className="tk-list" data-field="handoff-list">{handoffs.map((h) => <li key={h.id} data-handoff-id={h.id} data-status={h.status}>
+      <p className="tk-note"><strong>{taskTitle(h)}</strong>{h.created_at ? ` · ${new Date(h.created_at).toLocaleString("zh-CN")}` : ""}</p>
+      <p className="tk-note">{statusCopy(h.status)}{h.quote_verified ? " · 公共账务报价已核验" : " · 费用状态以账单为准"}</p>
+      {h.status === "recorded" ? <button type="button" className="tk-quiet" disabled={busy} onClick={() => void retry(h.id)}>恢复提交同一任务</button> : null}
+      {h.status === "failed" || h.status === "canceled" ? <p className="tk-note">当前任务已终止；费用释放或退款以公共账务事实为准。请先查看原账单或联系服务支持，重新制作需重新报价与确认。</p> : null}
+      {(h.results || []).map((result) => <p key={result.id} className="tk-note">{result.version_id ? "候选已回流，请在下方预览并采用。" : result.reason || "等待可用成片，未取得成片不视为交付完成。"}</p>)}
+      <details><summary>受控诊断</summary><p className="tk-note">请求：{h.id} · {h.task_ref ? `公共任务：${h.task_ref}` : "尚无公共任务受理引用"}</p></details>
+    </li>)}</ul>
+  </section>;
 }

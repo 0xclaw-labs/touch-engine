@@ -102,7 +102,7 @@ export function CampaignShare({
     <section id="share" className="tk-section" data-testid="campaign-share" data-pattern-region="status">
       <h2 className="tk-section-title">分享给顾客</h2>
       <p className="tk-note">
-        活动窗口：{formatCampaignWindow(campaign.starts_at, campaign.ends_at)}
+        活动窗口：{formatCampaignWindow(campaign.starts_at, campaign.ends_at, { timeZone: "Asia/Shanghai" })}（北京时间 UTC+8）
       </p>
       {!enabled ? (
         <div data-state="empty">

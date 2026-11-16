@@ -8,23 +8,26 @@
 //     revision 按活动内 COUNT(*)+1 单调递增(SQLite 单写者串行化);
 //   - 形状校验复用 campaignenable.ValidateSpec(HTTP 层已校验一次,双重把关);
 //     拒绝时不留任何半条记录(修订与配置行同事务回滚);
-//   - enabled 下保存 → 自动回 draft(改版必须重新过启用检查,不出现
-//     「未检查的新版本继续在线」);启用时点的 enabled_version/disclosure
-//     保留不覆盖(在途参与按原告知处理);
-//   - 启用走条件 UPDATE(status IN draft,paused 才可置 enabled):
-//     并发启用串行化为一次生效,0 行 = 他人已启用 → 幂等提交且不重复写
-//     enable 修订;paused → enabled 的恢复修订记 resume。
+//   - 保存只更新待发布版本，既有 enabled_version 与暂停状态不变；
+//     正式读面只解析原 enable/resume 修订，显式启用才替换线上承诺；
+//   - 显式启用校验编辑稿 expected version，再原子更新生效钉版与修订；
+//     恢复只使用原已发布修订，不顺带启用暂停期间的新草稿。
 package store
 
 import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"reflect"
+	"sort"
+	"time"
 
 	"github.com/bianjiefilm/touch-engine/server/internal/campaignenable"
 )
 
-// PublishConfig is the active per-campaign publish-reward configuration row.
+// PublishConfig stores the editable spec plus the independently published pin.
+// GetPublishedConfig resolves the live spec from immutable enable/resume history.
 type PublishConfig struct {
 	ID             string              `json:"id"`
 	TenantID       string              `json:"tenant_id"`
@@ -158,9 +161,8 @@ func nextConfigRevision(tx *sql.Tx, tenantID, campaignID string) (int, error) {
 }
 
 // UpsertPublishConfigDraft creates (version 1) or replaces (version+1) the
-// configuration draft. Saving over an enabled config demotes it to draft: the
-// new version must pass the enable check again before it is live. The previous
-// enable pin (enabled_version/disclosure) survives for in-flight participations.
+// configuration draft. Saving never publishes, pauses, or withdraws the live
+// version. The original enabled pin and explicit pause state stay authoritative.
 func (s *Store) UpsertPublishConfigDraft(tenantID, campaignID string, spec campaignenable.Spec, changedBy string) (PublishConfig, error) {
 	if err := campaignenable.ValidateSpec(spec); err != nil {
 		return PublishConfig{}, err
@@ -210,7 +212,11 @@ func (s *Store) UpsertPublishConfigDraft(tenantID, campaignID string, spec campa
 		return PublishConfig{}, err
 	}
 
-	// enabled/paused 下保存 → 回 draft;旧启用钉版保留。
+	// 相同业务承诺重试不生成新版本，也不使已准备库存失联。
+	if samePublishPromise(row.cfg.Spec, spec) {
+		return row.cfg, nil
+	}
+	// Only the editable version changes. The live lifecycle is independent.
 	next := row.cfg.Version + 1
 	revision, err := nextConfigRevision(tx, tenantID, campaignID)
 	if err != nil {
@@ -222,7 +228,7 @@ func (s *Store) UpsertPublishConfigDraft(tenantID, campaignID string, spec campa
 		 budget_mode=?,total_quantity=?,cost_budget_minor=?,currency=?,store_ids=?,
 		 claim_from=?,claim_until=?,redeem_from=?,redeem_until=?,onsite_redemption=?,
 		 staff_scope=?,out_of_stock_rule=?,dedup_basis=?,per_order_limit=?,channels=?,
-		 content_version_id=?,version=?,status='draft',updated_at=?
+		 content_version_id=?,version=?,status=CASE WHEN enabled_version>0 THEN CASE WHEN paused_at<>'' OR status='paused' THEN 'paused' ELSE 'enabled' END ELSE 'draft' END,updated_at=?
 		 WHERE id=? AND tenant_id=?`,
 		spec.VerificationMode, spec.CustomerCopy, spec.Reward.Kind, spec.Reward.Slot,
 		spec.Reward.BudgetMode, qty, budget, spec.Reward.Currency, storeIDs,
@@ -268,14 +274,20 @@ func (s *Store) EnablePublishConfig(tenantID, campaignID string, version int, di
 	if err != nil {
 		return err
 	}
-	if row.cfg.Status == "enabled" {
+	if row.cfg.Version != version {
+		return ErrPublishConfigVersionConflict
+	}
+	if row.cfg.EnabledVersion == version && row.cfg.Status != "paused" && row.cfg.PausedAt == "" {
 		// 已启用:幂等重放,不重复写修订。版本对齐属于调用方 Check 的职责,
 		// 这里只守护状态机。
 		return tx.Commit()
 	}
 	action := "enable"
-	if row.cfg.Status == "paused" {
+	if row.cfg.EnabledVersion == version && (row.cfg.Status == "paused" || row.cfg.PausedAt != "") {
 		action = "resume"
+	}
+	if !validPublishedDisclosure(row.cfg.Spec, version, disclosure) {
+		return ErrPublishConfigSnapshotInvalid
 	}
 	revision, err := nextConfigRevision(tx, tenantID, campaignID)
 	if err != nil {
@@ -284,18 +296,18 @@ func (s *Store) EnablePublishConfig(tenantID, campaignID string, version int, di
 	ts := now()
 	res, err := tx.Exec(
 		`UPDATE campaign_publish_configs SET status='enabled',enabled_version=?,enabled_at=?,paused_at='',disclosure=?,updated_at=?
-		 WHERE campaign_id=? AND tenant_id=? AND status IN ('draft','paused')`,
-		version, ts, disclosure, ts, campaignID, tenantID)
+		 WHERE campaign_id=? AND tenant_id=? AND version=? AND status IN ('draft','paused','enabled')`,
+		version, ts, disclosure, ts, campaignID, tenantID, version)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		// 并发下他人先启用:读回返回,不双写。
-		return tx.Commit()
+		return ErrPublishConfigVersionConflict
 	}
 	row.cfg.Status = "enabled"
 	row.cfg.EnabledVersion = version
 	row.cfg.EnabledAt = ts
+	row.cfg.PausedAt = ""
 	row.cfg.Disclosure = disclosure
 	if err := insertConfigRevision(tx, row.cfg, revision, action, changedBy); err != nil {
 		return err
@@ -321,8 +333,11 @@ func (s *Store) PausePublishConfig(tenantID, campaignID, changedBy string) error
 	if err != nil {
 		return err
 	}
-	if row.cfg.Status != "enabled" {
-		return ErrNotFound
+	if row.cfg.EnabledVersion <= 0 {
+		return ErrPublishConfigNotEnabled
+	}
+	if row.cfg.Status == "paused" || row.cfg.PausedAt != "" {
+		return tx.Commit()
 	}
 	revision, err := nextConfigRevision(tx, tenantID, campaignID)
 	if err != nil {
@@ -331,7 +346,7 @@ func (s *Store) PausePublishConfig(tenantID, campaignID, changedBy string) error
 	ts := now()
 	res, err := tx.Exec(
 		`UPDATE campaign_publish_configs SET status='paused',paused_at=?,updated_at=?
-		 WHERE campaign_id=? AND tenant_id=? AND status='enabled'`,
+		 WHERE campaign_id=? AND tenant_id=? AND enabled_version>0 AND paused_at='' AND status IN ('enabled','draft')`,
 		ts, ts, campaignID, tenantID)
 	if err != nil {
 		return err
@@ -387,4 +402,187 @@ func (s *Store) ListPublishConfigRevisions(tenantID, campaignID string) ([]Publi
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+func samePublishPromise(a, b campaignenable.Spec) bool {
+	normalize := func(s campaignenable.Spec) campaignenable.Spec {
+		for _, p := range []*string{&s.Reward.ClaimFrom, &s.Reward.ClaimUntil, &s.Reward.RedeemFrom, &s.Reward.RedeemUntil} {
+			if t, err := time.Parse(time.RFC3339, *p); err == nil {
+				*p = t.UTC().Format(time.RFC3339Nano)
+			}
+		}
+		s.Channels = append([]campaignenable.ChannelRef(nil), s.Channels...)
+		sort.Slice(s.Channels, func(i, j int) bool {
+			a, b := s.Channels[i], s.Channels[j]
+			return a.Platform+"|"+a.EntryMode+"|"+a.Scenario < b.Platform+"|"+b.EntryMode+"|"+b.Scenario
+		})
+		s.Reward.StoreIDs = append([]string(nil), s.Reward.StoreIDs...)
+		sort.Strings(s.Reward.StoreIDs)
+		if len(s.Channels) == 0 {
+			s.Channels = nil
+		}
+		if len(s.Reward.StoreIDs) == 0 {
+			s.Reward.StoreIDs = nil
+		}
+		return s
+	}
+	return reflect.DeepEqual(normalize(a), normalize(b))
+}
+
+var (
+	ErrPublishConfigNotEnabled      = errors.New("store: publish config not enabled")
+	ErrPublishConfigSnapshotInvalid = errors.New("store: published config snapshot invalid")
+	ErrPublishConfigVersionConflict = errors.New("store: publish config version changed")
+)
+
+type publishConfigQuerier interface{ QueryRow(string, ...any) *sql.Row }
+
+// publishedConfigVersion reads only an enable/resume revision. Missing or
+// malformed historical evidence never falls back to today's editable spec.
+func publishedConfigVersion(q publishConfigQuerier, current PublishConfig, version int) (PublishConfig, error) {
+	if version <= 0 || current.EnabledVersion <= 0 {
+		return PublishConfig{}, ErrPublishConfigNotEnabled
+	}
+	var raw, at string
+	err := q.QueryRow(`SELECT payload,created_at FROM campaign_publish_config_revisions WHERE tenant_id=? AND campaign_id=? AND version=? AND action IN ('enable','resume') ORDER BY revision DESC LIMIT 1`, current.TenantID, current.CampaignID, version).Scan(&raw, &at)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PublishConfig{}, ErrPublishConfigSnapshotInvalid
+	}
+	if err != nil {
+		return PublishConfig{}, err
+	}
+	var p specPayload
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return PublishConfig{}, fmt.Errorf("%w: payload", ErrPublishConfigSnapshotInvalid)
+	}
+	if p.Status != "enabled" || p.EnabledVersion != version || campaignenable.ValidateSpec(p.Spec) != nil {
+		return PublishConfig{}, ErrPublishConfigSnapshotInvalid
+	}
+	if !validPublishedDisclosure(p.Spec, version, p.Disclosure) {
+		return PublishConfig{}, ErrPublishConfigSnapshotInvalid
+	}
+	current.Version = version
+	current.Spec = p.Spec
+	current.Disclosure = p.Disclosure
+	current.EnabledAt = at
+	paused := current.PausedAt != "" || current.Status == "paused"
+	current.Status = "enabled"
+	if paused {
+		current.Status = "paused"
+	}
+	return current, nil
+}
+
+func validPublishedDisclosure(spec campaignenable.Spec, version int, raw string) bool {
+	disc, err := campaignenable.ParseDisclosure(raw)
+	if err != nil {
+		return false
+	}
+	generated, err := time.Parse(time.RFC3339Nano, disc.GeneratedAt)
+	return err == nil && reflect.DeepEqual(disc, campaignenable.BuildDisclosure(spec, version, generated))
+}
+
+// GetPublishedConfig separates the live promise from GetPublishConfig's
+// editable draft. Paused snapshots are returned with status=paused so every
+// reader can display the same frozen terms without authorizing new activity.
+func (s *Store) GetPublishedConfig(tenantID, campaignID string) (PublishConfig, error) {
+	current, err := s.GetPublishConfig(tenantID, campaignID)
+	if err != nil {
+		return PublishConfig{}, err
+	}
+	return publishedConfigVersion(s.DB, current, current.EnabledVersion)
+}
+
+// ResumePublishConfig resumes exactly the previously published revision. It
+// leaves any newer editable spec untouched and cannot publish it incidentally.
+func (s *Store) ResumePublishConfig(tenantID, campaignID string, expectedVersion int, changedBy string) error {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	row, err := scanPublishConfig(tx.QueryRow(`SELECT `+publishConfigCols+` FROM campaign_publish_configs WHERE tenant_id=? AND campaign_id=?`, tenantID, campaignID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if row.cfg.EnabledVersion != expectedVersion {
+		return ErrPublishConfigVersionConflict
+	}
+	live, err := publishedConfigVersion(tx, row.cfg, expectedVersion)
+	if err != nil {
+		return err
+	}
+	if row.cfg.PausedAt == "" && row.cfg.Status != "paused" {
+		return tx.Commit()
+	}
+	revision, err := nextConfigRevision(tx, tenantID, campaignID)
+	if err != nil {
+		return err
+	}
+	ts := now()
+	if _, err := tx.Exec(`UPDATE campaign_publish_configs SET status='enabled',paused_at='',updated_at=? WHERE tenant_id=? AND campaign_id=? AND enabled_version=?`, ts, tenantID, campaignID, expectedVersion); err != nil {
+		return err
+	}
+	live.Status = "enabled"
+	live.PausedAt = ""
+	if err := insertConfigRevision(tx, live, revision, "resume", changedBy); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// publishedRewardActiveInTx closes the read-gate/write gap for a configured
+// campaign. It reads the same publication authority on the ledger connection;
+// no nested s.DB access is allowed while SQLite's single connection is held.
+func publishedRewardActiveInTx(tx *sql.Tx, tenantID, campaignID string) error {
+	row, err := scanPublishConfig(tx.QueryRow(`SELECT `+publishConfigCols+` FROM campaign_publish_configs WHERE tenant_id=? AND campaign_id=?`, tenantID, campaignID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	} // unchanged legacy unconfigured ledger
+	if err != nil {
+		return err
+	}
+	live, err := publishedConfigVersion(tx, row.cfg, row.cfg.EnabledVersion)
+	if errors.Is(err, ErrPublishConfigNotEnabled) {
+		return fmt.Errorf("%w: promise_not_enabled", ErrPromiseBlocked)
+	}
+	if err != nil {
+		return fmt.Errorf("%w: publication_unknown", ErrPromiseBlocked)
+	}
+	if live.Status != "enabled" {
+		return fmt.Errorf("%w: promise_not_enabled", ErrPromiseBlocked)
+	}
+	var status string
+	if err := tx.QueryRow(`SELECT status FROM campaigns WHERE tenant_id=? AND id=?`, tenantID, campaignID).Scan(&status); err != nil {
+		return err
+	}
+	if status != "active" {
+		return fmt.Errorf("%w: campaign_not_active", ErrPromiseBlocked)
+	}
+	return nil
+}
+
+// GetPublishedConfigVersion resolves an originally enabled rule version for
+// an existing participation. Current pause state still applies; draft spec is
+// never a fallback and no new publication is created here.
+func (s *Store) GetPublishedConfigVersion(tenantID, campaignID string, version int) (PublishConfig, error) {
+	current, err := s.GetPublishConfig(tenantID, campaignID)
+	if err != nil {
+		return PublishConfig{}, err
+	}
+	result, err := publishedConfigVersion(s.DB, current, version)
+	result.EnabledVersion = version
+	return result, err
+}
+
+func (s *Store) FirstPublishedConfigAt(tenantID, campaignID string, version int) (string, error) {
+	var at string
+	err := s.DB.QueryRow(`SELECT created_at FROM campaign_publish_config_revisions WHERE tenant_id=? AND campaign_id=? AND version=? AND action IN ('enable','resume') ORDER BY revision LIMIT 1`, tenantID, campaignID, version).Scan(&at)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrPublishConfigSnapshotInvalid
+	}
+	return at, err
 }

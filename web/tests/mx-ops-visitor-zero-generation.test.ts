@@ -40,7 +40,9 @@ describe("顾客/访客路径零新生成（HUI-3553 硬约束）", () => {
 
   it("顾客公共快照只读已采用版本，不经制作队列", () => {
     const handler = readServer("internal/httpapi/handlers_content_packs.go");
-    expect(handler).toContain("GetAdoptedVersion");
+    expect(handler).toContain("campaignPublicVersion");
+    const authority = readServer("internal/httpapi/campaign_content_authority.go");
+    expect(authority).toContain("CampaignPublishedContent");
     // 公共快照读取路径中不泄漏内部 worker 计数（internal_debug 只允许出现在
     // 队列投影接缝的注释里，且同步时已被删除）。
     expect(handler).not.toContain("ready_workers");

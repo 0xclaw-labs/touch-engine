@@ -18,7 +18,7 @@
 
 - 3535 合同 §6 指令②已落实：`admission_unknown → manual_only` 旧映射废除（v1 /c 面同步：pending_external 与 refused 同样拒绝开交接）。
 - 自动化通道（h5/miniapp/js/oauth）未接 adapter 时诚实回退为 `manual_export` client_action（玩法已获准，手动路径合法），kind 不变；adapter 接入后由 `Prepare` 升级为官方交接动作。**绝不编造深链/SDK/OAuth 入口**。
-- 既有交接的 plan 冻结在行内（`plan_kind` 列），GET 回冻结面——准入变化只影响新交接。
+- 既有交接的历史计划冻结在行内（`plan_kind` 列），不重写原记录。GET 的当前执行投影必须重验准入、动作和内容；历史冻结不等于当前获准（2026-11-14 导出门修订，见下节）。
 
 ## 2. Adapter 接口（冻结，四平台票按此实现）
 
@@ -97,3 +97,22 @@ var ErrUnsupported = errors.New("publishhandoff: capability not supported by thi
 3. OAuth 凭据服务端保管（4587）；客户端永无 secret；回调验签各自实现，共享 VerifyCallback 契约（Receipt.HandoffID 必填）。
 4. JS 失败≠发布回执（4586）；异步接受≠最终公开（4587 用 Query 核对 photo_id）；未准入场景（4585 抖音店宣）拒绝且不用手工路线绕过——闸在 3535，adapter 只消费裁决。
 5. fixture 回执/测试密钥只进 `_test.go`；真机证据缺失处诚实标注未验证，不伪造成功。
+
+
+## 2026-11-14：公共媒体导出与当前执行投影
+
+预览继续允许读取真实字节，不能把浏览预览宣称为防拷贝能力。公共 `media-access` 的 `download` / `platform_fetch` 签发必须对应本人 active 动作会话下的原 media handoff 及其冻结版本，使用原动作、方法、场景和环境重新执行 `JudgeActionPlan`。仅有版本号、任意会话或候选池引用均不构成导出授权。请求可提供 `handoff_id` 精确续签；旧消费者未提供时仅解析该本人会话与精确版本的原交接。
+
+- `manual_only` 对应 `download`；其他获准媒体交接对应 `platform_fetch`。官方抓取路线不因此增加通用下载用途。手动交接的参考指引不嵌入自动适配器专用抓取链接。
+- 来源字段 `source_kind` / `source_ref` 仅由服务器在原权威成功校验后写入签名 claim。动作交接引用原 handoff；适配器开始阶段引用同租户、同会话、同冻结版本下的唯一幂等请求，原行须已存在方可兑换；legacy 引用原活动 handoff；商家引用当前 member 主键。`sr` 始终保留原会话语义。
+- 非预览兑换不要求平台携带访客或商家 cookie，而是沿签名来源重查原权威、会话/成员、当前准入、动作及内容分发状态。取消/失败交接拒绝取材。每次 Range/HEAD/缓存票据重试也受同一否决约束。
+- 商家仍沿原 scoped 素材管理权限签发预览/下载；兑换重查成员 enabled、租户、门店范围与既有读取授权。Legacy 仍沿原参与、handed_off attempt、活动归属、冻结版本和原路线裁决兑换，不伪建新会话或新交接。
+- 旧 claim 没有可证明来源的非预览票据返回 `410 media_source_renewal_required`，要求沿原合法 handoff 或 scoped 商家入口重签；短 TTL 自然淘汰，不增加迁移表。旧预览票据仍兼容。用途越权返回 `422 media_purpose_not_allowed`，缺合法交接 `422 media_handoff_required`，跨主体/版本/租户 `404`，成员撤权 `403`，内容停止分发或授权到期 `409`，准入撤销 `422 handoff_refused`。
+
+v2 start、GET handoff、GET session-handoff 增量返回：
+
+```json
+{"handoff":{"handoff_id":"原引用","status":"原状态"},"execution":{"allowed":false,"reason":"not_admitted","reason_text":"当前准入拒绝原因"},"plan":{"allowed":false,"kind":"refused","reason":"not_admitted","reason_text":"当前准入拒绝原因"},"media":[]}
+```
+
+历史 GET 保持 200 与原 handoff/status；准入未知时当前 plan.kind 为 `pending_external`。被拒时同时不返回 `handoff.client_action`、`plan.client_action` 或新媒体凭据。终态/在途记录可只读查询，不返回新的执行参数或发起新 Prepare。允许时 `execution.allowed=true`，原计划、动作和媒体字段保留。幂等 start 仍先经过当前 gate，拒绝时不能用重放旧键获得旧执行载荷。未接 adapter 也执行当前裁决；不能以 `RefreshActionPrepare` 的空 adapter 返回代表准入通过。

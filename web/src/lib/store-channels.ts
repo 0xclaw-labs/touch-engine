@@ -249,9 +249,11 @@ export function channelsSaveError(status: number, data: Record<string, unknown>)
   	case "bad_content_binding_ref":
   		return "内容绑定必须是已采用的内容包引用，这次没有保存。请重新选择内容包。";
   	case "out_of_scope":
+      return "你只能配置自己管辖的门店。请返回获授权的门店，或请负责人调整门店范围。";
   	case "forbidden":
+      return "当前账号没有配置门店服务的权限。请让负责人核对你的配置任务授权和门店范围。";
   	case "agency_inactive":
-  		return "你只能配置自己管辖的门店。";
+      return "当前代办关系已失效。请返回代理商家列表，并让商家负责人核对授权。";
   	case "not_found":
   		return "门店不存在或已被停用。";
   	default:

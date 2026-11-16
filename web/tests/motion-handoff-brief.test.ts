@@ -12,13 +12,9 @@ describe("Motion Handoff Brief 只读展示", () => {
   const brief = read("components/work/motion-handoff-brief.tsx");
   const page = read("app/work/campaigns/[id]/page.tsx");
 
-  it("页面挂载 brief 且在门店参数区块之后", () => {
-    expect(page).toContain('from "@/components/work/motion-handoff-brief"');
-    expect(page).toContain("<MotionHandoffBrief");
-    const storeAt = page.indexOf('id="store-motion"');
-    const handoffAt = page.indexOf("<MotionHandoffBrief");
-    expect(storeAt).toBeGreaterThan(-1);
-    expect(handoffAt).toBeGreaterThan(storeAt);
+  it("正常活动流程去除工程交接brief，原兼容组件仍独立保留", () => {
+    expect(page).not.toContain("<MotionHandoffBrief");
+    expect(page).toContain("CampaignConfigPanel");
   });
 
   it("拉取只读端点并明示上游不可用", () => {

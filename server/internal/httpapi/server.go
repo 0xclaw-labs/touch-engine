@@ -68,6 +68,8 @@ type Server struct {
 	Log     *log.Logger
 	closeDB func()
 
+	memberLookups memberLookupLimiter
+
 	// Media (HUI-3553 B05) is the controlled real-media store: verified
 	// upload bytes live here content-addressed; the controlled media GET
 	// serves from it. Bytes never enter the database.
@@ -137,10 +139,10 @@ type Server struct {
 
 	// Participation (HUI-3546) owns the participation/attempt/handoff
 	// tables. Constructed always; its routes register only under
-	// FEATURE_PARTICIPATION. The BenefitReserver stays nil until the reward
-	// domain (HUI-1671) lands: reservations then remain pending and the
-	// customer is never told 已保留.
+	// FEATURE_PARTICIPATION. The trusted BenefitReserver is wired to the original
+	// reward ledger before routes are exposed. Unconfirmed holds never claim 已保留.
 	Participation *participation.Service
+	rewardClock   func() time.Time // one business clock for reward reads and allocation
 
 	// PublishHandoff (HUI-1670) owns the publish handoff state machine and
 	// evidence events. Constructed always; its routes register only under
@@ -247,7 +249,6 @@ func New(cfg config.Config, database *sql.DB, idc *identity.Client, upc *upload.
 			Capacity: dashCacheCapacity, TTL: dashCacheTTL, Jitter: dashCacheJitter,
 			Epoch: st.Epoch,
 		}),
-		Participation: participation.New(database, nil, participation.Options{}),
 		// HUI-2222: default 60s single-use hand-off window for app switches.
 		Jumps: appjump.New(database, appjump.Options{}),
 		PublishHandoff: publishhandoff.New(database, publishhandoff.Options{
@@ -263,7 +264,11 @@ func New(cfg config.Config, database *sql.DB, idc *identity.Client, upc *upload.
 	// ActionDirectory 端口。不接这行,会话面在生产 503(fail-closed 诚实关闭);
 	// 适配器语义见 server_action_directory.go(unknown/未发布/停用一律
 	// fail-closed)。测试注入自己的目录桩时不经此处。
+	srv.Participation = participation.New(database, nil, participation.Options{Now: srv.rewardTime})
 	srv.Participation.SetActionDirectory(srv)
+	srv.Participation.SetBenefitReserver(&campaignBenefitReserver{srv: srv})
+	srv.PublishHandoff.SetActionPrepareResolver(srv.refreshActionPrepareRequest)
+	srv.PublishHandoff.SetMediaMintResolver(srv.mintCampaignHandoffMedia)
 	// HUI-4585/4586/4587/4588: 平台适配器注册(凭据不齐=不注册,1670 诚实
 	// 回退面接管;详见 server_publish_adapters.go)。
 	registerPublishAdapters(database, srv, cfg)
@@ -496,12 +501,14 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/stores/{id}/content-media", s.requireSession(s.handleStoreContentMediaUpload))
 	mux.Handle("GET /api/v1/stores/{id}/content-media", s.requireSession(s.handleStoreContentMediaList))
 	mux.Handle("POST /api/v1/stores/{id}/content-packs/{packId}/versions", s.requireSession(s.handleStoreContentPackVersionCreate))
+	mux.Handle("POST /api/v1/stores/{id}/content-packs/{packId}/versions/{versionId}/media-access", s.requireSession(s.handleMerchantMediaAccess))
 	mux.Handle("POST /api/v1/stores/{id}/content-packs/{packId}/versions/{versionId}/adopt", s.requireSession(s.handleStoreContentPackVersionAdopt))
 	mux.Handle("POST /api/v1/stores/{id}/content-packs/{packId}/versions/{versionId}/block", s.requireSession(s.handleStoreContentPackVersionBlock))
 
 	// HUI-4595 真实内容制作接线:发起面(商家会话,管理动作 manage_content_packs;
 	// 查询 read_list)与受信成片回流(仅 content_return_producer 角色服务;
 	// /api/v1/internal/* 不在公共 BFF 透传范围,web BFF 拒绝 internal 段)。
+	mux.Handle("POST /api/v1/stores/{id}/content-production-handoffs/quote", s.requireSession(s.handleStoreContentProductionQuote))
 	mux.Handle("POST /api/v1/stores/{id}/content-production-handoffs", s.requireSession(s.handleStoreContentProductionHandoffCreate))
 	mux.Handle("GET /api/v1/stores/{id}/content-production-handoffs", s.requireSession(s.handleStoreContentProductionHandoffList))
 	mux.Handle("POST /api/v1/stores/{id}/content-production-handoffs/{handoffId}/retry", s.requireSession(s.handleProductionHandoffRetry))
@@ -622,6 +629,7 @@ func (s *Server) Handler() http.Handler {
 	}
 
 	mux.Handle("GET /api/v1/admin/members", s.requireSession(s.handleMemberList))
+	mux.Handle("POST /api/v1/admin/members/lookup", s.requireSession(s.handleMemberLookup))
 	mux.Handle("POST /api/v1/admin/members", s.requireSession(s.handleMemberCreate))
 	mux.Handle("PATCH /api/v1/admin/members/{id}", s.requireSession(s.handleMemberPatch))
 
@@ -685,6 +693,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/campaigns/{id}/leads/{ref}/audit", s.requireSession(s.handleLeadAudit))
 	// HUI-4594 M11: tenant-wide authorized-lead view (待同步与已获客分开口径).
 	mux.Handle("GET /api/v1/work/leads", s.requireSession(s.handleWorkLeads))
+	mux.Handle("POST /api/v1/work/leads/{ref}/follow-up", s.requireSession(s.handleWorkLeadFollowUp))
+	mux.Handle("POST /api/v1/internal/lead-follow-ups/{origin}/returns", s.requireLeadReceiver(s.handleLeadFollowUpReturnRegister))
+	mux.Handle("POST /api/v1/lead-follow-up-returns/{h}/resume", s.requireInternal(s.handleLeadFollowUpReturnResume))
 	// HUI-4594 无活动留资: the store-level lead form switch (store-scoped).
 	mux.Handle("POST /api/v1/stores/{id}/lead-form", s.requireSession(s.handleStoreLeadFormUpsert))
 
@@ -717,6 +728,7 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("PUT /api/v1/campaigns/{id}/publish-config", s.requireSession(s.handlePublishConfigPut))
 		mux.Handle("POST /api/v1/campaigns/{id}/publish-config/enable", s.requireSession(s.handlePublishConfigEnable))
 		mux.Handle("POST /api/v1/campaigns/{id}/publish-config/pause", s.requireSession(s.handlePublishConfigPause))
+		mux.Handle("POST /api/v1/campaigns/{id}/publish-config/resume", s.requireSession(s.handlePublishConfigResume))
 		mux.Handle("GET /api/v1/campaigns/{id}/publish-config/snapshot", s.requireSession(s.handlePublishConfigSnapshot))
 		mux.Handle("GET /api/v1/campaigns/{id}/publish-config/revisions", s.requireSession(s.handlePublishConfigRevisions))
 	}
@@ -865,6 +877,7 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("POST /api/v1/participations/lookup", http.HandlerFunc(s.handleParticipationLookup))
 		mux.Handle("POST /api/v1/participations/handoff/redeem", http.HandlerFunc(s.handleParticipationRedeem))
 		mux.Handle("GET /api/v1/participations/{id}", http.HandlerFunc(s.handleParticipationGet))
+		mux.Handle("POST /api/v1/participations/{id}/reservation", http.HandlerFunc(s.handleParticipationReservationRetry))
 		mux.Handle("PATCH /api/v1/participations/{id}/content", http.HandlerFunc(s.handleParticipationContent))
 		mux.Handle("POST /api/v1/participations/{id}/cancel", http.HandlerFunc(s.handleParticipationCancel))
 		mux.Handle("GET /api/v1/participations/{id}/attempts", http.HandlerFunc(s.handleParticipationAttempts))
@@ -933,6 +946,7 @@ func (s *Server) Handler() http.Handler {
 		// 反枚举;回调面服务端到服务端,验签在 adapter,未配置一律拒绝。
 		mux.Handle("GET /api/v1/public/actions/{id}/handoffs/plan", http.HandlerFunc(s.handlePublicActionHandoffPlan))
 		mux.Handle("POST /api/v1/public/actions/{actionId}/handoffs", http.HandlerFunc(s.handlePublicActionHandoffStart))
+		mux.Handle("GET /api/v1/public/action-sessions/{sessionId}/handoff", http.HandlerFunc(s.handleSessionActionHandoff))
 		mux.Handle("GET /api/v1/public/handoffs/{id}", http.HandlerFunc(s.handlePublicActionHandoffGet))
 		mux.Handle("POST /api/v1/public/handoffs/{id}/facts", http.HandlerFunc(s.handlePublicActionHandoffFact))
 		mux.Handle("POST /api/v1/public/handoffs/{id}/submit", http.HandlerFunc(s.handlePublicActionHandoffSubmit))

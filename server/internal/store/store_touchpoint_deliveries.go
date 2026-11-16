@@ -187,6 +187,9 @@ func (s *Store) CreateTouchpointDelivery(in NewTouchpointDelivery) (TouchpointDe
 	if err != nil {
 		return TouchpointDelivery{}, err // ErrNotFound masks missing AND cross-tenant
 	}
+	if tp.Status != TagStatusActive {
+		return TouchpointDelivery{}, ErrTouchpointDisabled
+	}
 	order, err := s.GetBillingOrder(in.TenantID, in.HardwareOrderID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TouchpointDelivery{}, ErrNotFound // 掩码:未知与跨租户订单同形

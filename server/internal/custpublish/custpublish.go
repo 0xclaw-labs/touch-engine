@@ -277,7 +277,7 @@ func Preview(in PreviewInput) (Attempt, error) {
 	}
 	copy := strings.TrimSpace(in.Copy)
 	account := strings.TrimSpace(in.AccountLabel)
-	if copy == "" || account == "" {
+	if copy == "" {
 		return Attempt{}, closed("missing_copy_or_account")
 	}
 	return Attempt{
