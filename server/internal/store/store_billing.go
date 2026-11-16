@@ -48,6 +48,13 @@ type BillingOrderRow struct {
 	ActorPrincipal    string `json:"actor_principal"`
 	ActorRole         string `json:"actor_role"`
 	FailReason        string `json:"fail_reason,omitempty"`
+	// Checkout 引用与受控返回上下文(HUI-4664,迁移 0139):只由受信
+	// checkout producer 合同的 adapter 写入;浏览器/success query 不得写。
+	CheckoutRef         string `json:"checkout_ref,omitempty"`
+	CheckoutStatus      string `json:"checkout_status,omitempty"`
+	CheckoutExpiresAt   string `json:"checkout_expires_at,omitempty"`
+	CheckoutRequestedBy string `json:"checkout_requested_by,omitempty"`
+	ReturnContext       string `json:"return_context,omitempty"`
 	CreatedAt         string `json:"created_at"`
 	UpdatedAt         string `json:"updated_at"`
 }
@@ -75,14 +82,16 @@ func scanBillingOrder(row interface{ Scan(...any) error }) (BillingOrderRow, err
 	err := row.Scan(&r.ID, &r.TenantID, &r.Kind, &r.Action, &r.PlanCode, &r.PriceRef,
 		&r.PriceSnapshot, &r.AmountMinor, &r.Currency, &r.Status, &r.OrderRef, &r.PaymentRef,
 		&r.IdempotencyKey, &r.PayerGrantRef, &r.AgencyRelationRef, &r.PayerPrincipal,
-		&r.ActorPrincipal, &r.ActorRole, &r.FailReason, &r.CreatedAt, &r.UpdatedAt)
+		&r.ActorPrincipal, &r.ActorRole, &r.FailReason, &r.CreatedAt, &r.UpdatedAt,
+		&r.CheckoutRef, &r.CheckoutStatus, &r.CheckoutExpiresAt, &r.CheckoutRequestedBy, &r.ReturnContext)
 	return r, err
 }
 
 const billingOrderCols = `id,tenant_id,kind,action,plan_code,price_ref,price_snapshot,
 amount_minor,currency,status,order_ref,payment_ref,idempotency_key,
 payer_grant_ref,agency_relation_ref,payer_principal,actor_principal,actor_role,
-fail_reason,created_at,updated_at`
+fail_reason,created_at,updated_at,
+checkout_ref,checkout_status,checkout_expires_at,checkout_requested_by,return_context`
 
 // canonicalBillingJSON ignores object field order and whitespace in stored snapshots.
 func canonicalBillingJSON(raw string) string {
@@ -118,9 +127,12 @@ func createBillingOrderTx(tx *sql.Tx, in NewBillingOrder, at string) (BillingOrd
 	// the winning committed row rather than passing a separate check/insert gap.
 	id := newID("bo_")
 	result, err := tx.Exec(`INSERT INTO billing_orders(`+billingOrderCols+`)
- VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(tenant_id,idempotency_key) DO NOTHING`,
+ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(tenant_id,idempotency_key) DO NOTHING`,
 		id, in.TenantID, in.Kind, in.Action, in.PlanCode, in.PriceRef, in.PriceSnapshot, in.AmountMinor, in.Currency, billing.OrderProcessing, "", "", in.IdempotencyKey,
-		in.PayerGrantRef, in.AgencyRelationRef, in.PayerPrincipal, in.ActorPrincipal, in.ActorRole, "", at, at)
+		in.PayerGrantRef, in.AgencyRelationRef, in.PayerPrincipal, in.ActorPrincipal, in.ActorRole, "", at, at,
+		// checkout 引用五列:建单时恒空——只有受信 checkout producer 合同的
+		// adapter 在后续接续中写入(HUI-4664,迁移 0139)。
+		"", "", "", "", "{}")
 	if err != nil {
 		return BillingOrderRow{}, false, err
 	}

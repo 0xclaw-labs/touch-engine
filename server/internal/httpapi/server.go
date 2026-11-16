@@ -29,6 +29,7 @@ import (
 
 	"github.com/bianjiefilm/touch-engine/server/internal/appjump"
 	"github.com/bianjiefilm/touch-engine/server/internal/authz"
+	"github.com/bianjiefilm/touch-engine/server/internal/billing"
 	"github.com/bianjiefilm/touch-engine/server/internal/brandctx"
 	"github.com/bianjiefilm/touch-engine/server/internal/channeladmission"
 	"github.com/bianjiefilm/touch-engine/server/internal/config"
@@ -162,6 +163,11 @@ type Server struct {
 	// instead of faking a verification or a task reference.
 	ProductionQuotes production.QuoteAuthority
 	ProductionTasks  *production.TaskSubmitter
+	// CheckoutProducer 是原单收银接续的公共权威出站合同(HUI-4664,
+	// billing.CheckoutProducer):nil = 合同未落地、收银保持 checkout_unwired
+	// (fail-closed)。实现必须服务配置注入;合同确认后由 New 组装,不由
+	// 请求参数构造。
+	CheckoutProducer billing.CheckoutProducer
 }
 
 // Frozen cache budgets (HUI-2981 comparison report §2.1 — do not tune without
