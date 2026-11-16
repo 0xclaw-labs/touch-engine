@@ -32,7 +32,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const html = `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex"><title>正在进入碰一碰…</title></head>
-<body style="font-family:system-ui,sans-serif;max-width:36rem;margin:12vh auto;padding:0 1rem;color:#101828">
+<body style="color-scheme:light;background:#f7f8fa;color:#101828;font-family:system-ui,sans-serif;max-width:36rem;margin:12vh auto;padding:0 1rem">
 <main><h1 style="font-size:1.25rem">正在进入碰一碰…</h1>
 <p>请稍候。此页只在你的浏览器与本应用之间传递一次性登录凭证。</p>
 <form id="sso-exchange" method="post" action="/api/auth/sso/exchange">

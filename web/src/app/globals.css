@@ -2,6 +2,12 @@
    type family, radius and spacing role below resolves to the vendored public-ai
    semantic tokens; no ad-hoc palette value lives in this file. */
 :root {
+  /* 产品当前主题策略=固定浅色（5 个 layout 硬编码 data-pn-theme="light"）。
+     必须向浏览器声明 color-scheme，否则 OS 暗色下浏览器 Auto Dark 会把
+     浅色页面背景强制暗化成黑、文字仍是浅色主题深色值 → 深字压黑底
+     （11-16 登录页走查截图病灶：卡外标题不可读、卡内正常——卡片的
+     .light{color-scheme:light} 是当时唯一豁免点）。 */
+  color-scheme: light;
   --tk-surface: var(--pn-bg-surface);
   --tk-border: var(--pn-border-default);
   --tk-ink-main: var(--pn-text-primary);
