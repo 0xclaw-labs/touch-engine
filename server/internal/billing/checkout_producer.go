@@ -6,87 +6,91 @@ import (
 	"time"
 )
 
-// HUI-4664 原单收银接续的公共收银台 producer 合同需求面。
+// HUI-4664 原单收银接续的公共收银台 producer 客户端合同（v1.1 对齐）。
 //
-// 纪律来源：docs/acceptance/touch-resume-20261115/checkout-implementation-feasibility.md
-// 第三/四节。本文件只钉 Touch 侧对公共权威的**合同需求**（接口、输入装配
-// 来源、结果分型语义），不定义也不猜测公共侧的端点、字段名或签发流程——
-// 那些必须由公共权威侧的 producer 合同（第四节 1-5 项）确认后，才能写出
-// 真实的 HTTP 客户端。在合同落地并注入实现之前：
-//   - Server 侧 CheckoutProducer 为 nil，收银保持 checkout_unwired
-//     （handlers_billing.go 的 cashierCheckout 原样，fail-closed）；
-//   - 任何实现都不得把钱包充值、GoBoost 商品购买或应用登记成功当作
-//     Touch 收银已接通。
+// 权威合同：public-ai docs/contracts/touch-order-checkout/v1/contract.md
+//（ADV-9 统一契约裁定版）。与 ae1bd0c 首版骨架的关键差异（v1.1 §0 统一
+// 契约）：**checkout_ref 主路由键 = Touch 本地铸的续付引用 ck_***——铸造
+// 职责在 Touch（handler 层），producer 的 tco_* 只是映射存储的远端值。
+// 双向事件（payment_paid / activation_active 回发）一律以 ck_* 路由，
+// source_order_ref 为 Touch 本地原单映射回声。
 //
-// 合同需求（对应可行性文档第四节，逐项钉入下方字段注释）：
-//  1. 权威入口必须消费/创建与 Touch 原单稳定绑定的公共订单（tenant+原单
-//     幂等身份），付款组织与有效 payer 由权威侧判定——服务凭据与任意
-//     account_id 不得代替。
-//  2. 原商品/原价格由已批准目录或有效报价确认；原单价格快照冻结，动态
-//     重新报价不满足 Touch 原价要求。
-//  3. checkout 读写合同：可恢复支付引用、查单、到期、关闭、已付款未开通、
-//     并发重试语义；绑定真实渠道预下单与 verified payment fact。
-//  4. 结果映射：公共 order/payment/refund 稳定身份 → Touch 的
-//     order_ref/payment_ref/source/event_id 投影；重复投递稳定去重。
-//  5. 原任务受控返回：返回上下文签发/保存/消费责任明确；返回只触发权威
-//     回查，不因 success query 推进 paid/active。
+// 在 producer 合同端点（platform-billing /internal/v1/billing/touch-orders/*）
+// 可达且 BILLING_APP_TOKENS 登记 touch-engine 族之前，本客户端 Ready=false，
+// 收银保持 checkout_unwired（fail-closed）。
 
-// ErrCheckoutProducerUnavailable 是 producer 未配置或不可达时的统一错误。
-// handler 层将其折叠为 checkout_unwired 诚实回执，绝不降级为本地推算。
-var ErrCheckoutProducerUnavailable = errors.New("billing: checkout producer unavailable")
+var (
+	// ErrCheckoutProducerUnavailable 是 producer 不可达/未装配的统一错误。
+	// handler 层折叠为 checkout_unwired 诚实回执，绝不降级本地推算。
+	ErrCheckoutProducerUnavailable = errors.New("billing: checkout producer unavailable")
+	// ErrCheckoutProducerRejected 是 producer 明确拒绝（价格未认可/付款人
+	// 未过/payer 不存在等 4xx 类）——透传 reason 给确认面。
+	ErrCheckoutProducerRejected = errors.New("billing: checkout producer rejected")
+)
 
-// OriginalOrderCheckoutRequest 由服务端从 Touch 原单装配——不从浏览器信任
-// 金额、tenant、payer 或任意 URL（可行性文档三节 adapter 行为红线）。
-type OriginalOrderCheckoutRequest struct {
-	// Touch 原单身份（幂等键：公共侧据此保证同原单只生成一个支付意图，
-	// 响应丢失后同 key 查回同一意图——合同需求 3）。
-	TenantID       string
-	OrderID        string
-	IdempotencyKey string
-	// 原单冻结快照（合同需求 2）：公共侧必须认可原商品/原价格，不得动态
-	// 重新报价后让 Touch 原单按新价支付。
-	PlanCode      string
-	PriceRef      string
-	PriceSnapshot string // 原单冻结 JSON，原样透传
-	AmountMinor   int64
-	Currency      string
-	// 原付款主体与授权快照（合同需求 1）：公共侧据此判定付款组织与有效
-	// payer；实时授权复核在 Touch 侧 originalOrderCheckout 已先行完成，
-	// 权威侧仍须独立判定，不信任 Touch 转发的判定结论。
-	PayerPrincipal    string
-	PayerGrantRef     string
-	AgencyRelationRef string
-	// 受控返回上下文请求（合同需求 5）：绑定原 tenant/order 的允许目标由
-	// 权威侧签发；Touch 侧保存于 billing_orders.return_context。
-	RequestedBy string
-	Now         time.Time
+// MintLine 是原单商品行（价格冻结承认的输入，逐字段与公共侧已发布价格行
+// 比对——producer 永不重新计价，合同 §1 受理校验链 5）。
+type MintLine struct {
+	Kind               string `json:"kind"`
+	PlanCode           string `json:"plan_code"`
+	PriceRef           string `json:"price_ref"`
+	PricingVersion     string `json:"pricing_version"`
+	AmountMinor        int64  `json:"amount_minor"`
+	Currency           string `json:"currency"`
+	ServiceDays        int    `json:"service_days"`
+	IncludedStoreCount int    `json:"included_store_count"`
+	AdditionalStores   int    `json:"additional_stores"`
 }
 
-// OriginalOrderCheckoutResult 是公共收银台的一次确定性结果。ResultKind
-// 五态互斥；Unknown/响应丢失绝不推进 Touch 订单状态（kept read-only）。
-type OriginalOrderCheckoutResult struct {
-	// created = 新签发支付引用；found = 同原单同 key 查回既有引用（响应
-	// 丢失恢复，不二次购买）；paid_already = 原单已付款（Touch 读权威回执
-	// 投影，不在本调用内推进状态）；expired/rejected = 引用失效或权威拒绝。
-	ResultKind string // created | found | paid_already | expired | rejected
-	// CheckoutRef 是可恢复支付引用（写入 billing_orders.checkout_ref；
-	// 合同需求 3）。Unknown/失败态必须为空。
-	CheckoutRef string
-	// 权威侧声明的引用有效期（合同需求 3 的到期语义）；零值=合同未声明。
-	ExpiresAt time.Time
-	// 受控返回上下文（合同需求 5）：权威签发的原任务返回绑定；Touch 原样
-	// 存 return_context 列，受控读面消费。
-	ReturnContext string
-	// 权威侧拒绝/失效的稳定原因码（rejected/expired 态必填；透传给确认面，
-	// 不在 Touch 侧二次解读）。
-	ReasonCode string
+// MintPayer 是付款主体快照（producer 只存不裁：授权裁定权在 Touch 的
+// originalOrderCheckout 实时复核链；producer 裁存在性）。
+type MintPayer struct {
+	PrincipalRef  string `json:"principal_ref"`
+	GrantRef      string `json:"grant_ref"`
+	GrantRevision int64  `json:"grant_revision"`
 }
 
-// CheckoutProducer 是公共收银台原单接续的出站合同面。nil 实现 = 未接线。
-// 实现必须：服务配置注入（不可由请求参数构造）；幂等（同请求重复调用产
-// 出同一支付意图）；对 Unknown/网络失败返回 error（调用方保持原单只读），
-// 绝不返回臆造结果。
+// MintRequest 是 mint 端点的请求形状（DisallowUnknownFields——字段集合
+// 逐字对齐合同 §1 表，多字段会被 producer 400 拒绝）。
+type MintRequest struct {
+	SourceApp      string    `json:"source_app"`       // 恒 "touch-engine"
+	SourceOrderRef string    `json:"source_order_ref"` // Touch 本地 ck_*（主路由键）
+	IntentKey      string    `json:"intent_key"`       // 原单幂等键快照（跨侧镜像）
+	TenantRef      string    `json:"tenant_ref"`       // tnt_* verbatim
+	Payer          MintPayer `json:"payer"`
+	Line           MintLine  `json:"line"`
+	Provider       string    `json:"provider"`      // wechat | alipay
+	ReturnTarget   string    `json:"return_target"` // 冻结值 ti-touch-engine-billing
+}
+
+// MintResult 是 mint/查回的响应投影（producer wire 超集字段按需消费；
+// status: pending|paid|mismatch|failed|cancelled）。
+type MintResult struct {
+	CheckoutRef     string `json:"checkout_ref"` // tco_*（远端值，映射存储）
+	OutTradeNo      string `json:"out_trade_no"`
+	SourceApp       string `json:"source_app"`
+	SourceOrderRef  string `json:"source_order_ref"` // ck_* 回声
+	Status          string `json:"status"`
+	CodeURL         string `json:"code_url,omitempty"`
+	Replayed        bool   `json:"replayed"`
+	ExpiresAt       string `json:"expires_at,omitempty"`
+	ReturnTarget    string `json:"return_target,omitempty"`
+	ReturnURL       string `json:"return_url,omitempty"`
+	PriceDigest     string `json:"price_digest,omitempty"`
+	ActivatedAtUnix int64  `json:"activated_at_unix,omitempty"`
+}
+
+// CheckoutProducer 是公共收银台的出站合同面（HTTP 客户端实现于
+// touch_checkout_client.go）。nil/Ready=false = 未接线，收银保持
+// checkout_unwired（fail-closed）。
 type CheckoutProducer interface {
 	Ready() bool
-	CreateOrResumeCheckout(ctx context.Context, in OriginalOrderCheckoutRequest) (OriginalOrderCheckoutResult, error)
+	// Mint 对应 POST /touch-orders/checkout：同键幂等（replayed=true 表示
+	// 响应丢失后查回同一支付意图，绝不二次调渠道）。
+	Mint(ctx context.Context, in MintRequest) (MintResult, error)
+	// Inspect 对应 GET 查单（只读回查；未知引用折 ErrCheckoutProducerRejected）。
+	Inspect(ctx context.Context, ckRef string) (MintResult, error)
+	// NotifyActivated 对应 POST activation-active 回发（§2b）：非阻塞语义，
+	// 失败返回 error 由调用方记日志——绝不因此失败已落地的结算或履约。
+	NotifyActivated(ctx context.Context, ckRef string, occurredAt time.Time, detail map[string]string) error
 }

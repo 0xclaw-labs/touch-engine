@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,32 +10,40 @@ import (
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
 )
 
-// HUI-4664 原单收银接续：合同面测试。producer 由测试注入 Server；
-// 生产默认 nil = checkout_unwired（fail-closed，走查已验）。
+// HUI-4664 原单收银接续（touch-order-checkout/v1.1）合同面测试。
+// producer 由测试注入 Server；生产默认 nil = checkout_unwired（fail-closed）。
 
-// scriptedCheckoutProducer 是合同面测试替身：按脚本回放五态之一。
+// scriptedCheckoutProducer 是合同面测试替身：按脚本回放 producer 状态之一。
 type scriptedCheckoutProducer struct {
 	ready  bool
-	result billing.OriginalOrderCheckoutResult
+	result billing.MintResult
 	err    error
 	calls  int
 }
 
 func (p *scriptedCheckoutProducer) Ready() bool { return p.ready }
 
-func (p *scriptedCheckoutProducer) CreateOrResumeCheckout(ctx context.Context, in billing.OriginalOrderCheckoutRequest) (billing.OriginalOrderCheckoutResult, error) {
+func (p *scriptedCheckoutProducer) Mint(ctx context.Context, in billing.MintRequest) (billing.MintResult, error) {
 	p.calls++
-	if in.TenantID == "" || in.OrderID == "" || in.IdempotencyKey == "" {
-		panic("producer 合同：服务端必须从原单装配完整身份，不得空转")
+	if in.SourceOrderRef == "" || in.SourceApp != "touch-engine" || in.TenantRef == "" {
+		panic("mint 合同：source_order_ref（本地 ck_*）必须为主路由键且完整装配")
 	}
 	return p.result, p.err
+}
+
+func (p *scriptedCheckoutProducer) Inspect(ctx context.Context, ckRef string) (billing.MintResult, error) {
+	return p.result, p.err
+}
+
+func (p *scriptedCheckoutProducer) NotifyActivated(ctx context.Context, ckRef string, occurredAt time.Time, detail map[string]string) error {
+	return nil
 }
 
 func checkoutOrderSeed(t *testing.T, f *fixture, key string) store.BillingOrderRow {
 	t.Helper()
 	order, replayed, err := f.s.St.CreateBillingOrder(store.NewBillingOrder{
 		TenantID: f.tenA, Kind: billing.KindSubscription, Action: "new",
-		PlanCode: "plan-basic", PriceRef: "price-2026", PriceSnapshot: `{"amount":100}`,
+		PlanCode: "plan-basic", PriceRef: "price-2026", PriceSnapshot: `{"amount_minor":100,"currency":"CNY","pricing_version":"pv1","service_days":30,"included_store_count":1}`,
 		AmountMinor: 100, Currency: "CNY", IdempotencyKey: key,
 		PayerPrincipal: f.ownA, ActorPrincipal: f.ownA, ActorRole: "org_owner",
 	}, time.Now().UTC().Format(time.RFC3339))
@@ -61,11 +70,12 @@ func TestOriginalOrderCheckoutUnwiredWithoutProducer(t *testing.T) {
 	}
 }
 
-func TestOriginalOrderCheckoutCreatedPersistsRef(t *testing.T) {
+func TestOriginalOrderCheckoutMintCastsLocalRefAndMapsRemote(t *testing.T) {
 	f := billingFixture(t, false)
-	producer := &scriptedCheckoutProducer{ready: true, result: billing.OriginalOrderCheckoutResult{
-		ResultKind: "created", CheckoutRef: "chk_pub_001",
-		ExpiresAt: time.Now().Add(time.Hour).UTC(), ReturnContext: `{"return_to":"/work/billing"}`,
+	producer := &scriptedCheckoutProducer{ready: true, result: billing.MintResult{
+		Status: "pending", CheckoutRef: "tco_pub_001",
+		ExpiresAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		CodeURL:   "https://pay.example/qr",
 	}}
 	f.s.CheckoutProducer = producer
 	order := checkoutOrderSeed(t, f, "idem-checkout-2")
@@ -74,67 +84,53 @@ func TestOriginalOrderCheckoutCreatedPersistsRef(t *testing.T) {
 		t.Fatalf("order view = %d %+v", status, out)
 	}
 	checkout, _ := out["checkout"].(map[string]any)
-	if checkout == nil || checkout["available"] != true || checkout["checkout_ref"] != "chk_pub_001" || checkout["resumed"] != false {
-		t.Fatalf("created 态应 available+引用: %+v", checkout)
+	ck, _ := checkout["checkout_ref"].(string)
+	if checkout == nil || checkout["available"] != true || !strings.HasPrefix(ck, "ck_") {
+		t.Fatalf("受理应 available+本地 ck_* 主路由键: %+v", checkout)
 	}
+	// billing_orders.checkout_ref 存本地 ck_*；映射表存远端 tco_*。
 	row, err := f.s.St.GetBillingOrder(f.tenA, order.ID)
-	if err != nil || row.CheckoutRef != "chk_pub_001" || row.ReturnContext != `{"return_to":"/work/billing"}` || row.CheckoutRequestedBy != f.ownA {
-		t.Fatalf("引用未落库: err=%v row=%+v", err, row)
+	if err != nil || row.CheckoutRef != ck {
+		t.Fatalf("ck 未落列: err=%v ref=%q", err, row.CheckoutRef)
+	}
+	refRow, err := f.s.St.GetBillingCheckoutRef(f.tenA, order.ID)
+	if err != nil || refRow.CheckoutRef != ck || refRow.RemoteCheckoutRef != "tco_pub_001" || refRow.Status != "pending" {
+		t.Fatalf("映射行缺失/字段错: err=%v row=%+v", err, refRow)
+	}
+	if producer.calls != 1 {
+		t.Fatalf("mint 调用次数: %d", producer.calls)
 	}
 }
 
-func TestOriginalOrderCheckoutResumesLiveRefWithoutSecondIntent(t *testing.T) {
+func TestOriginalOrderCheckoutResumesLiveRefWithoutSecondMint(t *testing.T) {
 	f := billingFixture(t, false)
-	producer := &scriptedCheckoutProducer{ready: true, result: billing.OriginalOrderCheckoutResult{
-		ResultKind: "created", CheckoutRef: "chk_pub_002",
+	producer := &scriptedCheckoutProducer{ready: true, result: billing.MintResult{
+		Status: "pending", CheckoutRef: "tco_pub_002",
 	}}
 	f.s.CheckoutProducer = producer
 	order := checkoutOrderSeed(t, f, "idem-checkout-3")
 	if status, out := f.do2(t, "GET", "/api/v1/billing/orders/"+order.ID, "sess-owner-a", f.tenA, ``); status != 200 {
-		t.Fatalf("首次签发 = %d %+v", status, out)
+		t.Fatalf("首次 = %d %+v", status, out)
 	}
 	producer.calls = 0
-	producer.result = billing.OriginalOrderCheckoutResult{ResultKind: "created", CheckoutRef: "chk_SHOULD_NOT"}
+	producer.result = billing.MintResult{Status: "pending", CheckoutRef: "tco_SHOULD_NOT"}
 	status, out := f.do2(t, "GET", "/api/v1/billing/orders/"+order.ID, "sess-owner-a", f.tenA, ``)
 	if status != 200 {
 		t.Fatalf("查回 = %d %+v", status, out)
 	}
 	if producer.calls != 0 {
-		t.Fatalf("活引用查回不得再调 producer（同 key 单意图）: calls=%d", producer.calls)
+		t.Fatalf("活引用查回不得再 mint（同 key 单意图）: calls=%d", producer.calls)
 	}
 	checkout, _ := out["checkout"].(map[string]any)
-	if checkout == nil || checkout["resumed"] != true || checkout["checkout_ref"] != "chk_pub_002" {
-		t.Fatalf("查回态 resumed+原引用: %+v", checkout)
-	}
-}
-
-func TestOriginalOrderCheckoutPaidAlreadyNeverAdvances(t *testing.T) {
-	f := billingFixture(t, false)
-	f.s.CheckoutProducer = &scriptedCheckoutProducer{ready: true, result: billing.OriginalOrderCheckoutResult{
-		ResultKind: "paid_already",
-	}}
-	order := checkoutOrderSeed(t, f, "idem-checkout-4")
-	status, out := f.do2(t, "GET", "/api/v1/billing/orders/"+order.ID, "sess-owner-a", f.tenA, ``)
-	if status != 200 {
-		t.Fatalf("view = %d %+v", status, out)
-	}
-	checkout, _ := out["checkout"].(map[string]any)
-	if checkout == nil || checkout["available"] != false || checkout["reason"] != "already_paid" {
-		t.Fatalf("paid_already 诚实不可用+指引: %+v", checkout)
-	}
-	row, _ := f.s.St.GetBillingOrder(f.tenA, order.ID)
-	if row.Status != billing.OrderProcessing {
-		t.Fatalf("本调用绝不推进订单状态: %s", row.Status)
-	}
-	if row.CheckoutRef != "" {
-		t.Fatalf("paid_already 不写引用: %q", row.CheckoutRef)
+	if checkout == nil || checkout["resumed"] != true {
+		t.Fatalf("查回态 resumed: %+v", checkout)
 	}
 }
 
 func TestOriginalOrderCheckoutProducerErrorStaysUnavailable(t *testing.T) {
 	f := billingFixture(t, false)
 	f.s.CheckoutProducer = &scriptedCheckoutProducer{ready: true, err: context.DeadlineExceeded}
-	order := checkoutOrderSeed(t, f, "idem-checkout-5")
+	order := checkoutOrderSeed(t, f, "idem-checkout-4")
 	status, out := f.do2(t, "GET", "/api/v1/billing/orders/"+order.ID, "sess-owner-a", f.tenA, ``)
 	if status != 200 {
 		t.Fatalf("view = %d %+v", status, out)
@@ -143,44 +139,34 @@ func TestOriginalOrderCheckoutProducerErrorStaysUnavailable(t *testing.T) {
 	if checkout == nil || checkout["reason"] != "checkout_unavailable" {
 		t.Fatalf("Unknown/失败诚实不可用: %+v", checkout)
 	}
-	row, _ := f.s.St.GetBillingOrder(f.tenA, order.ID)
-	if row.CheckoutRef != "" {
-		t.Fatalf("失败不得写引用: %q", row.CheckoutRef)
+	refRow, _ := f.s.St.GetBillingCheckoutRef(f.tenA, order.ID)
+	if refRow.RemoteCheckoutRef != "" {
+		t.Fatalf("失败不得写远端引用: %q", refRow.RemoteCheckoutRef)
 	}
 }
 
-func TestSetBillingOrderCheckoutRefConflict(t *testing.T) {
+func TestBillingCheckoutRefRefConstantAndPaidGate(t *testing.T) {
 	f := billingFixture(t, false)
-	order := checkoutOrderSeed(t, f, "idem-checkout-6")
-	if err := f.s.St.SetBillingOrderCheckout(f.tenA, order.ID, store.BillingOrderRow{
-		CheckoutRef: "chk_shared", CheckoutStatus: "created",
-	}, time.Now().UTC().Format(time.RFC3339)); err != nil {
-		t.Fatalf("首次绑定: %v", err)
-	}
-	other := checkoutOrderSeed(t, f, "idem-checkout-7")
-	err := f.s.St.SetBillingOrderCheckout(f.tenA, other.ID, store.BillingOrderRow{
-		CheckoutRef: "chk_shared",
+	order := checkoutOrderSeed(t, f, "idem-checkout-5")
+	seeded, err := f.s.St.UpsertBillingCheckoutRef(store.BillingCheckoutRefRow{
+		TenantID: f.tenA, OrderID: order.ID, CheckoutRef: "ck_const",
+		Status: "pending", AmountMinor: 100, Currency: "CNY",
 	}, time.Now().UTC().Format(time.RFC3339))
-	if err != store.ErrCheckoutRefConflict {
-		t.Fatalf("一引用一单，抢注必须冲突: %v", err)
+	if err != nil || seeded.CheckoutRef != "ck_const" {
+		t.Fatalf("首次绑定: %+v err=%v", seeded, err)
 	}
-}
-
-func TestBillingOrderCheckoutLive(t *testing.T) {
-	now := time.Now()
-	if store.BillingOrderCheckoutLive(store.BillingOrderRow{}, now) {
-		t.Fatal("空引用=未签发")
+	// 同单换键 = 拒绝（ref 恒定合同）。
+	_, err = f.s.St.UpsertBillingCheckoutRef(store.BillingCheckoutRefRow{
+		TenantID: f.tenA, OrderID: order.ID, CheckoutRef: "ck_other",
+	}, time.Now().UTC().Format(time.RFC3339))
+	if err != store.ErrCheckoutRefMapState {
+		t.Fatalf("换键必须拒绝: err=%v", err)
 	}
-	live := store.BillingOrderRow{CheckoutRef: "chk_x", CheckoutExpiresAt: now.Add(time.Hour).UTC().Format(time.RFC3339)}
-	if !store.BillingOrderCheckoutLive(live, now) {
-		t.Fatal("未到期引用=活")
+	// paid gating：裁决通过推进；重复推进拒绝。
+	if err = f.s.St.AdvanceBillingCheckoutRefPaid(f.tenA, order.ID, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("paid 推进: %v", err)
 	}
-	expired := store.BillingOrderRow{CheckoutRef: "chk_x", CheckoutExpiresAt: now.Add(-time.Minute).UTC().Format(time.RFC3339)}
-	if store.BillingOrderCheckoutLive(expired, now) {
-		t.Fatal("已到期=不活")
-	}
-	noExpiry := store.BillingOrderRow{CheckoutRef: "chk_x"}
-	if !store.BillingOrderCheckoutLive(noExpiry, now) {
-		t.Fatal("合同未声明期限=按活处理，真到期由权威查单裁决")
+	if err = f.s.St.AdvanceBillingCheckoutRefPaid(f.tenA, order.ID, time.Now().UTC().Format(time.RFC3339)); err == nil {
+		t.Fatal("重复 paid 推进必须拒绝")
 	}
 }

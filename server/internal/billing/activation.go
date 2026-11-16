@@ -73,6 +73,13 @@ type OrderState struct {
 type EventPayload struct {
 	OrderRef              string `json:"order_ref"`
 	PaymentRef            string `json:"payment_ref"`
+	// touch-order-checkout/v1.1（§0/§2）：checkout_ref=Touch 本地续付引用
+	// ck_*（双向事件主路由键）；amount_minor/currency=冻结承认值——
+	// payment_paid 消费侧按映射行裁决（AdjudicatePaymentFact），不符即
+	// 大声失败（资金异常绝不冒充干净重放）。
+	CheckoutRef           string `json:"checkout_ref,omitempty"`
+	AmountMinor           int64  `json:"amount_minor,omitempty"`
+	Currency              string `json:"currency,omitempty"`
 	SubscriptionRef       string `json:"subscription_ref"`
 	PlanCode              string `json:"plan_code"`
 	PricingVersion        string `json:"pricing_version"`

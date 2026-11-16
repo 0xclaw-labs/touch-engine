@@ -139,7 +139,12 @@ type Config struct {
 	// service-producer auth path is unavailable (fail-closed, old session
 	// path unchanged). Never reuse TOUCH_INTERNAL_TOKEN here and never log
 	// these values.
-	ServiceTokens map[string]string
+	// TouchCashierProvider/TouchCashierTargetID（HUI-4664 touch-order-checkout
+	// v1.1）：mint 请求的收款渠道（wechat|alipay，缺省 wechat）与冻结 return
+	// target（ti-touch-engine-billing，须在公共 manifest 登记）。
+	TouchCashierProvider string
+	TouchCashierTargetID string
+	ServiceTokens        map[string]string
 	// ServiceRoles optionally narrows a registered service's producer role:
 	// TOUCH_SERVICE_ROLES="service-id:queue_producer;...". A registered
 	// service without an entry defaults to queue_producer.
@@ -293,6 +298,8 @@ func Load(get func(string) string) Config {
 	serviceTokens, serviceRoles, serviceProblems := parseServiceRegistry(
 		get("TOUCH_SERVICE_TOKENS"), get("TOUCH_SERVICE_ROLES"))
 	return Config{
+		TouchCashierProvider:           strings.TrimSpace(get("TOUCH_CASHIER_PROVIDER")),
+		TouchCashierTargetID:           strings.TrimSpace(get("TOUCH_CASHIER_TARGET_ID")),
 		ServiceTokens:                  serviceTokens,
 		ServiceRoles:                   serviceRoles,
 		ServiceRegistryErrors:          serviceProblems,

@@ -133,13 +133,16 @@ func (s *Server) handleBillingAuthorityCatalog(w http.ResponseWriter, r *http.Re
 // ---- POST /api/v1/billing/authority/events -----------------------------------------
 
 type authorityEventBody struct {
-	TenantID   string               `json:"tenant_id"`
-	OrderID    string               `json:"order_id"`
-	Source     string               `json:"source"`
-	EventID    string               `json:"event_id"`
-	Type       string               `json:"type"`
-	OccurredAt string               `json:"occurred_at"`
-	Payload    billing.EventPayload `json:"payload"`
+	TenantID string `json:"tenant_id"`
+	OrderID  string `json:"order_id"`
+	// CheckoutRef（touch-order-checkout/v1.1 §0/§2）：producer 外发事实的
+	// 顶层主路由键（Touch 本地 ck_* 回声）——payment_paid 按它路由映射行。
+	CheckoutRef string               `json:"checkout_ref"`
+	Source      string               `json:"source"`
+	EventID     string               `json:"event_id"`
+	Type        string               `json:"type"`
+	OccurredAt  string               `json:"occurred_at"`
+	Payload     billing.EventPayload `json:"payload"`
 	// refund_registered 专用字段(F19:原订单=order_id;金额/原因/开票主体/审核人)。
 	RefundRef     string `json:"refund_ref"`
 	AmountMinor   int64  `json:"amount_minor"`
@@ -195,8 +198,55 @@ func (s *Server) handleBillingAuthorityEvent(w http.ResponseWriter, r *http.Requ
 	case billing.EventOrderRegistered, billing.EventPaymentPaid, billing.EventActivationOpening,
 		billing.EventActivationActive, billing.EventActivationFailed, billing.EventOrderCancelled:
 		orderID := strings.TrimSpace(body.OrderID)
+		// touch-order-checkout/v1.1：路由优先 checkout_ref（映射行）。
+		if orderID == "" {
+			orderID = strings.TrimSpace(body.CheckoutRef)
+		}
 		if orderID == "" {
 			fail(w, http.StatusBadRequest, "order_required", "order_id is required for order events")
+			return
+		}
+		// v1.1 alphabet 裁定：order_registered 停发（mint 零事实外发）。
+		// 到达即异常——老 producer 误发/伪造，大声失败不静默吞。
+		if body.Type == billing.EventOrderRegistered {
+			fail(w, http.StatusConflict, "event_type_retired",
+				"order_registered 已从 v1.1 事件表停发（mint 零事实外发）：Touch 续付端点自持 pending 行，该事件无消费者")
+			return
+		}
+		// payment_paid 的 checkout_ref 路由：映射行存在 → 金额裁决（gating）
+		// → 映射推进 paid → orderID 纠正为原单 id；映射行不存在 → 向后兼容
+		// 既有无收银单路径（order_id 直查）。
+		if body.Type == billing.EventPaymentPaid {
+			routeRef := strings.TrimSpace(body.CheckoutRef)
+			if routeRef == "" {
+				routeRef = orderID
+			}
+			if refRow, err := s.St.GetBillingCheckoutRefByRef(tenantID, routeRef); err == nil && refRow.OrderID != "" {
+				// AdjudicatePaymentFact（v1.1 §2 消费动作）：producer 承诺
+				// 金额/币种=冻结承认值；不符即资金异常大声失败（409），
+				// 绝不冒充干净重放 ack 掩埋。
+				if body.Payload.AmountMinor != 0 && body.Payload.AmountMinor != refRow.AmountMinor ||
+					body.Payload.Currency != "" && body.Payload.Currency != refRow.Currency {
+					fail(w, http.StatusConflict, "event_mismatch",
+						"payment_paid 金额/币种与原单冻结承认值不符（资金异常，需人工对账）")
+					return
+				}
+				if perr := s.St.AdvanceBillingCheckoutRefPaid(tenantID, refRow.OrderID, nowRFC3339()); perr != nil &&
+					perr != store.ErrCheckoutRefMapState {
+					writeAuthorityError(w, perr)
+					return
+				}
+				// orderID 纠正为映射的原单 id（producer 外发的 order_id 是
+				// ck_* 回声，原单状态机按真实 bo_* id 推进）。
+				orderID = refRow.OrderID
+			}
+		}
+		// activation_opening（v1.1 FYI 语义）：producer 侧降级为不 gate 信号
+		//（Touch 履约自主）。带 checkout_ref 的 opening 不推进原单状态机
+		//（状态推进已由 payment_paid 完成），记审计后如实 200。
+		if body.Type == billing.EventActivationOpening && strings.TrimSpace(body.CheckoutRef) != "" {
+			writeJSON(w, http.StatusOK, map[string]any{"replayed": false, "fyi": true,
+				"note": "activation_opening 是 FYI 信号（v1.1）：状态推进已由 payment_paid 完成"})
 			return
 		}
 		row, replayed, err := s.St.ApplyBillingOrderEvent(tenantID, orderID, billing.AuthorityEventInput{

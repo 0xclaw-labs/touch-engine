@@ -107,11 +107,15 @@ func (s *Server) cashierCheckout() map[string]any {
 // Continuing an unpaid order is a read, not another purchase. Recheck the live
 // payer against the original immutable payer; never transfer or reprice it.
 //
-// HUI-4664 原单接续接线：实时付款人复核通过后，
-//   - 同原单已有活引用 → 直接查回（响应丢失恢复，不二次购买）；
-//   - CheckoutProducer 未配置 → 保持 checkout_unwired（fail-closed 原样）；
-//   - producer 签发/查回结果按五态分型，Unknown/失败绝不推进订单状态、
-//     绝不写 checkout 列——支付引用只来自权威，浏览器返回只读。
+// HUI-4664 原单接续接线（touch-order-checkout/v1.1）：
+//   - 实时付款人复核（原样保留：授权裁定权在 Touch）；
+//   - 本地铸续付引用 ck_*（主路由键，合同 §0）→ billing_orders.checkout_ref
+//     落列 + billing_checkout_refs 映射行（一单一行 ref 恒定）；
+//   - producer.Mint(source_order_ref=ck_*) 签发支付意图（同键幂等，replayed
+//     即响应丢失查回）；tco_* 只进映射，绝不作为 Touch 路由键；
+//   - producer 不可达/未装配 → 保持 checkout_unwired（fail-closed 原样）；
+//     未知/失败绝不推进订单状态、绝不臆造引用——结算由 producer 的
+//     payment_paid gating 事件（authority events 面）异步驱动。
 func (s *Server) originalOrderCheckout(ctx context.Context, c *caller, order store.BillingOrderRow) map[string]any {
 	denied := map[string]any{"available": false, "app_id": "", "launch_target_id": ""}
 	if order.Status != billing.OrderProcessing || order.PaymentRef != "" {
@@ -124,61 +128,106 @@ func (s *Server) originalOrderCheckout(ctx context.Context, c *caller, order sto
 		denied["reason"] = "original_payer_required"
 		return denied
 	}
-	// 合同未落地（producer 未注入）：诚实保持不可用——报价与订单回查不受影响。
+	// 合同端点未接线（producer 未注入/未配置）：诚实保持不可用——报价与
+	// 订单回查不受影响。
 	if s.CheckoutProducer == nil || !s.CheckoutProducer.Ready() {
 		return s.cashierCheckout()
 	}
-	// 同原单活引用查回：网络失败/响应丢失后的重试路径，不产生第二个支付意图。
+	// 同原单活引用查回：网络失败/响应丢失后的重试路径，不产生第二个意图。
 	if store.BillingOrderCheckoutLive(order, time.Now()) {
 		return map[string]any{"available": true, "checkout_ref": order.CheckoutRef,
 			"expires_at": order.CheckoutExpiresAt, "resumed": true,
 			"return_context": order.ReturnContext}
 	}
-	result, err := s.CheckoutProducer.CreateOrResumeCheckout(ctx, billing.OriginalOrderCheckoutRequest{
-		TenantID: order.TenantID, OrderID: order.ID, IdempotencyKey: order.IdempotencyKey,
-		PlanCode: order.PlanCode, PriceRef: order.PriceRef, PriceSnapshot: order.PriceSnapshot,
-		AmountMinor: order.AmountMinor, Currency: order.Currency,
-		PayerPrincipal: order.PayerPrincipal, PayerGrantRef: order.PayerGrantRef,
-		AgencyRelationRef: order.AgencyRelationRef, RequestedBy: c.Principal.ID,
-		Now: time.Now(),
-	})
-	if err != nil || result.CheckoutRef == "" && (result.ResultKind == "created" || result.ResultKind == "found") {
-		// Unknown/响应丢失/违约结果：诚实不可用，绝不本地推算或写引用。
+	// 本地铸 ck_*（主路由键）并落列——先自持 pending 事实再外发（合同 §1-8
+	// mint 零事实外发对偶：Touch 侧引用即事实）。
+	ckRef := store.NewTouchCheckoutRef()
+	updated := order
+	updated.CheckoutRef = ckRef
+	updated.CheckoutStatus = "pending"
+	updated.CheckoutRequestedBy = c.Principal.ID
+	if serr := s.St.SetBillingOrderCheckout(order.TenantID, order.ID, updated, time.Now().UTC().Format(time.RFC3339)); serr != nil {
 		denied["reason"] = "checkout_unavailable"
 		return denied
 	}
-	switch result.ResultKind {
-	case "created", "found":
-		updated := order
-		updated.CheckoutRef = result.CheckoutRef
-		updated.CheckoutStatus = result.ResultKind
-		if !result.ExpiresAt.IsZero() {
-			updated.CheckoutExpiresAt = result.ExpiresAt.UTC().Format(time.RFC3339)
+	mapRow := store.BillingCheckoutRefRow{
+		TenantID: order.TenantID, OrderID: order.ID, CheckoutRef: ckRef,
+		Status: "pending", AmountMinor: order.AmountMinor, Currency: order.Currency,
+		ReturnContext: order.ReturnContext,
+		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+	}
+	if _, merr := s.St.UpsertBillingCheckoutRef(mapRow, mapRow.CreatedAt); merr != nil {
+		denied["reason"] = "checkout_unavailable"
+		return denied
+	}
+	// mint 外发：line 从建单价格快照解冻（producer 承认原价，合同 §1-5）。
+	line := mintLineFromSnapshot(order)
+	payerDecision := billing.MintPayer{
+		PrincipalRef: order.PayerPrincipal, GrantRef: order.PayerGrantRef,
+		GrantRevision: payer.GrantRevision,
+	}
+	result, err := s.CheckoutProducer.Mint(ctx, billing.MintRequest{
+		SourceApp: s.Cfg.AppID, SourceOrderRef: ckRef, IntentKey: order.IdempotencyKey,
+		TenantRef: order.TenantID, Payer: payerDecision, Line: line,
+		Provider:     defaultStr(s.Cfg.TouchCashierProvider, "wechat"),
+		ReturnTarget: defaultStr(s.Cfg.TouchCashierTargetID, "ti-touch-engine-billing"),
+	})
+	if err != nil {
+		denied["reason"] = "checkout_unavailable"
+		if errors.Is(err, billing.ErrCheckoutProducerRejected) {
+			denied["reason"] = "checkout_rejected"
+			denied["detail"] = err.Error()
 		}
-		updated.CheckoutRequestedBy = c.Principal.ID
-		updated.ReturnContext = result.ReturnContext
-		if serr := s.St.SetBillingOrderCheckout(order.TenantID, order.ID, updated, time.Now().UTC().Format(time.RFC3339)); serr != nil {
+		return denied
+	}
+	if result.CheckoutRef != "" {
+		mapRow.RemoteCheckoutRef = result.CheckoutRef
+		if _, merr := s.St.UpsertBillingCheckoutRef(mapRow, time.Now().UTC().Format(time.RFC3339)); merr != nil {
 			denied["reason"] = "checkout_unavailable"
 			return denied
 		}
-		return map[string]any{"available": true, "checkout_ref": result.CheckoutRef,
-			"expires_at": updated.CheckoutExpiresAt, "resumed": result.ResultKind == "found",
-			"return_context": result.ReturnContext}
-	case "paid_already":
-		// 已付款事实只由权威回执投影推进（billing_order_events）；本调用只读指引。
-		denied["reason"] = "already_paid"
-		denied["detail"] = "该订单已有付款事实投影，请回查订单与订阅状态，无需再次支付。"
-		return denied
-	case "expired", "rejected":
-		denied["reason"] = "checkout_" + result.ResultKind
-		if result.ReasonCode != "" {
-			denied["detail"] = result.ReasonCode
-		}
+	}
+	switch result.Status {
+	case "pending":
+		return map[string]any{"available": true, "checkout_ref": ckRef,
+			"code_url": result.CodeURL, "expires_at": result.ExpiresAt,
+			"resumed": result.Replayed, "return_url": result.ReturnURL}
+	case "paid", "mismatch", "failed", "cancelled":
+		// 已付/异常终态：只读指引（结算投影由 payment_paid gating 事件推进）。
+		denied["reason"] = "already_settled"
+		denied["detail"] = "该订单在收银台已有终态（" + result.Status + "），请回查订单与订阅状态。"
 		return denied
 	default:
 		denied["reason"] = "checkout_unavailable"
 		return denied
 	}
+}
+
+// mintLineFromSnapshot 从建单价格快照解冻 v1.1 line 字段。快照缺声明字段
+// 安全零值（producer 按已发布价格行裁决，缺行 409 price_not_registered）。
+func mintLineFromSnapshot(order store.BillingOrderRow) billing.MintLine {
+	line := billing.MintLine{Kind: "subscription.workspace", PlanCode: order.PlanCode,
+		PriceRef: order.PriceRef, AmountMinor: order.AmountMinor, Currency: order.Currency}
+	var snap struct {
+		PricingVersion     string `json:"pricing_version"`
+		ServiceDays        int    `json:"service_days"`
+		IncludedStoreCount int    `json:"included_store_count"`
+		AdditionalStores   int    `json:"additional_stores"`
+	}
+	if json.Unmarshal([]byte(order.PriceSnapshot), &snap) == nil {
+		line.PricingVersion = snap.PricingVersion
+		line.ServiceDays = snap.ServiceDays
+		line.IncludedStoreCount = snap.IncludedStoreCount
+		line.AdditionalStores = snap.AdditionalStores
+	}
+	return line
+}
+
+func defaultStr(v, fallback string) string {
+	if strings.TrimSpace(v) != "" {
+		return v
+	}
+	return fallback
 }
 
 // subscriptionView is the GET /billing/subscription payload.
