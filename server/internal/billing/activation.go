@@ -91,6 +91,11 @@ type AuthorityEventInput struct {
 	Type       string
 	OccurredAt string
 	Payload    EventPayload
+	// Checkout-ref fact fields (HUI-4664;payment_paid 金额/币种与原单快照
+	// 逐字节比对)。订单事件路径不设这些字段(零值无害;不入 payload 去重
+	// 摘要,既有事件幂等语义字节不变)。
+	AmountMinor int64
+	Currency    string
 }
 
 // SubscriptionProjectionUpdate rides an activation_active event: the upsert

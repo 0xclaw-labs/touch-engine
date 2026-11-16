@@ -115,6 +115,13 @@ const (
 	EnvWecomCallbackToken  = "TOUCH_WECOM_CALLBACK_TOKEN"
 	EnvWecomCallbackAESKey = "TOUCH_WECOM_CALLBACK_AES_KEY"
 	EnvWecomCallbackCorpID = "TOUCH_WECOM_CALLBACK_CORP_ID"
+	// EnvFeatureBillingCheckout (HUI-4664 / ADV-9 PR12): 原单收银接续出站能力
+	// 开关,默认 off。off = 续付端点诚实 503 checkout_unavailable(报价与原单
+	// 保留,回查不受影响),收银门保持 checkout_unwired 现状。on = 续付登记面
+	// 可用;Gate 成对校验(PLATFORM_BILLING_BASE_URL + billing_authority 事件
+	// 生产者必须同时在场——防 GoBoost UNIFIED_BRIDGE 半环教训:只通 checkout
+	// 通道不登记事件生产者=付款成功但永不开通)。
+	EnvFeatureBillingCheckout = "FEATURE_BILLING_CHECKOUT"
 )
 
 // Config is the resolved server configuration.
@@ -259,6 +266,9 @@ type Config struct {
 	FeatureAuthz            bool
 	// FeatureWecomCallback (HUI-4589 B07): 企微客户事件回调端点开关,默认 off。
 	FeatureWecomCallback bool
+	// FeatureBillingCheckout (HUI-4664 / ADV-9 PR12): 原单收银接续出站能力
+	// 开关,默认 off。Gate 成对校验见 EnvFeatureBillingCheckout 注释。
+	FeatureBillingCheckout bool
 	// WecomCallbackToken/AESKey/CorpID (HUI-4589): 验签凭据;缺失=待资质诚实态。
 	WecomCallbackToken  string
 	WecomCallbackAESKey string
@@ -363,6 +373,7 @@ func Load(get func(string) string) Config {
 		FeatureStorefront:              isTruthy(get(EnvFeatureStorefront)),
 		FeatureAuthz:                   isTruthy(get(EnvFeatureAuthz)),
 		FeatureWecomCallback:           isTruthy(get(EnvFeatureWecomCallback)),
+		FeatureBillingCheckout:         isTruthy(get(EnvFeatureBillingCheckout)),
 		WecomCallbackToken:             strings.TrimSpace(get(EnvWecomCallbackToken)),
 		WecomCallbackAESKey:            strings.TrimSpace(get(EnvWecomCallbackAESKey)),
 		WecomCallbackCorpID:            strings.TrimSpace(get(EnvWecomCallbackCorpID)),
@@ -441,7 +452,29 @@ func (c Config) Gate() []string {
 			problems = append(problems, "FEATURE_LEADS_CAPTURE=on requires LEADS_PHONE_PEPPER (server-side phone-fingerprint pepper; never commit a real value)")
 		}
 	}
+	if c.FeatureBillingCheckout {
+		if strings.TrimSpace(c.BillingBaseURL) == "" {
+			problems = append(problems, "FEATURE_BILLING_CHECKOUT=on requires PLATFORM_BILLING_BASE_URL (公共结算侧 checkout seam)")
+		}
+		// GoBoost UNIFIED_BRIDGE 半环教训(HUI-4664 R3 §3):只通 checkout 通道
+		// 而不登记 billing_authority 事件生产者 = 付款成功但 Touch 永不开通。
+		if !c.hasBillingAuthorityProducer() {
+			problems = append(problems, "FEATURE_BILLING_CHECKOUT=on requires a billing_authority service in TOUCH_SERVICE_TOKENS/TOUCH_SERVICE_ROLES (payment facts would never arrive; payments would never activate)")
+		}
+	}
 	return problems
+}
+
+// hasBillingAuthorityProducer answers honestly whether any registered trusted
+// service carries the billing_authority role — the seam the checkout-ref
+// projection depends on for paid/activated facts.
+func (c Config) hasBillingAuthorityProducer() bool {
+	for id := range c.ServiceTokens {
+		if c.ServiceProducerRole(id) == "billing_authority" {
+			return true
+		}
+	}
+	return false
 }
 
 // Production reports whether the process runs with production discipline.

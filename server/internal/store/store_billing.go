@@ -76,6 +76,12 @@ func scanBillingOrder(row interface{ Scan(...any) error }) (BillingOrderRow, err
 		&r.PriceSnapshot, &r.AmountMinor, &r.Currency, &r.Status, &r.OrderRef, &r.PaymentRef,
 		&r.IdempotencyKey, &r.PayerGrantRef, &r.AgencyRelationRef, &r.PayerPrincipal,
 		&r.ActorPrincipal, &r.ActorRole, &r.FailReason, &r.CreatedAt, &r.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		// 统一契约 v1.1 D4(ADV-9 INT4):未知订单一律 ErrNotFound(同形掩蔽)
+		// ——受信权威缝经 writeAuthorityError 答 404,不再透传 sql.ErrNoRows
+		// 落 default 500;消费方一律 errors.Is(err, ErrNotFound) 分诊。
+		return BillingOrderRow{}, ErrNotFound
+	}
 	return r, err
 }
 

@@ -28,6 +28,8 @@ func TestOpenCreatesSchema(t *testing.T) {
 		"authz_audit_log",
 		// HUI-4591 (0108-0112) 订购收费账单:价格目录/订阅投影/订单/AI 用量/硬件/退款
 		"billing_ai_usage",
+		// HUI-4664 (0139) 原单 checkout 接续引用映射(可重建投影)
+		"billing_checkout_refs",
 		"billing_hardware_fulfillment",
 		"billing_hardware_items",
 		"billing_order_events",

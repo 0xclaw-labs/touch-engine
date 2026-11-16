@@ -37,6 +37,7 @@ import {
 } from "@/lib/billing";
 
 import { deliveryStatusFace, deliveryEventFace, readbackFace } from "@/lib/touchpoint-deliveries";
+import { CheckoutContinuationBlock, type CheckoutContinuationEntry } from "@/components/work/billing/checkout-continuation";
 
 interface PhysicalDelivery { id: string; hardware_order_id: string; status: string; binding_stale: boolean; last_readback_matches: boolean; last_readback_reason: string; replacement_of?: string; steps: Record<string, { occurred_at: string }> }
 
@@ -99,6 +100,9 @@ export function BillingDesk() {
   const [quoteBusy,setQuoteBusy] = useState(false);
   const quoteVersion = useRef(0);
   const [purchase, setPurchase] = useState<{ action: "new" | "renew" | "expand"; plan: string; count?: number } | null>(null);
+  // HUI-4664 G1 正显示面:制作接续(可续付)真值,来自 handoff checkout 投影
+  // 的只读发现(stores → handoffs → checkout GET);失败/无引用=不出块。
+  const [continuations, setContinuations] = useState<CheckoutContinuationEntry[]>([]);
   const generation = useRef(0);
   useEffect(() => () => { ++generation.current; }, [session.tenantId]);
 
@@ -107,6 +111,7 @@ export function BillingDesk() {
     setError("");
     const seq = ++generation.current;
     setSub(null); setOrders([]); setDetail(null); setEffective({}); setPermissions([]); setAiUsage([]); setRefunds([]); setOrdersReady(false); setPurchase(null); setQuote(null);
+    setContinuations([]);
     const [subRes, catRes, ordRes, aiRes, refRes, accRes, deliveryRes] = await Promise.all([
       session.api("GET", "billing/subscription"),
       session.api("GET", "billing/price-catalog"),
@@ -149,6 +154,39 @@ export function BillingDesk() {
       setPermissions(accRes.status === 404 ? null : []);
     }
     setPhase(subRes.ok ? "ready" : "error");
+    // G1 正显示面发现链(非阻塞,页面先就绪):stores → 每店 handoffs 列表 →
+    // 每 handoff checkout 只读投影;canContinueCheckout 真值门在展示组件内
+    // 统一裁决。任一环失败 = 诚实不出块(不虚假承诺,既有未接通文案保持)。
+    void (async () => {
+      try {
+        const storesRes = await session.api("GET", "stores");
+        if (seq !== generation.current) return;
+        const stores = storesRes.ok && Array.isArray(storesRes.data.items)
+          ? storesRes.data.items as Array<{ id: string }>
+          : [];
+        const lists = await Promise.all(stores.map((store) =>
+          session.api("GET", `stores/${store.id}/content-production-handoffs`)));
+        if (seq !== generation.current) return;
+        const pairs: Array<{ storeId: string; handoffId: string }> = [];
+        stores.forEach((store, index) => {
+          const res = lists[index];
+          const rows = res.ok && Array.isArray(res.data.handoffs) ? res.data.handoffs as Array<{ id: string }> : [];
+          for (const h of rows) pairs.push({ storeId: store.id, handoffId: h.id });
+        });
+        const projections = await Promise.all(pairs.map((pair) =>
+          session.api("GET", `stores/${pair.storeId}/content-production-handoffs/${pair.handoffId}/checkout`)));
+        if (seq !== generation.current) return;
+        const found: CheckoutContinuationEntry[] = [];
+        projections.forEach((res, index) => {
+          if (!res.ok) return;
+          const checkout = res.data.checkout as CheckoutRef | undefined;
+          if (checkout) found.push({ storeId: pairs[index].storeId, handoffId: pairs[index].handoffId, checkout });
+        });
+        setContinuations(found);
+      } catch {
+        if (seq === generation.current) setContinuations([]); // 读不到=不出块(诚实)
+      }
+    })();
   }, [session]);
 
   useEffect(() => {
@@ -305,6 +343,7 @@ export function BillingDesk() {
         <p>服务期至：{subPane?.paid_until || "尚无生效期限"}。付款主体：{session.role === "agent" ? "仅按商家已有的独立付款授权办理" : "当前组织，由有付款权限的人确认办理"}。</p>
         {!ordersReady ? <p role="alert">订单暂时读不到，请刷新重试，确认已有订单后再购买。</p> : null}
         {orders.filter((o) => blocksNewSubscription(o) || (o.kind === "hardware" && o.status !== "cancelled")).map((o) => <p key={o.id}>{planCodeText(o.plan_code)} · {formatAmount(o.amount_minor,o.currency)} · {nextOrderStep(o)} <button type="button" className="tk-quiet" onClick={() => { setTab("orders"); void lookupOrder(o.id); }}>回查原订单</button></p>)}
+        <CheckoutContinuationBlock entries={continuations} />
         {!sub?.checkout?.available ? <p>支付接续尚未开通，暂不能确认下单。已有订单会保留，可继续回查；请联系平台完成接入。</p> : null}
       </section>
       <div role="tablist" aria-label="账单页签">

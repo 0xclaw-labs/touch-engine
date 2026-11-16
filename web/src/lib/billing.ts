@@ -26,10 +26,25 @@ export interface StoreUsage {
   live: number;
 }
 
+// HUI-4664 判定升级后的收银门契约:available=true 只在「订单/原单绑定
+// checkout 引用 + 等待支付 + 公共结算侧 seam 已接通」时成立,此时必须携带
+// checkout_ref 与 checkout_url(续付 URL;只在本响应即时给出,永不落库)。
+// available=false 时 reason 诚实分诊:checkout_unwired(无引用/未接通)、
+// checkout_unavailable(seam 未配置,报价与原单保留)、original_payer_required、
+// not_awaiting_payment(已付/已开通/失败——没有可续付的款项)。
 export interface CheckoutRef {
   available: boolean;
   app_id: string;
   launch_target_id: string;
+  checkout_ref?: string;
+  checkout_url?: string;
+  state?: string; // checkout_pending | paid | activated | failed
+  quote_ref?: string;
+  order_ref?: string;
+  amount_minor?: number;
+  currency?: string;
+  fail_reason?: string;
+  reason?: string;
 }
 
 export interface SubscriptionView {
@@ -258,6 +273,37 @@ export function canManageBilling(role: string, permissions: string[] | null): bo
 // A pending original subscription intent must be resumed before another purchase.
 export function blocksNewSubscription(order: Pick<BillingOrderView, "kind" | "status"> & Partial<Pick<BillingOrderView, "payment_ref">>): boolean {
   return order.kind === "subscription" && (["processing", "opening"].includes(order.status) || (order.status === "failed" && Boolean(order.payment_ref)));
+}
+
+// ---- HUI-4664 收银接续门(ADV-9 PR12;语义现在为真) ------------------------------
+
+// 收银门判定:available=true 当且仅当引用与续付 URL 都在场(缺一即视为未
+// 接通,绝不发明跳转地址;续付 URL 只由服务端响应即时给出)。PR-3 前端接续
+// 面挂此门;既有 checkout.available 门的语义由本函数钉死为真值语义。
+export function canContinueCheckout(checkout: CheckoutRef | undefined | null): boolean {
+  return Boolean(checkout?.available && checkout.checkout_ref && checkout.checkout_url);
+}
+
+// available=false 的诚实文案矩阵(reason 分诊;页面只复述权威事实,永不说
+// 「已扣款/已到账」这类本仓无权断言的话)。
+export function checkoutUnavailableText(checkout: CheckoutRef | undefined | null): string {
+  if (!checkout) return "支付接续尚未开通。原单已保留，可继续回查；请联系平台完成接入，无需重新下单。";
+  switch (checkout.reason) {
+    case "original_payer_required":
+      return "原付款授权已变化，请由原付款人或平台核对这笔原单。查看原单不会授予付款权限。";
+    case "not_awaiting_payment":
+      if (checkout.state === "failed") {
+        return `开通未完成（${checkout.fail_reason || "原因以权威事实为准"}）；款项事实以账单投影为准，请联系平台处理，无需重复付款。`;
+      }
+      if (checkout.state === "paid" || checkout.state === "activated") {
+        return "款项事实已回流，服务状态以服务端事实为准推进；请回查原单，无需重复付款。";
+      }
+      return "这笔原单已不在待支付状态，请按回查结果继续办理，无需再次付款。";
+    case "checkout_unavailable":
+      return "公共结算侧收银尚未接通：这次没有生成可续付引用；报价与原单都已保留，可继续回查，无需重新报价或重新发起。";
+    default:
+      return "支付接续尚未开通。原单已保留，可继续回查；请联系平台完成接入，无需重新下单。";
+  }
 }
 
 export function nextOrderStep(order: Pick<BillingOrderView, "kind" | "status" | "payment_ref">): string {

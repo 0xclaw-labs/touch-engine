@@ -93,17 +93,20 @@ func (s *Server) payerDecisionFor(c *caller) billing.PayerDecision {
 	return billing.DecidePayerForOrder(billing.RoleAgent, c.Member.PrincipalRef, grant)
 }
 
-// cashierCheckout reports whether this app can continue the original billing
-// order. A configured or registered app target only proves navigation: the
-// generic shell switch carries no checkout/order binding. Until the billing
-// authority supplies that consumer contract, keep quotes and existing orders
-// readable without advertising a payment destination or creating a UI order.
+// cashierCheckout is the no-order-context base of the cashier gate (HUI-4591
+// M12)。A configured or registered app target only proves navigation: the
+// generic shell switch carries no checkout/order binding, and subscription
+// reads carry no order at all — keep quotes and existing orders readable
+// without advertising a payment destination. HUI-4664 判定升级后,订单绑定的
+// 读面经 orderCheckoutGate 升级:有 checkout 引用=可续付;无引用=本诚实态。
 func (s *Server) cashierCheckout() map[string]any {
 	return map[string]any{"available": false, "app_id": "", "launch_target_id": "", "reason": "checkout_unwired"}
 }
 
 // Continuing an unpaid order is a read, not another purchase. Recheck the live
 // payer against the original immutable payer; never transfer or reprice it.
+// HUI-4664 判定升级:通过 payer 复核后,订单绑定门改为按 checkout 引用真实
+// 判定(有引用=可续付,报 checkout_ref 与续付 URL;无引用=诚实 checkout_unwired)。
 func (s *Server) originalOrderCheckout(c *caller, order store.BillingOrderRow) map[string]any {
 	denied := map[string]any{"available": false, "app_id": "", "launch_target_id": ""}
 	if order.Status != billing.OrderProcessing || order.PaymentRef != "" {
@@ -116,7 +119,7 @@ func (s *Server) originalOrderCheckout(c *caller, order store.BillingOrderRow) m
 		denied["reason"] = "original_payer_required"
 		return denied
 	}
-	return s.cashierCheckout()
+	return s.orderCheckoutGate(c.Member.TenantID, order.ID)
 }
 
 // subscriptionView is the GET /billing/subscription payload.
@@ -287,7 +290,9 @@ func (s *Server) handleBillingSubscriptionOrder(w http.ResponseWriter, r *http.R
 	// may have committed this same intent after our first read.
 	recoverOriginal := func() bool {
 		original, lookup := s.St.GetBillingOrderByKey(c.Member.TenantID, body.IdempotencyKey)
-		if errors.Is(lookup, sql.ErrNoRows) {
+		// scanBillingOrder 现把 sql.ErrNoRows 映射为 ErrNotFound(统一契约
+		// v1.1 D4 同形掩蔽);两种形态都视为「无既有单」。
+		if errors.Is(lookup, sql.ErrNoRows) || errors.Is(lookup, store.ErrNotFound) {
 			return false
 		}
 		if lookup != nil {

@@ -191,7 +191,8 @@ func (s *Store) CreateTouchpointDelivery(in NewTouchpointDelivery) (TouchpointDe
 		return TouchpointDelivery{}, ErrTouchpointDisabled
 	}
 	order, err := s.GetBillingOrder(in.TenantID, in.HardwareOrderID)
-	if errors.Is(err, sql.ErrNoRows) {
+	// scanBillingOrder 把 sql.ErrNoRows 映射为 ErrNotFound(v1.1 D4);两种形态同掩码。
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrNotFound) {
 		return TouchpointDelivery{}, ErrNotFound // 掩码:未知与跨租户订单同形
 	}
 	if err != nil {
@@ -780,7 +781,8 @@ func (s *Store) ReplaceTouchpointDelivery(in ReplaceDeliveryInput) (ReplaceDeliv
 		orderID = old.HardwareOrderID // 补换继承原订单(售后换卡)
 	}
 	if order, err := s.GetBillingOrder(in.TenantID, orderID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		// scanBillingOrder 把 sql.ErrNoRows 映射为 ErrNotFound(v1.1 D4);两种形态同掩码。
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrNotFound) {
 			return res, ErrNotFound // 掩码:未知与跨租户订单同形
 		}
 		return res, err
