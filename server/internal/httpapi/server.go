@@ -512,6 +512,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/stores/{id}/content-production-handoffs", s.requireSession(s.handleStoreContentProductionHandoffCreate))
 	mux.Handle("GET /api/v1/stores/{id}/content-production-handoffs", s.requireSession(s.handleStoreContentProductionHandoffList))
 	mux.Handle("POST /api/v1/stores/{id}/content-production-handoffs/{handoffId}/retry", s.requireSession(s.handleProductionHandoffRetry))
+	// HUI-4664 原单收银接续(ADV-9 PR12):续付登记/回查面(商家会话;
+	// 续付=付款资格,回查=读;事实回流仍走 billing_authority 权威缝)。
+	mux.Handle("POST /api/v1/stores/{id}/content-production-handoffs/{handoffId}/checkout", s.requireSession(s.handleProductionHandoffCheckout))
+	mux.Handle("GET /api/v1/stores/{id}/content-production-handoffs/{handoffId}/checkout", s.requireSession(s.handleProductionHandoffCheckoutGet))
 	mux.Handle("GET /api/v1/stores/{id}/content-production-handoffs/capabilities", s.requireSession(s.handleStoreContentProductionCapabilities))
 	mux.Handle("POST /api/v1/internal/content-production-handoffs/{handoffId}/results", s.requireContentReturnProducer(s.handleContentProductionResultReturn))
 

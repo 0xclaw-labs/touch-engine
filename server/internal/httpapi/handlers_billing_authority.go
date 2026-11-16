@@ -9,6 +9,11 @@
 //   - source+event_id 去重:同键同负载=幂等读回;同键异负载=409
 //     IDEMPOTENCY_CONFLICT;状态推进唯一入口(store.ApplyBillingOrderEvent →
 //     billing.ApplyOrderEvent 纯状态机)。
+//   - HUI-4664 原单收银接续(ADV-9 PR12):payment_paid/activation_active/
+//     activation_failed 携带 checkout_ref 时落 checkout-ref 状态机
+//    (store.ApplyBillingCheckoutEvent → billing.ApplyCheckoutEvent 纯状态机;
+//     payment_paid 先过 AdjudicatePaymentFact 金额/币种/引用逐字节比对,
+//     同 payment_ref 重放零新增零改写)——同一缝、同一身份纪律,零新增写缝。
 //   - 目录/事件/退款/AI 用量/硬件步骤都是投影写入;本缝永不返回任何余额。
 package httpapi
 
@@ -159,6 +164,10 @@ type authorityEventBody struct {
 	Step      string `json:"step"`
 	Operator  string `json:"operator"`
 	DeviceRef string `json:"device_ref"`
+	// checkout_ref 专用字段(HUI-4664 原单收银接续:payment_paid/
+	// activation_active/activation_failed 落 checkout-ref 状态机;金额/币种
+	// 复用上方 refund/ai_usage 的 AmountMinor/Currency 载荷位)。
+	CheckoutRef string `json:"checkout_ref"`
 }
 
 func (s *Server) handleBillingAuthorityEvent(w http.ResponseWriter, r *http.Request) {
@@ -194,6 +203,34 @@ func (s *Server) handleBillingAuthorityEvent(w http.ResponseWriter, r *http.Requ
 	switch body.Type {
 	case billing.EventOrderRegistered, billing.EventPaymentPaid, billing.EventActivationOpening,
 		billing.EventActivationActive, billing.EventActivationFailed, billing.EventOrderCancelled:
+		// HUI-4664:携带 checkout_ref 的事实(payment_paid/activation_active/
+		// activation_failed)= 原单接续引用事实,落 checkout-ref 状态机
+		//(同缝同纪律:同一 billing_authority 身份/角色、同一错误映射表;
+		// 幂等=同 payment_ref 重放零新增零改写)。订单事件路径字节不变。
+		if checkoutRef := strings.TrimSpace(body.CheckoutRef); checkoutRef != "" {
+			if body.Type != billing.EventPaymentPaid && body.Type != billing.EventActivationActive && body.Type != billing.EventActivationFailed {
+				fail(w, http.StatusBadRequest, "bad_event_type",
+					"checkout_ref facts accept payment_paid, activation_active and activation_failed only")
+				return
+			}
+			row, replayed, err := s.St.ApplyBillingCheckoutEvent(tenantID, checkoutRef, billing.AuthorityEventInput{
+				Source: source, EventID: eventID, Type: body.Type, OccurredAt: occurredAt, Payload: body.Payload,
+				AmountMinor: body.AmountMinor, Currency: body.Currency,
+			}, nowRFC3339())
+			if err != nil {
+				writeAuthorityError(w, err)
+				return
+			}
+			status := http.StatusOK
+			if !replayed {
+				status = http.StatusCreated
+			}
+			writeJSON(w, status, map[string]any{
+				"replayed": replayed, "checkout_ref": row.CheckoutRef,
+				"order_ref": row.OrderRef, "state": row.State,
+			})
+			return
+		}
 		orderID := strings.TrimSpace(body.OrderID)
 		if orderID == "" {
 			fail(w, http.StatusBadRequest, "order_required", "order_id is required for order events")
