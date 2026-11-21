@@ -11,6 +11,24 @@
 
 .tk-public {
   max-width: 28rem;
+  padding-bottom: 6.5rem;
+}
+
+.tk-public-foot-cta {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  justify-content: center;
+  padding: 0.75rem 1rem calc(0.75rem + env(safe-area-inset-bottom));
+  background: var(--pn-bg-surface);
+  border-top: var(--pn-border-width-hairline) solid var(--pn-border-default);
+}
+
+.tk-public-foot-cta > .shadcn-button {
+  width: 100%;
+  max-width: 28rem;
 }
 
 .tk-public-card,

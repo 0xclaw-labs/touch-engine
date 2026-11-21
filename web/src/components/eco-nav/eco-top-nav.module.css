@@ -187,3 +187,12 @@
     transition: none;
   }
 }
+
+/* ≤430px 触控命中区 ≥44px；桌面密度不动。 */
+@media (max-width: 430px) {
+  .link,
+  .button,
+  .quiet {
+    min-height: 44px;
+  }
+}
