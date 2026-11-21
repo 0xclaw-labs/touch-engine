@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AccountSeparation } from "@/components/admin/AccountSeparation";
 import { Card, CardContent } from "@/components/ui/card";
 import type { SeparationView } from "@/lib/account-separation";
@@ -98,10 +98,12 @@ export function MerchantWorkbench({
   tenantId,
   campaigns,
   onSaveCopy,
+  onTodoCount,
 }: {
   tenantId: string;
   campaigns: WorkbenchCampaign[];
   onSaveCopy: (id: string, title: string, copy: string) => Promise<void>;
+  onTodoCount?: (count: number) => void;
 }) {
   const [payload, setPayload] = useState<WorkbenchPayload | null>(null);
   const [model, setModel] = useState<EcoNavModel | null>(null);
@@ -113,6 +115,8 @@ export function MerchantWorkbench({
     title: string;
     copy: string;
   } | null>(null);
+  const todoRef = useRef(onTodoCount);
+  todoRef.current = onTodoCount;
 
   useEffect(() => {
     const apply = () => setWidth(window.innerWidth);
@@ -129,7 +133,9 @@ export function MerchantWorkbench({
         res.ok ? ((await res.json()) as WorkbenchPayload) : null,
       )
       .then((next) => {
-        if (alive) setPayload(next);
+        if (!alive) return;
+        setPayload(next);
+        todoRef.current?.(next?.my_tasks?.length ?? 0);
       })
       .catch(() => {
         if (alive) setPayload(null);

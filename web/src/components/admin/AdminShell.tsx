@@ -6,6 +6,8 @@ import { useLaunchTargets } from "@/components/eco-nav/use-launch-resolver";
 import { useAppSwitch } from "@/components/eco-nav/use-app-switch";
 import type { EcoNavModel } from "@/lib/eco-nav/model";
 import { commitTenantSwitch } from "@/lib/eco-nav/touch-shell";
+import type { MembershipScope } from "@/lib/workspace-tenant";
+import { AdminSidebar } from "./AdminSidebar";
 
 export function AdminShell({
   children,
@@ -14,6 +16,8 @@ export function AdminShell({
   tenantId = "",
   onLogout,
   onTenantChange,
+  scopes,
+  todoCount = 0,
 }: {
   children: ReactNode;
   nickname: string;
@@ -21,6 +25,8 @@ export function AdminShell({
   tenantId?: string;
   onLogout: () => void;
   onTenantChange: (tenantId: string) => void;
+  scopes?: MembershipScope[];
+  todoCount?: number;
 }) {
   const [model, setModel] = useState<EcoNavModel | null>(null);
   const resolveLaunchTarget = useLaunchTargets();
@@ -45,7 +51,7 @@ export function AdminShell({
     };
   }, []);
 
-  return (
+  const body = (
     <>
       {model ? (
         <EcoTopNav
@@ -64,4 +70,19 @@ export function AdminShell({
       {children}
     </>
   );
+
+  if (scopes) {
+    return (
+      <AdminSidebar
+        scopes={scopes}
+        currentTenantId={tenantId}
+        todoCount={todoCount}
+        onTenantChange={onTenantChange}
+      >
+        {body}
+      </AdminSidebar>
+    );
+  }
+
+  return body;
 }
