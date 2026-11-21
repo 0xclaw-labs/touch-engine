@@ -5,10 +5,22 @@ import { EcoTopNav } from "@/components/eco-nav/EcoTopNav";
 import { useLaunchTargets } from "@/components/eco-nav/use-launch-resolver";
 import { TaskHandoffActions } from "@/components/admin/TaskHandoffActions";
 import { PROVISIONAL_DOCUMENT, provisionalEcoNav } from "@/lib/eco-nav/fixture";
-import { parseEcoNavDocument, toViewModel, type EcoNavModel } from "@/lib/eco-nav/model";
+import {
+  parseEcoNavDocument,
+  toViewModel,
+  type EcoNavModel,
+} from "@/lib/eco-nav/model";
 import { applyMerchantSwitch } from "@/lib/eco-nav/touch-shell";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 
-function brandModel(displayName: string, appId: string, appName: string, targetId: string): EcoNavModel {
+function brandModel(
+  displayName: string,
+  appId: string,
+  appName: string,
+  targetId: string,
+): EcoNavModel {
   const doc = structuredClone(PROVISIONAL_DOCUMENT);
   doc.brand.display_name = displayName;
   doc.brand.brand_id = displayName === "品牌甲" ? "brand-a" : "brand-b";
@@ -26,13 +38,21 @@ function brandModel(displayName: string, appId: string, appName: string, targetI
   ];
   const parsed = parseEcoNavDocument(doc);
   if (!parsed.ok) return provisionalEcoNav();
-  return toViewModel(parsed.document, { provenance: "provisional_fixture", statusSummary: "预览上下文 · 未接公共身份" });
+  return toViewModel(parsed.document, {
+    provenance: "provisional_fixture",
+    statusSummary: "预览上下文 · 未接公共身份",
+  });
 }
 
 export function PreviewShell() {
-  const [model, setModel] = useState(() => brandModel("品牌甲", "product-image", "产品图", "ti-product-image-web"));
+  const [model, setModel] = useState(() =>
+    brandModel("品牌甲", "product-image", "产品图", "ti-product-image-web"),
+  );
   const resolveLaunchTarget = useLaunchTargets();
-  const [surface, setSurface] = useState({ campaigns: [{ id: "cmp_preview", title: "活动甲" }], selectedCampaignId: "cmp_preview" });
+  const [surface, setSurface] = useState({
+    campaigns: [{ id: "cmp_preview", title: "活动甲" }],
+    selectedCampaignId: "cmp_preview",
+  });
   const [notice, setNotice] = useState("");
 
   return (
@@ -48,26 +68,64 @@ export function PreviewShell() {
           setNotice("");
         }}
       />
-      <p data-testid="preview-note">这是商家后台预览。公共活动页、NFC、二维码和留资页没有这条导航。</p>
-      <div className="tk-admin-form-row tk-admin-mt-12">
-        <button type="button" onClick={() => setModel(brandModel("品牌甲", "product-image", "产品图", "ti-product-image-web"))}>
+      <Alert variant="default" className="my-4">
+        <AlertDescription data-testid="preview-note">
+          这是商家后台预览。公共活动页、NFC、二维码和留资页没有这条导航。
+        </AlertDescription>
+      </Alert>
+      <div className="tk-admin-form-row tk-admin-mt-12 tk-row">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() =>
+            setModel(
+              brandModel(
+                "品牌甲",
+                "product-image",
+                "产品图",
+                "ti-product-image-web",
+              ),
+            )
+          }
+        >
           品牌甲
-        </button>
-        <button type="button" onClick={() => setModel(brandModel("品牌乙", "leads", "获客", "ti-leads-web"))}>
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() =>
+            setModel(brandModel("品牌乙", "leads", "获客", "ti-leads-web"))
+          }
+        >
           品牌乙
-        </button>
+        </Button>
       </div>
-      <section data-testid="admin-campaigns">
-        <h2>活动</h2>
-        {surface.campaigns.length === 0 ? <p>当前商家还没有活动。</p> : null}
-        {surface.campaigns.map((campaign) => (
-          <div key={campaign.id}>
-            <span>{campaign.title}</span>
-            <TaskHandoffActions campaignId={campaign.id} onPlanned={setNotice} />
-          </div>
-        ))}
-        {notice ? <p data-testid="task-notice">{notice}</p> : null}
-      </section>
+      <Card data-testid="admin-campaigns" className="tk-admin-grid-16">
+        <CardHeader>
+          <CardTitle>活动</CardTitle>
+        </CardHeader>
+        <CardContent className="tk-admin-grid-12">
+          {surface.campaigns.length === 0 ? (
+            <p className="tk-note">当前商家还没有活动。</p>
+          ) : null}
+          {surface.campaigns.map((campaign) => (
+            <div key={campaign.id} className="tk-row tk-admin-between">
+              <span>{campaign.title}</span>
+              <TaskHandoffActions
+                campaignId={campaign.id}
+                onPlanned={setNotice}
+              />
+            </div>
+          ))}
+          {notice ? (
+            <p data-testid="task-notice" role="status">
+              {notice}
+            </p>
+          ) : null}
+        </CardContent>
+      </Card>
     </main>
   );
 }

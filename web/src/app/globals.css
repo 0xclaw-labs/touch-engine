@@ -36,3 +36,59 @@ a {
   color: var(--tk-brand-text);
   text-decoration: none;
 }
+
+
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: var(--pn-bg-page);
+  --foreground: var(--pn-text-primary);
+  --card: var(--pn-bg-surface);
+  --card-foreground: var(--pn-text-primary);
+  --popover: var(--pn-bg-surface);
+  --popover-foreground: var(--pn-text-primary);
+  --primary: var(--pn-brand-accent);
+  --primary-foreground: var(--pn-brand-ink);
+  --secondary: var(--pn-bg-sunken);
+  --secondary-foreground: var(--pn-text-primary);
+  --muted: var(--pn-bg-sunken);
+  --muted-foreground: var(--pn-text-muted);
+  --accent: var(--pn-bg-sunken);
+  --accent-foreground: var(--pn-text-primary);
+  --destructive: var(--pn-status-danger-fg);
+  --destructive-foreground: var(--pn-status-danger-ink);
+  --success: var(--pn-status-success-fg);
+  --success-foreground: var(--pn-status-success-ink);
+  --warning: var(--pn-status-warning-fg);
+  --warning-foreground: var(--pn-status-warning-ink);
+  --border: var(--pn-border-default);
+  --input: var(--pn-border-default);
+  --ring: var(--pn-brand-accent);
+  --radius: var(--pn-radius-control);
+
+  --chart-1: var(--pn-brand-accent);
+  --chart-2: var(--pn-status-success-fg);
+  --chart-3: var(--pn-status-warning-fg);
+  --chart-4: var(--pn-status-info-fg);
+  --chart-5: var(--pn-status-danger-fg);
+
+  --sidebar: var(--pn-bg-surface);
+  --sidebar-foreground: var(--pn-text-primary);
+  --sidebar-primary: var(--pn-brand-accent);
+  --sidebar-primary-foreground: var(--pn-brand-ink);
+  --sidebar-accent: var(--pn-bg-sunken);
+  --sidebar-accent-foreground: var(--pn-text-primary);
+  --sidebar-border: var(--pn-border-default);
+  --sidebar-ring: var(--pn-brand-accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -318,7 +318,8 @@
 
   .tk-button,
   .tk-quiet,
-  .tk-primary {
+  .tk-primary,
+  .shadcn-button {
     min-height: 44px;
   }
 

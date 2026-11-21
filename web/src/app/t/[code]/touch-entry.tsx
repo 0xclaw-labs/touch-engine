@@ -2,6 +2,11 @@
 
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
+import { MapPin, TriangleAlert } from "lucide-react";
+
+import { Card, CardContent } from "@/components/ui/card";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Skeleton } from "@/components/ui/skeleton";
 
 import { touchEntryFace, touchEntryRedirect } from "@/lib/touchpoints";
 
@@ -14,18 +19,23 @@ import { touchEntryFace, touchEntryRedirect } from "@/lib/touchpoints";
 export function TouchEntry() {
   const params = useParams<{ code: string }>();
   const [face, setFace] = useState<string | null>(null);
-  const [reloadTick,setReloadTick]=useState(0);
+  const [blocked, setBlocked] = useState(false);
+  const [reloadTick, setReloadTick] = useState(0);
   const code = params?.code;
 
   useEffect(() => {
     if (typeof code !== "string" || code === "") {
       setFace(touchEntryFace("not_found"));
+      setBlocked(true);
       return;
     }
     let alive = true;
     fetch(`/api/public/touchpoints/${encodeURIComponent(code)}`)
       .then(async (res) => {
-        const data = (await res.json().catch(() => ({}))) as { state?: unknown; code?: unknown };
+        const data = (await res.json().catch(() => ({}))) as {
+          state?: unknown;
+          code?: unknown;
+        };
         if (!alive) return;
         const target = res.ok ? touchEntryRedirect(data) : null;
         if (target) {
@@ -33,17 +43,75 @@ export function TouchEntry() {
           return;
         }
         setFace(touchEntryFace(data?.state));
+        setBlocked(
+          data?.state === "not_found" || data?.state === "touchpoint_disabled",
+        );
       })
       .catch(() => {
-        if (alive) setFace(touchEntryFace(undefined));
+        if (alive) {
+          setFace(touchEntryFace(undefined));
+          setBlocked(false);
+        }
       });
     return () => {
       alive = false;
     };
-  }, [code,reloadTick]);
+  }, [code, reloadTick]);
 
   if (face === null) {
-    return <p>正在打开…</p>;
+    return (
+      <main className="tk-public" data-pattern="public_consumer">
+        <Card className="tk-public-card">
+          <CardContent className="tk-gap pt-6">
+            <div role="status" data-state="loading" aria-label="正在打开活动">
+              <Skeleton className="mb-3 h-6 w-3/4" />
+              <Skeleton className="h-4 w-full" />
+              <Skeleton className="mt-2 h-4 w-2/3" />
+              <p className="tk-note">正在打开…</p>
+            </div>
+          </CardContent>
+        </Card>
+      </main>
+    );
   }
-  return <main className="tk-public"><div className="tk-public-card" data-testid="touch-entry-recovery"><h1 className="tk-public-title">暂时无法打开这个入口</h1><p className="tk-note">{face}</p><p className="tk-note">请核对标签或二维码，向现场工作人员索取本店当前可用的入口。这里暂时无法确认所属门店，请不要用陌生门店的链接认回原权益。</p><p className="tk-note">若之前已参与，请在原浏览器打开保存的活动页或“我的权益与凭证”；持有本人恢复码时可在原内容页继续。</p><button type="button" className="tk-quiet" onClick={()=>{setFace(null);setReloadTick(t=>t+1);}}>重新读取入口</button></div></main>;
+
+  return (
+    <main className="tk-public" data-pattern="public_consumer">
+      <Card className="tk-public-card">
+        <CardContent className="tk-gap pt-6">
+          <Alert
+            variant={blocked ? "destructive" : "default"}
+            data-testid="touch-entry-recovery"
+            data-state={blocked ? "error" : "unknown"}
+          >
+            {blocked ? (
+              <MapPin className="h-4 w-4" aria-hidden="true" />
+            ) : (
+              <TriangleAlert className="h-4 w-4" aria-hidden="true" />
+            )}
+            <AlertTitle>暂时无法打开这个入口</AlertTitle>
+            <AlertDescription>
+              <p className="tk-note">{face}</p>
+              <p className="tk-note">
+                请核对标签或二维码，向现场工作人员索取本店当前可用的入口。这里暂时无法确认所属门店，请不要用陌生门店的链接认回原权益。
+              </p>
+              <p className="tk-note">
+                若之前已参与，请在原浏览器打开保存的活动页或“我的权益与凭证”；持有本人恢复码时可在原内容页继续。
+              </p>
+              <button
+                type="button"
+                className="tk-quiet"
+                onClick={() => {
+                  setFace(null);
+                  setReloadTick((t) => t + 1);
+                }}
+              >
+                重新读取入口
+              </button>
+            </AlertDescription>
+          </Alert>
+        </CardContent>
+      </Card>
+    </main>
+  );
 }
