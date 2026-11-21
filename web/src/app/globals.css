@@ -41,7 +41,11 @@ a {
 @tailwind components;
 @tailwind utilities;
 
-:root {
+/* shadcn 别名必须落在带 --pn-* 作用域的元素上：pn 变量由 [data-pn-surface]
+   块定义；挂在 :root 会在未定义 --pn-* 处提前失效（invalid at computed-value
+   time），继承到门户化的 Sheet/Dialog 时背景/边框全部落空。 */
+body,
+[data-pn-surface] {
   --background: var(--pn-bg-page);
   --foreground: var(--pn-text-primary);
   --card: var(--pn-bg-surface);
