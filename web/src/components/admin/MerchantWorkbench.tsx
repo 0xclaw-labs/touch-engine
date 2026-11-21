@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { AccountSeparation } from "@/components/admin/AccountSeparation";
+import { Card, CardContent } from "@/components/ui/card";
 import type { SeparationView } from "@/lib/account-separation";
 import type { EcoNavModel } from "@/lib/eco-nav/model";
 import { planTaskHandoff } from "@/lib/eco-nav/touch-shell";
@@ -93,7 +94,6 @@ export interface WorkbenchCampaign {
   public_content: string;
 }
 
-
 export function MerchantWorkbench({
   tenantId,
   campaigns,
@@ -108,7 +108,11 @@ export function MerchantWorkbench({
   const [notice, setNotice] = useState("");
   const [intent, setIntent] = useState<ContentToolInput["intent"]>("operate");
   const [width, setWidth] = useState(960);
-  const [copyDraft, setCopyDraft] = useState<{ id: string; title: string; copy: string } | null>(null);
+  const [copyDraft, setCopyDraft] = useState<{
+    id: string;
+    title: string;
+    copy: string;
+  } | null>(null);
 
   useEffect(() => {
     const apply = () => setWidth(window.innerWidth);
@@ -121,7 +125,9 @@ export function MerchantWorkbench({
     if (!tenantId) return;
     let alive = true;
     fetch("/api/workbench", { headers: { "x-tenant-id": tenantId } })
-      .then(async (res) => (res.ok ? ((await res.json()) as WorkbenchPayload) : null))
+      .then(async (res) =>
+        res.ok ? ((await res.json()) as WorkbenchPayload) : null,
+      )
       .then((next) => {
         if (alive) setPayload(next);
       })
@@ -136,7 +142,9 @@ export function MerchantWorkbench({
   useEffect(() => {
     let alive = true;
     fetch("/api/eco-nav")
-      .then(async (res) => (res.ok ? ((await res.json()) as EcoNavModel) : null))
+      .then(async (res) =>
+        res.ok ? ((await res.json()) as EcoNavModel) : null,
+      )
       .then((next) => {
         if (alive) setModel(next);
       })
@@ -149,12 +157,21 @@ export function MerchantWorkbench({
   }, []);
 
   if (!payload) {
-    return <p data-testid="workbench-pending">工作台摘要还没读到。不会把缺失写成 0。</p>;
+    return (
+      <p data-testid="workbench-pending">
+        工作台摘要还没读到。不会把缺失写成 0。
+      </p>
+    );
   }
 
   const seat = payload.seat ?? {};
   const serverBanner = resolveWorkingFor({
-    seatSource: seat.source === "agency" || seat.source === "delegation" || seat.source === "membership" ? seat.source : "membership",
+    seatSource:
+      seat.source === "agency" ||
+      seat.source === "delegation" ||
+      seat.source === "membership"
+        ? seat.source
+        : "membership",
     role: seat.role ?? "",
     relationId: seat.relation_id,
     serverBanner: payload.working_for,
@@ -163,22 +180,33 @@ export function MerchantWorkbench({
     now: new Date().toISOString(),
   });
   const ecoBanner = resolveWorkingFor({
-    seatSource: model?.seat_source === "delegation" ? "delegation" : "membership",
+    seatSource:
+      model?.seat_source === "delegation" ? "delegation" : "membership",
     role: model?.role_label ?? "",
-    relationId: model?.delegations.find((item) => item.type === "ops_collab")?.delegation_id,
+    relationId: model?.delegations.find((item) => item.type === "ops_collab")
+      ?.delegation_id,
     delegations: model?.delegations ?? [],
     merchantName:
-      model?.scopes.find((item) => item.tenant_id === model.active_tenant_id)?.display_name ?? seat.merchant_name ?? "",
+      model?.scopes.find((item) => item.tenant_id === model.active_tenant_id)
+        ?.display_name ??
+      seat.merchant_name ??
+      "",
     now: new Date().toISOString(),
   });
   const workingFor = serverBanner || ecoBanner;
   const billing = workbenchBilling(model);
   const tasks = assembleTodos({
     tasks: payload.my_tasks ?? [],
-    drafts: (payload.activities?.draft ?? []).map((item) => ({ id: item.id, title: item.title, status: item.status })),
+    drafts: (payload.activities?.draft ?? []).map((item) => ({
+      id: item.id,
+      title: item.title,
+      status: item.status,
+    })),
     pending: (payload.customers?.cards ?? []).flatMap((card) => {
       if (typeof card.pending_sync !== "number") return [];
-      return [{ campaign_id: card.campaign_id, pending_sync: card.pending_sync }];
+      return [
+        { campaign_id: card.campaign_id, pending_sync: card.pending_sync },
+      ];
     }),
   });
   const sections = visibleSections(tasks.length);
@@ -205,148 +233,240 @@ export function MerchantWorkbench({
           费用 {billing.label}
         </p>
       </div>
-      {payload.account_separation ? <AccountSeparation view={payload.account_separation} /> : null}
-      <div data-testid="workbench-grid" data-columns={columns} className={`tk-admin-grid-cols-${columns}`}>
+      {payload.account_separation ? (
+        <AccountSeparation view={payload.account_separation} />
+      ) : null}
+      <div
+        data-testid="workbench-grid"
+        data-columns={columns}
+        className={`tk-admin-grid-cols-${columns}`}
+      >
         {sections.includes("my_tasks") ? (
-          <article className="tk-admin-card" data-testid="section-my-tasks">
-            <h3 className="tk-admin-mt-0">我的事情</h3>
-            <ul>
-              {tasks.map((task) => (
-                <li key={`${task.kind}-${task.object_id}`}>
-                  <a href={`#campaign-${task.object_id}`}>{task.title}</a>
-                  <span className="tk-admin-muted"> · {task.state}</span>
-                </li>
-              ))}
-            </ul>
-          </article>
+          <Card data-testid="section-my-tasks">
+            <CardContent className="tk-gap pt-5">
+              <h3 className="tk-admin-mt-0">我的事情</h3>
+              <ul>
+                {tasks.map((task) => (
+                  <li key={`${task.kind}-${task.object_id}`}>
+                    <a href={`#campaign-${task.object_id}`}>{task.title}</a>
+                    <span className="tk-admin-muted"> · {task.state}</span>
+                  </li>
+                ))}
+              </ul>
+            </CardContent>
+          </Card>
         ) : null}
-        <article className="tk-admin-card" data-testid="section-content">
-          <h3 className="tk-admin-mt-0">内容</h3>
-          {contentHonestyLine({ gap, next_step: payload.content?.next_step }) ? (
-            <p data-testid={gap === "unknown" ? "content-unknown" : "content-next"}>
-              {contentHonestyLine({ gap, next_step: payload.content?.next_step })}
-            </p>
-          ) : null}
-          {payload.content?.tasks_known === true ? null : (
-            <p data-testid="content-tasks-unknown">内容任务摘要未知。这里不显示 0。</p>
-          )}
-          {(payload.content?.materials ?? []).length > 0 ? (
-            <ul>
-              {payload.content?.materials?.map((item) => (
-                <li key={item.id}>{item.purpose || item.media_type || item.id}</li>
-              ))}
-            </ul>
-          ) : null}
-          {(payload.content?.selections ?? []).length > 0 ? (
-            <ul>
-              {payload.content?.selections?.map((item) => (
-                <li key={`${item.campaign_id}-${item.asset_id}`}>
-                  已选素材 {item.asset_id}
-                </li>
-              ))}
-            </ul>
-          ) : null}
-          {payload.content?.actions?.some((action) => action.id === "edit_copy" && action.shown) ? (
-            <CopyEditor campaigns={campaigns} draft={copyDraft} setDraft={setCopyDraft} onSaveCopy={onSaveCopy} />
-          ) : null}
-          <label className="tk-admin-block tk-admin-mt-8">
-            当前内容任务
-            <select value={intent} onChange={(event) => setIntent(event.target.value as ContentToolInput["intent"])} className="tk-admin-ml-8">
-              <option value="operate">用已有素材做活动</option>
-              <option value="creative_plan">需要脚本和分镜</option>
-              <option value="deep_edit">需要深剪成片</option>
-              <option value="avatar">需要数字人口播</option>
-            </select>
-          </label>
-          {offers.map((offer) =>
-            offer.shown ? (
-              <button
-                key={offer.id}
-                type="button"
-                data-testid={`offer-${offer.app_id}`}
-                onClick={() => prepareHandoff(offer.app_id, campaigns[0]?.id ?? "", setNotice)}
-                className="tk-admin-mt-8 tk-admin-mr-8"
+        <Card data-testid="section-content">
+          <CardContent className="tk-gap pt-5">
+            <h3 className="tk-admin-mt-0">内容</h3>
+            {contentHonestyLine({
+              gap,
+              next_step: payload.content?.next_step,
+            }) ? (
+              <p
+                data-testid={
+                  gap === "unknown" ? "content-unknown" : "content-next"
+                }
               >
-                {offer.label}
-              </button>
-            ) : (
-              <p key={offer.id} data-testid={`upgrade-${offer.app_id}`}>
-                {offer.upgrade}
+                {contentHonestyLine({
+                  gap,
+                  next_step: payload.content?.next_step,
+                })}
               </p>
-            ),
-          )}
-          {payload.content?.upgrade_note ? <p>{payload.content.upgrade_note}</p> : null}
-        </article>
-        <article className="tk-admin-card" data-testid="section-activities">
-          <h3 className="tk-admin-mt-0">活动</h3>
-          {payload.activities?.next_step ? (
-            <p>
-              <a href="#create-campaign">{payload.activities.next_step}</a>
-            </p>
-          ) : null}
-          {(payload.activities?.unclassified ?? []).length > 0 ? (
-            <p data-testid="activities-unclassified">状态未归类。不记成已结束，也不写成 0。</p>
-          ) : null}
-          <ActivityGroup label={activityGroupLabel("draft")} items={payload.activities?.draft ?? []} />
-          <ActivityGroup label={activityGroupLabel("in_progress")} items={payload.activities?.in_progress ?? []} />
-          <ActivityGroup label={activityGroupLabel("ended")} items={payload.activities?.ended ?? []} />
-          <ActivityGroup label={activityGroupLabel("unclassified")} items={payload.activities?.unclassified ?? []} />
-        </article>
-        <article className="tk-admin-card" data-testid="section-customers">
-          <h3 className="tk-admin-mt-0">客户</h3>
-          {payload.customers?.available === false ? (
-            <p data-testid="customers-degraded">留资摘要未开启（{payload.customers.reason || "未知"}）。活动仍可继续，这里不显示 0。</p>
-          ) : (
-            (payload.customers?.cards ?? []).map((card) => {
-              const enter = enterLeadsPlan({ app: leadsApp, campaignId: card.campaign_id });
-              return (
-                <div key={card.campaign_id} className="tk-admin-mb-10">
-                  <a href={`#campaign-${card.campaign_id}`}>{card.title}</a>
-                  <p className="tk-admin-m-4-0">{customerCountLine("授权线索", card.authorized)} · {customerCountLine("待同步", card.pending_sync)}</p>
-                  <p className="tk-admin-m-4-0" data-testid={`sales-reception-${card.campaign_id}`}>
-                    {salesReceptionLine(card)}
-                  </p>
-                  <p className="tk-admin-m-4-0" data-testid={`follow-up-${card.campaign_id}`}>
-                    {followUpLine(card.follow_up)}
-                  </p>
-                  {(card.open_lead_ids ?? []).map((id) => {
-                    const href = leadLink(process.env.NEXT_PUBLIC_LEADS_ORIGIN ?? "", id);
-                    return href ? (
-                      <a key={id} href={href} data-testid={`open-lead-${id}`}>
-                        打开获客线索 {id}
-                      </a>
-                    ) : (
-                      <p key={id} data-testid={`open-lead-${id}`}>
-                        获客线索 {id}
-                      </p>
-                    );
-                  })}
-                  {enter.available ? (
-                    <button
-                      type="button"
-                      data-testid={`enter-leads-${card.campaign_id}`}
-                      onClick={() => {
-                        const plan = planTaskHandoff("view_campaign_leads", card.campaign_id);
-                        setNotice(`已准备进入获客查看本活动线索。碰一碰不读取联系人。交接 ${plan.kind}`);
-                      }}
+            ) : null}
+            {payload.content?.tasks_known === true ? null : (
+              <p data-testid="content-tasks-unknown">
+                内容任务摘要未知。这里不显示 0。
+              </p>
+            )}
+            {(payload.content?.materials ?? []).length > 0 ? (
+              <ul>
+                {payload.content?.materials?.map((item) => (
+                  <li key={item.id}>
+                    {item.purpose || item.media_type || item.id}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {(payload.content?.selections ?? []).length > 0 ? (
+              <ul>
+                {payload.content?.selections?.map((item) => (
+                  <li key={`${item.campaign_id}-${item.asset_id}`}>
+                    已选素材 {item.asset_id}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {payload.content?.actions?.some(
+              (action) => action.id === "edit_copy" && action.shown,
+            ) ? (
+              <CopyEditor
+                campaigns={campaigns}
+                draft={copyDraft}
+                setDraft={setCopyDraft}
+                onSaveCopy={onSaveCopy}
+              />
+            ) : null}
+            <label className="tk-admin-block tk-admin-mt-8">
+              当前内容任务
+              <select
+                value={intent}
+                onChange={(event) =>
+                  setIntent(event.target.value as ContentToolInput["intent"])
+                }
+                className="tk-admin-ml-8"
+              >
+                <option value="operate">用已有素材做活动</option>
+                <option value="creative_plan">需要脚本和分镜</option>
+                <option value="deep_edit">需要深剪成片</option>
+                <option value="avatar">需要数字人口播</option>
+              </select>
+            </label>
+            {offers.map((offer) =>
+              offer.shown ? (
+                <button
+                  key={offer.id}
+                  type="button"
+                  data-testid={`offer-${offer.app_id}`}
+                  onClick={() =>
+                    prepareHandoff(
+                      offer.app_id,
+                      campaigns[0]?.id ?? "",
+                      setNotice,
+                    )
+                  }
+                  className="tk-admin-mt-8 tk-admin-mr-8"
+                >
+                  {offer.label}
+                </button>
+              ) : (
+                <p key={offer.id} data-testid={`upgrade-${offer.app_id}`}>
+                  {offer.upgrade}
+                </p>
+              ),
+            )}
+            {payload.content?.upgrade_note ? (
+              <p>{payload.content.upgrade_note}</p>
+            ) : null}
+          </CardContent>
+        </Card>
+        <Card data-testid="section-activities">
+          <CardContent className="tk-gap pt-5">
+            <h3 className="tk-admin-mt-0">活动</h3>
+            {payload.activities?.next_step ? (
+              <p>
+                <a href="#create-campaign">{payload.activities.next_step}</a>
+              </p>
+            ) : null}
+            {(payload.activities?.unclassified ?? []).length > 0 ? (
+              <p data-testid="activities-unclassified">
+                状态未归类。不记成已结束，也不写成 0。
+              </p>
+            ) : null}
+            <ActivityGroup
+              label={activityGroupLabel("draft")}
+              items={payload.activities?.draft ?? []}
+            />
+            <ActivityGroup
+              label={activityGroupLabel("in_progress")}
+              items={payload.activities?.in_progress ?? []}
+            />
+            <ActivityGroup
+              label={activityGroupLabel("ended")}
+              items={payload.activities?.ended ?? []}
+            />
+            <ActivityGroup
+              label={activityGroupLabel("unclassified")}
+              items={payload.activities?.unclassified ?? []}
+            />
+          </CardContent>
+        </Card>
+        <Card data-testid="section-customers">
+          <CardContent className="tk-gap pt-5">
+            <h3 className="tk-admin-mt-0">客户</h3>
+            {payload.customers?.available === false ? (
+              <p data-testid="customers-degraded">
+                留资摘要未开启（{payload.customers.reason || "未知"}
+                ）。活动仍可继续，这里不显示 0。
+              </p>
+            ) : (
+              (payload.customers?.cards ?? []).map((card) => {
+                const enter = enterLeadsPlan({
+                  app: leadsApp,
+                  campaignId: card.campaign_id,
+                });
+                return (
+                  <div key={card.campaign_id} className="tk-admin-mb-10">
+                    <a href={`#campaign-${card.campaign_id}`}>{card.title}</a>
+                    <p className="tk-admin-m-4-0">
+                      {customerCountLine("授权线索", card.authorized)} ·{" "}
+                      {customerCountLine("待同步", card.pending_sync)}
+                    </p>
+                    <p
+                      className="tk-admin-m-4-0"
+                      data-testid={`sales-reception-${card.campaign_id}`}
                     >
-                      进入获客看本活动线索
-                    </button>
-                  ) : (
-                    <p>获客工作台当前不可进入。活动主线没有被锁住。</p>
-                  )}
-                </div>
-              );
-            })
-          )}
-        </article>
+                      {salesReceptionLine(card)}
+                    </p>
+                    <p
+                      className="tk-admin-m-4-0"
+                      data-testid={`follow-up-${card.campaign_id}`}
+                    >
+                      {followUpLine(card.follow_up)}
+                    </p>
+                    {(card.open_lead_ids ?? []).map((id) => {
+                      const href = leadLink(
+                        process.env.NEXT_PUBLIC_LEADS_ORIGIN ?? "",
+                        id,
+                      );
+                      return href ? (
+                        <a key={id} href={href} data-testid={`open-lead-${id}`}>
+                          打开获客线索 {id}
+                        </a>
+                      ) : (
+                        <p key={id} data-testid={`open-lead-${id}`}>
+                          获客线索 {id}
+                        </p>
+                      );
+                    })}
+                    {enter.available ? (
+                      <button
+                        type="button"
+                        data-testid={`enter-leads-${card.campaign_id}`}
+                        onClick={() => {
+                          const plan = planTaskHandoff(
+                            "view_campaign_leads",
+                            card.campaign_id,
+                          );
+                          setNotice(
+                            `已准备进入获客查看本活动线索。碰一碰不读取联系人。交接 ${plan.kind}`,
+                          );
+                        }}
+                      >
+                        进入获客看本活动线索
+                      </button>
+                    ) : (
+                      <p>获客工作台当前不可进入。活动主线没有被锁住。</p>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </CardContent>
+        </Card>
       </div>
       {notice ? <p data-testid="workbench-notice">{notice}</p> : null}
     </section>
   );
 }
 
-function ActivityGroup({ label, items }: { label: string; items: ActivityCard[] }) {
+function ActivityGroup({
+  label,
+  items,
+}: {
+  label: string;
+  items: ActivityCard[];
+}) {
   if (items.length === 0) return null;
   return (
     <div>
@@ -374,7 +494,15 @@ function CopyEditor({
   setDraft: (next: { id: string; title: string; copy: string } | null) => void;
   onSaveCopy: (id: string, title: string, copy: string) => Promise<void>;
 }) {
-  const selected = draft ?? (campaigns[0] ? { id: campaigns[0].id, title: campaigns[0].title, copy: campaigns[0].public_content } : null);
+  const selected =
+    draft ??
+    (campaigns[0]
+      ? {
+          id: campaigns[0].id,
+          title: campaigns[0].title,
+          copy: campaigns[0].public_content,
+        }
+      : null);
   if (!selected) return <p>还没有活动。先创建活动，再在这里写标题和简介。</p>;
   return (
     <form
@@ -389,21 +517,44 @@ function CopyEditor({
         value={selected.id}
         onChange={(event) => {
           const next = campaigns.find((item) => item.id === event.target.value);
-          if (next) setDraft({ id: next.id, title: next.title, copy: next.public_content });
+          if (next)
+            setDraft({
+              id: next.id,
+              title: next.title,
+              copy: next.public_content,
+            });
         }}
       >
         {campaigns.map((item) => (
-          <option key={item.id} value={item.id}>{item.title}</option>
+          <option key={item.id} value={item.id}>
+            {item.title}
+          </option>
         ))}
       </select>
-      <input value={selected.title} onChange={(event) => setDraft({ ...selected, title: event.target.value })} placeholder="标题" />
-      <input value={selected.copy} onChange={(event) => setDraft({ ...selected, copy: event.target.value })} placeholder="简介" />
+      <input
+        value={selected.title}
+        onChange={(event) =>
+          setDraft({ ...selected, title: event.target.value })
+        }
+        placeholder="标题"
+      />
+      <input
+        value={selected.copy}
+        onChange={(event) =>
+          setDraft({ ...selected, copy: event.target.value })
+        }
+        placeholder="简介"
+      />
       <button type="submit">在本页保存标题和简介</button>
     </form>
   );
 }
 
-function prepareHandoff(appId: string, campaignId: string, setNotice: (message: string) => void) {
+function prepareHandoff(
+  appId: string,
+  campaignId: string,
+  setNotice: (message: string) => void,
+) {
   if (!campaignId) {
     setNotice("还没有活动，不能把制作交到别的应用。");
     return;
@@ -416,18 +567,27 @@ function prepareHandoff(appId: string, campaignId: string, setNotice: (message: 
       body: JSON.stringify({ campaign_id: campaignId }),
     })
       .then(async (res) => {
-        const data = (await res.json()) as { message?: string; project_id?: string; resolution?: string };
+        const data = (await res.json()) as {
+          message?: string;
+          project_id?: string;
+          resolution?: string;
+        };
         if (!res.ok || !data.project_id) {
           setNotice(data.message || "产品图没有创建或恢复工程");
           return;
         }
         const verb = data.resolution === "restored" ? "恢复" : "创建";
-        setNotice(`产品图已${verb}工程 ${data.project_id}。这不是发布成功。交接 ${plan.kind}`);
+        setNotice(
+          `产品图已${verb}工程 ${data.project_id}。这不是发布成功。交接 ${plan.kind}`,
+        );
       })
       .catch(() => setNotice("产品图没有创建或恢复工程"));
     return;
   }
-  const kind = appId === "leads" ? "view_campaign_leads" : "make_campaign_video";
+  const kind =
+    appId === "leads" ? "view_campaign_leads" : "make_campaign_video";
   const plan = planTaskHandoff(kind, campaignId);
-  setNotice(`已准备${appId}交接（${plan.nav_intent}）。手工切换应用不会创建目标项目，也不会记成发布成功。`);
+  setNotice(
+    `已准备${appId}交接（${plan.nav_intent}）。手工切换应用不会创建目标项目，也不会记成发布成功。`,
+  );
 }
