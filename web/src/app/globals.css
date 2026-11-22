@@ -1,20 +1,9 @@
 /* HUI-2628: legacy --tk-* names are compatibility aliases only. Every color,
    type family, radius and spacing role below resolves to the vendored public-ai
    semantic tokens; no ad-hoc palette value lives in this file. */
+/* Type-family legacy names: not color roles, kept as direct --pn-* bridges
+   (no shadcn/ui semantic slot for font stacks). */
 :root {
-  --tk-surface: var(--pn-bg-surface);
-  --tk-border: var(--pn-border-default);
-  --tk-ink-main: var(--pn-text-primary);
-  --tk-ink-2: var(--pn-text-secondary);
-  --tk-ink-sub: var(--pn-text-muted);
-  --tk-brand: var(--pn-brand-accent);
-  --tk-brand-text: var(--pn-brand-text);
-  --tk-bg-subtle: var(--pn-bg-sunken);
-  --tk-warning: var(--pn-status-warning-fg);
-  --tk-warning-bg: var(--pn-status-warning-weak);
-  --tk-bg: var(--pn-bg-page);
-  --tk-danger: var(--pn-status-danger-fg);
-  --tk-ok: var(--pn-status-success-fg);
   --tk-display: var(--pn-type-display-family);
   --tk-sans: var(--pn-type-body-family);
 }
@@ -85,6 +74,29 @@ body,
   --sidebar-accent-foreground: var(--pn-text-primary);
   --sidebar-border: var(--pn-border-default);
   --sidebar-ring: var(--pn-brand-accent);
+
+  /* ---- Phase 2 P2: legacy --tk-* palette aliases routed through the
+        shadcn/ui semantic layer above, so the legacy skin and the shadcn
+        components source one shared palette. DOM class names are untouched;
+        only the custom-property hop changes. Each mapped token resolves to
+        the exact same --pn-* leaf as the old direct bridge (see audit report). */
+  --tk-bg: var(--background);
+  --tk-surface: var(--card);
+  --tk-border: var(--border);
+  --tk-ink-main: var(--foreground);
+  --tk-ink-sub: var(--muted-foreground);
+  --tk-brand: var(--primary);
+  --tk-bg-subtle: var(--muted);
+  --tk-warning: var(--warning);
+  --tk-danger: var(--destructive);
+  --tk-ok: var(--success);
+
+  /* Retained legacy bridges: shadcn/ui exposes no semantic slot for these
+     roles (secondary text, brand link text, warning weak fill), so they
+     keep the direct --pn-* bridge rather than being forced onto a wrong slot. */
+  --tk-ink-2: var(--pn-text-secondary);
+  --tk-brand-text: var(--pn-brand-text);
+  --tk-warning-bg: var(--pn-status-warning-weak);
 }
 
 @media (prefers-reduced-motion: reduce) {
