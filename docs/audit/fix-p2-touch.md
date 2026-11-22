@@ -99,7 +99,7 @@
 
 ## 四、原生 select 清单（migrated / retained）
 
-全仓实测：`<select>` 共 **74** 处，分布 **21** 个文件。本批迁移 **5** 处 / 4 文件；保留 **69** 处 / 17 文件。
+全仓实测：`<select>` 共 **74** 处，分布 **22** 个文件。本批迁移 **5** 处 / 4 文件；保留 **69** 处 / 18 文件。
 
 ### 4.1 Migrated（已换 `components/ui` Select）
 
@@ -121,7 +121,7 @@
 |---------|----------|
 | `src/components/publish/PublishHandoff.tsx:304` | `tests/publish-handoff-mount.test.ts:71-75` 断言该组件 import 仅允许 `react` 与 `./state`；引入 `@/components/ui/select` 会破坏自足目录纪律。已回退迁移。 |
 
-#### B. Phase 0 延后工作面板（业务守卫/状态机与外壳交织，需后端可运行时对齐）—— 51 处
+#### B. Phase 0 延后工作面板（业务守卫/状态机与外壳交织，需后端可运行时对齐）—— 47 处
 
 | 文件 | 处数 | 行号 |
 |------|------|------|
