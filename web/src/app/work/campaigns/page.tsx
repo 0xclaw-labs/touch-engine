@@ -3,6 +3,15 @@
 import { useCallback, useEffect, useState } from "react";
 import { failureText, useSession } from "@/components/work/merchant-session";
 import { LoadErrorState } from "@/components/work/load-error-state";
+import { Badge } from "@/components/ui/badge";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { isPastEnd, surfaceLabel } from "@/lib/product-finish";
 
 interface Campaign {
@@ -70,26 +79,41 @@ export default function CampaignsPage() {
       {filter === "expired" && visible.length === 0 && phase === "ready" ? <p data-state="expired">{surfaceLabel("expired")}的活动还没有。</p> : null}
       {error && phase !== "error" ? <p className="tk-danger">{error}</p> : null}
       {pending?<section className="tk-card" aria-label="确认活动影响"><p>将停止新参与与新发放。已发有效券仍可使用，历史记录保留；在途预留需按冻结条件核对。</p><button className="tk-button" type="button" onClick={()=>void transition(pending.id,pending.status,true)}>确认{pending.status==="ended"?"结束":"暂停"}活动</button><button className="tk-quiet" type="button" onClick={()=>setPending(null)}>取消</button></section>:null}
-      <ul className="tk-list">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>活动</TableHead>
+            <TableHead>状态</TableHead>
+            <TableHead>操作</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
         {visible.map((item) => {
           const expired = isPastEnd(item.ends_at);
+          const badgeVariant = item.status === "active" ? "success" : item.status === "paused" ? "warning" : item.status === "ended" ? "muted" : "secondary";
           return (
-            <li key={item.id}>
-              <a href={`/work/campaigns/${item.id}`}>{item.title}</a>
-              <span className="tk-note"> {item.availability?.label || statusLabel(item.status)}</span>
-              {item.status === "paused" ? <span data-state="paused" className="tk-unknown"> {surfaceLabel("paused")}</span> : null}
-              {item.status === "ended" ? <span data-state="ended" className="tk-note"> {surfaceLabel("ended")}</span> : null}
-
-              <div className="tk-row tk-gap">
-                {item.status === "draft" && !expired ? <button className="tk-quiet" type="button" onClick={() => void transition(item.id, "active")}>启用</button> : null}
-                {item.status === "active" ? <button className="tk-quiet" type="button" onClick={() => void transition(item.id, "paused")}>暂停</button> : null}
-                {item.status === "paused" && !expired ? <button className="tk-quiet" type="button" onClick={() => void transition(item.id, "active")}>恢复</button> : null}
-                {item.status === "active" || item.status === "paused" && !expired ? <button className="tk-quiet" type="button" onClick={() => void transition(item.id, "ended")}>结束</button> : null}
-              </div>
-            </li>
+            <TableRow key={item.id}>
+              <TableCell className="font-medium">
+                <a href={`/work/campaigns/${item.id}`}>{item.title}</a>
+              </TableCell>
+              <TableCell>
+                <Badge variant={badgeVariant}>{item.availability?.label || statusLabel(item.status)}</Badge>
+                {item.status === "paused" ? <span data-state="paused" className="tk-unknown"> {surfaceLabel("paused")}</span> : null}
+                {item.status === "ended" ? <span data-state="ended" className="tk-note"> {surfaceLabel("ended")}</span> : null}
+              </TableCell>
+              <TableCell>
+                <div className="tk-row tk-gap">
+                  {item.status === "draft" && !expired ? <button className="tk-quiet" type="button" onClick={() => void transition(item.id, "active")}>启用</button> : null}
+                  {item.status === "active" ? <button className="tk-quiet" type="button" onClick={() => void transition(item.id, "paused")}>暂停</button> : null}
+                  {item.status === "paused" && !expired ? <button className="tk-quiet" type="button" onClick={() => void transition(item.id, "active")}>恢复</button> : null}
+                  {item.status === "active" || item.status === "paused" && !expired ? <button className="tk-quiet" type="button" onClick={() => void transition(item.id, "ended")}>结束</button> : null}
+                </div>
+              </TableCell>
+            </TableRow>
           );
         })}
-      </ul>
+        </TableBody>
+      </Table>
       </div>
     </main>
   );

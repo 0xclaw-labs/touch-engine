@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { failureText, useSession } from "@/components/work/merchant-session";
 import { surfaceLabel } from "@/lib/product-finish";
 import { StoreProductionPanel } from "@/components/work/store-production-panel";
+import { Badge } from "@/components/ui/badge";
 import { ensureContentPack } from "@/lib/work/content-editor-flow";
 import styles from "./content-editor.module.css";
 
@@ -103,6 +104,19 @@ function statusCopy(status: string): string {
       return "已停止分发";
     default:
       return status;
+  }
+}
+
+function statusBadgeVariant(status: string): "success" | "warning" | "secondary" | "muted" {
+  switch (status) {
+    case "adopted":
+      return "success";
+    case "candidate":
+      return "warning";
+    case "draft":
+      return "secondary";
+    default:
+      return "muted";
   }
 }
 
@@ -580,9 +594,7 @@ export function StoreContentDrawer({ storeId, storeName = "", campaignId, purpos
                       const isAdopted = Boolean(adoption);
                       return (
                         <li key={version.id} data-version-id={version.id} data-status={version.status}>
-                          <p className="tk-note">
-                            第 {version.version_no} 版 · {statusCopy(version.status)} · {sourceCopy(version.source)} · {version.title}
-                          </p>
+                          <div className="tk-note">第 {version.version_no} 版 · <Badge variant={statusBadgeVariant(version.status)}>{statusCopy(version.status)}</Badge> · {sourceCopy(version.source)} · {version.title}</div>
                           <p className="tk-note">{version.body}</p>
                           <p className="tk-note">门店 {version.store_name}{version.price_note ? ` · ${version.price_note}` : ""}{version.valid_note ? ` · ${version.valid_note}` : ""}</p>
                           {version.marking?.ai_generated ? (
