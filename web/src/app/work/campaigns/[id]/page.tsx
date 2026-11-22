@@ -10,6 +10,7 @@ import { isPastEnd, surfaceLabel } from "@/lib/product-finish";
 import { formatCampaignWindow } from "@/lib/public-time";
 import { takenList } from "@/lib/campaign-detail";
 import { refusalCopy } from "@/lib/campaign-config";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 interface Campaign {
   id: string;
@@ -54,6 +55,7 @@ export default function CampaignDetailPage() {
   const [legacy,setLegacy]=useState(false);
   const [promotion,setPromotion]=useState(false);
   const [pendingTransition,setPendingTransition]=useState("");
+  const [detailTab, setDetailTab] = useState<"config" | "share">("config");
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -172,10 +174,18 @@ export default function CampaignDetailPage() {
           {pendingTransition?<section className="tk-card" aria-label="确认活动影响"><p>将停止新参与与新发放。在途预留按冻结条件核对，已发有效券继续按原条件使用；历史记录保留。</p><button className="tk-button" type="button" onClick={()=>void transition(pendingTransition,true)}>确认{pendingTransition==="ended"?"结束":"暂停"}活动</button><button className="tk-quiet" type="button" onClick={()=>setPendingTransition("")}>取消</button></section>:null}
           {error ? <p className="tk-danger" data-state="error">{error}{promotion ? <> <a href="#publish-config">查看活动承诺与启用检查</a></> : null}</p> : null}
           {campaign.store_id?<p><a href={`/work/stores/${campaign.store_id}?tab=page`}>进入{storeName || "当前门店"}工作区</a></p>:null}
+          <Tabs value={detailTab} onValueChange={(v) => setDetailTab(v === "share" ? "share" : "config")} className="tk-gap">
+            <TabsList>
+              <TabsTrigger value="config">配置</TabsTrigger>
+              <TabsTrigger value="share">分享与触达</TabsTrigger>
+            </TabsList>
+            <TabsContent value="config" className="tk-gap">
           {session.role!=="org_owner"?<p className="tk-note">活动承诺由负责人维护。当前角色可到<a href={`/work/service?campaign=${encodeURIComponent(id)}`}>店员台办理顾客事项</a>。</p>:promotion?<CampaignConfigPanel campaignId={id} campaignTitle={campaign.title} campaignBody={campaign.public_content} campaignStoreId={campaign.store_id} campaignStoreName={storeName} onAuthorityChanged={()=>void load()}/>:<section className="tk-section"><h2 className="tk-section-title">活动目标</h2><p>本活动展示门店本次服务与咨询信息。</p><button className="tk-quiet" type="button" onClick={()=>setPromotion(true)}>增加内容推广与优惠承诺</button></section>}
           <p><a href={`/work/rewards?campaign=${encodeURIComponent(id)}`}>管理优惠库存、待处理与旧券履约</a></p>
           <p><button className="tk-quiet" type="button" onClick={()=>setLegacy(v=>!v)}>{legacy?"收起历史制作记录":"核对历史制作交接记录"}</button></p>
           {legacy?<CampaignLegacyHistory campaignId={id} endsAt={campaign.ends_at}/>:null}
+            </TabsContent>
+            <TabsContent value="share" className="tk-gap">
           {linkPhase === "error" ? (
             <p className="tk-state tk-danger" data-list="links" data-state="error">
               短码没有读到。这不是还没有短码。
@@ -208,6 +218,8 @@ export default function CampaignDetailPage() {
             </ul>
             <p><a href="/admin">去批量生成标签</a></p>
           </section>
+            </TabsContent>
+          </Tabs>
 
         </>
       ) : null}

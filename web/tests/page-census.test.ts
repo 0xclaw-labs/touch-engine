@@ -250,7 +250,8 @@ describe("半成品标记", () => {
       // HUI-2628：两张表移入 AdminDataTable 后，页面源不再记 raw table。
       ["/admin", ["raw button", "raw input"]],
       ["/admin/preview", []],
-      ["/work/stores", ["raw button", "raw input"]],
+      // HUI-4885:门店列表接入 Dialog/Table/Badge 外壳,页面源零原生控件标记。
+      ["/work/stores", []],
       ["/work/stores/[id]", []],
       ["/work/campaigns", ["raw button"]],
       ["/work/campaigns/new", []],

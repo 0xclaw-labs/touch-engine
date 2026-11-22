@@ -19,6 +19,17 @@ import {
   replaceReasonFace,
   replaceReasonList,
 } from "@/lib/touchpoint-deliveries";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
 import { entryIntentStorageKey, freezeEntryIntent, readEntryIntent, type EntryIntent } from "@/lib/touchpoint-creation";
 import {
   entryFace,
@@ -157,6 +168,9 @@ export function TouchpointsPanel({ storeId = "" }: { storeId?: string } = {}) {
   const [campaigns, setCampaigns] = useState<CampaignItem[]>([]);
   const [stores, setStores] = useState<StoreItem[]>([]);
   const [tags, setTags] = useState<TagItem[]>([]);
+  // 二维码预览走底部 Sheet:图随会话 Cookie 解析归属门店;未配置对外地址时图不出,错误态看页内提示。
+  const [qrTarget, setQrTarget] = useState<TouchpointItem | null>(null);
+  const [qrLoaded, setQrLoaded] = useState<Record<string, boolean>>({});
 
   const [storeFilter, setStoreFilter] = useState(storeId);
   const [campaignFilter, setCampaignFilter] = useState("");
@@ -685,16 +699,76 @@ export function TouchpointsPanel({ storeId = "" }: { storeId?: string } = {}) {
                 {tp.campaign_title ? ` · 注记活动:${tp.campaign_title}` : ""}
                 {tp.position ? ` · ${tp.position}` : ""}
               </p>
-              <p className="tk-note">
-                状态:{tp.status === "active" ? "启用" : "停用"} ·
-                部署:{stageFace(tp.deployment_stage)}
-              </p>
+              <div className="tk-note">
+                <Badge variant={tp.status === "active" ? "success" : "muted"}>{tp.status === "active" ? "启用" : "停用"}</Badge>
+                {" · 部署:"}{stageFace(tp.deployment_stage)}
+              </div>
               <p className="tk-note">检查:{entryFace(tp.target_type, tp.entry_state)}</p>
               {tp.url ? <p className="tk-note"><code>{tp.url}</code></p> : <p className="tk-note">入口已保存，发布地址尚未配置。请联系系统管理员，完成后继续使用此入口。</p>}
               <div className="tk-toolbar">
                 {tp.url ? <a className="tk-quiet" href={tp.url} target="_blank" rel="noopener noreferrer" data-action="open-entry">打开顾客入口</a> : null}
                 <button className="tk-quiet" type="button" data-action="copy-url" disabled={!tp.url} onClick={() => void copyUrl(tp)}>复制稳定链接</button>
-                <button className="tk-quiet" type="button" data-action="download-qr" disabled={!tp.url} onClick={() => void downloadQr(tp)}>下载二维码</button>
+                <Sheet
+                  open={qrTarget?.id === tp.id}
+                  onOpenChange={(open) => {
+                    if (!open) setQrTarget(null);
+                  }}
+                >
+                  <SheetTrigger asChild>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      type="button"
+                      data-action="view-qr"
+                      disabled={!tp.url}
+                      onClick={() => {
+                        setQrTarget(tp);
+                        setQrLoaded((m) => ({ ...m, [tp.id]: false }));
+                      }}
+                    >
+                      二维码
+                    </Button>
+                  </SheetTrigger>
+                  <SheetContent side="bottom">
+                    <SheetHeader>
+                      <SheetTitle>稳定入口二维码</SheetTitle>
+                      <SheetDescription>
+                        {tp.label || tp.tag_label || "未命名入口"}
+                        {tp.url ? ` · ${tp.url}` : ""}
+                      </SheetDescription>
+                    </SheetHeader>
+                    <div className="tk-gap tk-row tk-admin-between">
+                      <div className="relative flex h-48 w-48 items-center justify-center rounded-md border border-input bg-muted/30">
+                        {!qrLoaded[tp.id] ? <span className="tk-note" role="status" data-field="qr-loading">二维码加载中…</span> : null}
+                        <img
+                          className={`h-48 w-48 rounded-md ${qrLoaded[tp.id] ? "" : "invisible"}`}
+                          src={`/api/touchpoints/${tp.id}/qrcode?size=256`}
+                          alt={`${tp.code} 稳定入口二维码`}
+                          data-field="qr-image"
+                          data-state={qrLoaded[tp.id] ? "ready" : "loading"}
+                          onLoad={() => setQrLoaded((m) => ({ ...m, [tp.id]: true }))}
+                          onError={() => setQrLoaded((m) => ({ ...m, [tp.id]: false }))}
+                        />
+                      </div>
+                      <div className="tk-gap">
+                        <p className="tk-note">短码：{tp.code}</p>
+                        {tp.url ? <code className="tk-note">{tp.url}</code> : <p className="tk-note">服务端还没配置对外地址，二维码暂不可出。</p>}
+                      </div>
+                    </div>
+                    <SheetFooter>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        type="button"
+                        data-action="download-qr"
+                        disabled={!tp.url}
+                        onClick={() => void downloadQr(tp)}
+                      >
+                        下载二维码
+                      </Button>
+                    </SheetFooter>
+                  </SheetContent>
+                </Sheet>
                 <button className="tk-quiet" type="button" data-action="toggle-status" onClick={() => void toggleStatus(tp)}>
                   {tp.status === "active" ? "停用稳定入口" : "恢复稳定入口"}
                 </button>

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { failureText, useSession } from "@/components/work/merchant-session";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { presentAccountSeparation, type SeparationView } from "@/lib/account-separation";
 import { CampaignInventoryPrepare } from "@/components/work/campaign-inventory-prepare";
 import { toRFC3339,benefitKindLabel,verificationModeLabel,type PublishConfigRecord } from "@/lib/campaign-config";
@@ -90,6 +91,8 @@ export default function RewardsPage() {
   const [attempt, setAttempt] = useState(0);
 
   const [tab, setTab] = useState<RewardTab>("store");
+  // 批次发放 / 权益记录核销 分区走 Radix Tabs;与上方门店券/外部团购页签互不替代。
+  const [rewardTab, setRewardTab] = useState<"issue" | "records">("issue");
   const ledgerRequest=useRef(0);
   const [ledgerPhase,setLedgerPhase]=useState<"loading"|"error"|"ready">("loading");
   const [ledgerError,setLedgerError]=useState("");
@@ -349,6 +352,12 @@ export default function RewardsPage() {
             )}
           </section>
 
+          <Tabs value={rewardTab} onValueChange={(v) => setRewardTab(v === "records" ? "records" : "issue")} className="tk-gap">
+            <TabsList>
+              <TabsTrigger value="issue">发放与批次</TabsTrigger>
+              <TabsTrigger value="records">权益记录（核销）</TabsTrigger>
+            </TabsList>
+            <TabsContent value="issue" className="tk-gap">
           <section aria-label="奖励批次">
             <h2 className="tk-subtitle">优惠库存</h2>
             {inventory.length === 0 ? (
@@ -377,7 +386,8 @@ export default function RewardsPage() {
               <p className="tk-note">批次（预算）管理只归总部角色；店员不因此获得改全店预算的权限。</p>
             )}
           </section>
-
+            </TabsContent>
+            <TabsContent value="records" className="tk-gap">
           <section aria-label="权益记录">
             <h2 className="tk-subtitle">履约记录与异常</h2>
             {benefits.length === 0 ? (
@@ -414,6 +424,8 @@ export default function RewardsPage() {
               </ul>
             )}
           </section>
+            </TabsContent>
+          </Tabs>
 
 
 

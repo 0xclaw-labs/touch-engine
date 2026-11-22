@@ -93,7 +93,8 @@ const markerBook: readonly { route: string; markers: readonly Marker[] }[] = [
   // HUI-2628 r2：preview/page.tsx 行内样式已清零，账本同步。
   { route: "/admin/preview", markers: [] },
   { route: "/work/stores/[id]", markers: [] },
-  { route: "/work/stores", markers: ["raw button", "raw input"] },
+  // HUI-4885:门店列表接入 Dialog/Table/Badge 外壳后,页面源不再保留原生 button/input。
+  { route: "/work/stores", markers: [] },
   { route: "/work/campaigns", markers: ["raw button"] },
   // HUI-2628: creation route is a thin page; interactive form lives in the
   // wizard component (page source has no native control markers).
