@@ -22,6 +22,13 @@ import {
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Card, CardContent } from "@/components/ui/card";
 
 interface AttemptResponse {
@@ -223,17 +230,18 @@ export function CustomerPublish({
         )}
         <Label className="tk-label">
           发布到
-          <select
-            className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            value={platform}
-            onChange={(e) => setPlatform(e.target.value)}
-          >
-            {(matrix?.platforms ?? [{ platform: "douyin" }]).map((item) => (
-              <option key={item.platform} value={item.platform}>
-                {platformLabel(item.platform)}
-              </option>
-            ))}
-          </select>
+          <Select value={platform} onValueChange={setPlatform}>
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {(matrix?.platforms ?? [{ platform: "douyin" }]).map((item) => (
+                <SelectItem key={item.platform} value={item.platform}>
+                  {platformLabel(item.platform)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </Label>
         {row && (
           <p className="tk-note" data-testid="publish-summary">

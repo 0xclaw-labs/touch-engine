@@ -154,6 +154,8 @@ function AdminWorkspace({ onAccountChanged }: { onAccountChanged: () => void }) 
   const [error, setError] = useState("");
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [stores, setStores] = useState<StoreRec[]>([]);
+  // 待办计数：工作台 my_tasks 长度上抛，供侧栏 Badge 呈现。
+  const [todoCount, setTodoCount] = useState(0);
 
   // HUI-1674 门店治理:org_owner 改店/停用;编辑行内状态
   const [storeEdit, setStoreEdit] = useState<{ id: string; name: string; address: string } | null>(null);
@@ -798,7 +800,15 @@ function AdminWorkspace({ onAccountChanged }: { onAccountChanged: () => void }) 
   }
 
   return (
-    <AdminShell nickname={email_ || "商家"} sessionRole={role} onLogout={() => void logout()} onTenantChange={switchMerchant}>
+    <AdminShell
+      nickname={email_ || "商家"}
+      sessionRole={role}
+      tenantId={tenantId}
+      onLogout={() => void logout()}
+      onTenantChange={switchMerchant}
+      scopes={scopes}
+      todoCount={todoCount}
+    >
     <main className="tk-admin-shell">
       {/* 三态静态声明（HUI-2628 fix2，现行 detector 口径；口径议题归 HUI-2619） */}
       <p hidden data-state="loading">正在读取</p>
@@ -838,6 +848,7 @@ function AdminWorkspace({ onAccountChanged }: { onAccountChanged: () => void }) 
       <MerchantWorkbench
         tenantId={tenantId}
         campaigns={campaigns.map((item) => ({ id: item.id, title: item.title, public_content: item.public_content }))}
+        onTodoCount={setTodoCount}
         onSaveCopy={async (id, title, copy) => {
           const res = await api("PATCH", `campaigns/${id}`, { title, public_content: copy });
           if (!res.ok) {

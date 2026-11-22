@@ -1,49 +1,49 @@
 /* Painuo 1.0.0; source a46310d3a401f0992d346d6c90c1643e84fca4181b990312278d2c7808d581db; explicit scope only; profile touch-web */
 [data-pn-surface="admin.compact"][data-pn-theme="dark"] {
-  --tk-bg-subtle: var(--pn-bg-sunken);
-  --tk-border: var(--pn-border-default);
-  --tk-brand: var(--pn-brand-accent);
-  --tk-ink-main: var(--pn-text-primary);
-  --tk-surface: var(--pn-bg-surface);
-  --tk-warning: var(--pn-status-warning-fg);
+  --tk-bg-subtle: var(--muted);
+  --tk-border: var(--border);
+  --tk-brand: var(--primary);
+  --tk-ink-main: var(--foreground);
+  --tk-surface: var(--card);
+  --tk-warning: var(--warning);
 }
 [data-pn-surface="admin.compact"][data-pn-theme="light"] {
-  --tk-bg-subtle: var(--pn-bg-sunken);
-  --tk-border: var(--pn-border-default);
-  --tk-brand: var(--pn-brand-accent);
-  --tk-ink-main: var(--pn-text-primary);
-  --tk-surface: var(--pn-bg-surface);
-  --tk-warning: var(--pn-status-warning-fg);
+  --tk-bg-subtle: var(--muted);
+  --tk-border: var(--border);
+  --tk-brand: var(--primary);
+  --tk-ink-main: var(--foreground);
+  --tk-surface: var(--card);
+  --tk-warning: var(--warning);
 }
 [data-pn-surface="public.consumer"][data-pn-theme="dark"] {
-  --tk-bg-subtle: var(--pn-bg-sunken);
-  --tk-border: var(--pn-border-default);
-  --tk-brand: var(--pn-brand-accent);
-  --tk-ink-main: var(--pn-text-primary);
-  --tk-surface: var(--pn-bg-surface);
-  --tk-warning: var(--pn-status-warning-fg);
+  --tk-bg-subtle: var(--muted);
+  --tk-border: var(--border);
+  --tk-brand: var(--primary);
+  --tk-ink-main: var(--foreground);
+  --tk-surface: var(--card);
+  --tk-warning: var(--warning);
 }
 [data-pn-surface="public.consumer"][data-pn-theme="light"] {
-  --tk-bg-subtle: var(--pn-bg-sunken);
-  --tk-border: var(--pn-border-default);
-  --tk-brand: var(--pn-brand-accent);
-  --tk-ink-main: var(--pn-text-primary);
-  --tk-surface: var(--pn-bg-surface);
-  --tk-warning: var(--pn-status-warning-fg);
+  --tk-bg-subtle: var(--muted);
+  --tk-border: var(--border);
+  --tk-brand: var(--primary);
+  --tk-ink-main: var(--foreground);
+  --tk-surface: var(--card);
+  --tk-warning: var(--warning);
 }
 [data-pn-surface="work.light"][data-pn-theme="dark"] {
-  --tk-bg-subtle: var(--pn-bg-sunken);
-  --tk-border: var(--pn-border-default);
-  --tk-brand: var(--pn-brand-accent);
-  --tk-ink-main: var(--pn-text-primary);
-  --tk-surface: var(--pn-bg-surface);
-  --tk-warning: var(--pn-status-warning-fg);
+  --tk-bg-subtle: var(--muted);
+  --tk-border: var(--border);
+  --tk-brand: var(--primary);
+  --tk-ink-main: var(--foreground);
+  --tk-surface: var(--card);
+  --tk-warning: var(--warning);
 }
 [data-pn-surface="work.light"][data-pn-theme="light"] {
-  --tk-bg-subtle: var(--pn-bg-sunken);
-  --tk-border: var(--pn-border-default);
-  --tk-brand: var(--pn-brand-accent);
-  --tk-ink-main: var(--pn-text-primary);
-  --tk-surface: var(--pn-bg-surface);
-  --tk-warning: var(--pn-status-warning-fg);
+  --tk-bg-subtle: var(--muted);
+  --tk-border: var(--border);
+  --tk-brand: var(--primary);
+  --tk-ink-main: var(--foreground);
+  --tk-surface: var(--card);
+  --tk-warning: var(--warning);
 }
