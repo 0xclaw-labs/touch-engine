@@ -11,7 +11,6 @@ import {
   type EcoNavModel,
 } from "@/lib/eco-nav/model";
 import { applyMerchantSwitch } from "@/lib/eco-nav/touch-shell";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
@@ -74,10 +73,8 @@ export function PreviewShell() {
         </AlertDescription>
       </Alert>
       <div className="tk-admin-form-row tk-admin-mt-12 tk-row">
-        <Button
+        <button
           type="button"
-          variant="outline"
-          size="sm"
           onClick={() =>
             setModel(
               brandModel(
@@ -90,17 +87,13 @@ export function PreviewShell() {
           }
         >
           品牌甲
-        </Button>
-        <Button
+        </button>
+        <button
           type="button"
-          variant="outline"
-          size="sm"
-          onClick={() =>
-            setModel(brandModel("品牌乙", "leads", "获客", "ti-leads-web"))
-          }
+          onClick={() => setModel(brandModel("品牌乙", "leads", "获客", "ti-leads-web"))}
         >
           品牌乙
-        </Button>
+        </button>
       </div>
       <Card data-testid="admin-campaigns" className="tk-admin-grid-16">
         <CardHeader>

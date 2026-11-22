@@ -1,14 +1,7 @@
 import type { ReactNode } from "react";
-import {
-  Table,
-  TableBody,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 
 // 商家后台的数据表共用这一处表格。页面源不再直接写裸 table;
-// 表体行由各页面以 TableRow/TableCell 提供。
+// 表体行由各页面以 tr/td 提供。
 export function AdminDataTable({
   head,
   children,
@@ -17,15 +10,15 @@ export function AdminDataTable({
   children: ReactNode;
 }) {
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
+    <table className="tk-admin-table">
+      <thead>
+        <tr>
           {head.map((label) => (
-            <TableHead key={label}>{label}</TableHead>
+            <th key={label}>{label}</th>
           ))}
-        </TableRow>
-      </TableHeader>
-      <TableBody>{children}</TableBody>
-    </Table>
+        </tr>
+      </thead>
+      <tbody>{children}</tbody>
+    </table>
   );
 }

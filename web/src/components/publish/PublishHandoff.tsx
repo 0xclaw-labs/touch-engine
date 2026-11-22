@@ -37,8 +37,6 @@ import {
   type RoutesResponse,
   type StartResponse,
 } from "./state";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 
 const PLATFORMS: { id: string; label: string }[] = [
   { id: "douyin", label: "抖音" },
@@ -344,15 +342,15 @@ export function PublishHandoff({ code }: { code: string }) {
         )
       )}
       {!handoff && !refused && (
-        <Button
+        <button
           type="button"
-          variant="outline"
+          className="tk-quiet"
           disabled={busy || !confirmed || !snapshot}
           data-testid="handoff-start"
           onClick={start}
         >
           {busy ? "处理中…" : "开始发布交接"}
-        </Button>
+        </button>
       )}
       {handoff && (
         <div
@@ -360,11 +358,7 @@ export function PublishHandoff({ code }: { code: string }) {
           data-status={known ? status : "unknown"}
         >
           <p className={status === "platform_confirmed" ? "tk-ok" : "tk-note"}>
-            <Badge
-              variant={status === "platform_confirmed" ? "success" : "muted"}
-            >
-              {statusCopy(status)}
-            </Badge>
+            {statusCopy(status)}
           </p>
           {evidenceCopy(handoff.evidence_source) && (
             <p className="tk-note">{evidenceCopy(handoff.evidence_source)}</p>
@@ -375,39 +369,36 @@ export function PublishHandoff({ code }: { code: string }) {
             </p>
           )}
           <div className="tk-row tk-gap">
-            <Button
-              variant="outline"
-              size="sm"
+            <button
               type="button"
+              className="tk-quiet"
               disabled={busy}
               data-testid="handoff-refresh"
               onClick={() => handoff.id && refresh(handoff.id)}
             >
               刷新结果
-            </Button>
+            </button>
             {canRequestDone(status) && (
-              <Button
-                variant="outline"
-                size="sm"
+              <button
                 type="button"
+                className="tk-quiet"
                 disabled={busy}
                 data-testid="handoff-done"
                 onClick={requestDone}
               >
                 我已完成
-              </Button>
+              </button>
             )}
             {canCancel(status) && (
-              <Button
-                variant="outline"
-                size="sm"
+              <button
                 type="button"
+                className="tk-quiet"
                 disabled={busy}
                 data-testid="handoff-cancel"
                 onClick={cancel}
               >
                 取消交接
-              </Button>
+              </button>
             )}
           </div>
         </div>
@@ -431,16 +422,15 @@ export function PublishHandoff({ code }: { code: string }) {
         </p>
       )}
       {openable && entry && (
-        <Button variant="outline" size="sm" asChild>
-          <a
-            href={entry.method === "h5" ? entry.url : undefined}
-            target="_blank"
-            rel="noopener,noreferrer"
-            data-testid="handoff-entry"
-          >
-            进入{platformLabel(platform)}发布（这一步还不是发布成功）
-          </a>
-        </Button>
+        <a
+          className="tk-quiet"
+          href={entry.method === "h5" ? entry.url : undefined}
+          target="_blank"
+          rel="noopener,noreferrer"
+          data-testid="handoff-entry"
+        >
+          进入{platformLabel(platform)}发布（这一步还不是发布成功）
+        </a>
       )}
       {unsupportedLines(entry).map((line) => (
         <p key={line} className="tk-note">

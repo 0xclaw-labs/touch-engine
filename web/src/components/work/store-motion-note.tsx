@@ -4,7 +4,6 @@ import { useCallback, useEffect, useState } from "react";
 import { failureText, useSession } from "@/components/work/merchant-session";
 import { presentDeclaration } from "@/lib/store-motion-status";
 import { surfaceLabel } from "@/lib/product-finish";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -84,10 +83,7 @@ export function StoreMotionNote({ campaignId }: { campaignId: string }) {
 
   const load = useCallback(async () => {
     setPhase("loading");
-    const res = await session.api(
-      "GET",
-      `campaigns/${campaignId}/store-motion`,
-    );
+    const res = await session.api("GET", `campaigns/${campaignId}/store-motion`);
     if (res.status === 404) {
       setRecorded(null);
       setError("");
@@ -124,10 +120,7 @@ export function StoreMotionNote({ campaignId }: { campaignId: string }) {
     setSaving(true);
     setError("");
     try {
-      const res = await session.api(
-        "PUT",
-        `campaigns/${campaignId}/store-motion`,
-        {
+      const res = await session.api("PUT", `campaigns/${campaignId}/store-motion`, {
           store_name: params.store_name,
           activity_time: params.activity_time,
           price: params.price,
@@ -273,9 +266,7 @@ export function StoreMotionNote({ campaignId }: { campaignId: string }) {
                   required
                 />
               </label>
-              <Button type="submit" disabled={saving}>
-                记下门店参数
-              </Button>
+              <button className="tk-button" type="submit" disabled={saving}>记下门店参数</button>
             </form>
           </CardContent>
         </Card>

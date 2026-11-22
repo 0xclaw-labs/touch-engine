@@ -60,10 +60,7 @@ export function ProductionPanel({
 
   const load = useCallback(async () => {
     setPhase("loading");
-    const res = await session.api(
-      "GET",
-      `campaigns/${campaignId}/content-handoffs`,
-    );
+    const res = await session.api("GET", `campaigns/${campaignId}/content-handoffs`);
     if (!res.ok) {
       setError(failureText(res.status, res.data));
       setPhase("error");

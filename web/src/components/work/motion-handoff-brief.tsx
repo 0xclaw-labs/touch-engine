@@ -57,10 +57,7 @@ export function MotionHandoffBrief({ campaignId }: { campaignId: string }) {
 
   const load = useCallback(async () => {
     setPhase("loading");
-    const res = await session.api(
-      "GET",
-      `campaigns/${campaignId}/motion-handoff`,
-    );
+    const res = await session.api("GET", `campaigns/${campaignId}/motion-handoff`);
     if (!res.ok) {
       setError(failureText(res.status, res.data));
       setBrief(null);
@@ -93,7 +90,7 @@ export function MotionHandoffBrief({ campaignId }: { campaignId: string }) {
         </div>
       ) : null}
       {phase === "error" ? (
-        <Alert variant="destructive" role="alert" data-state="error">
+        <Alert variant="destructive" role="alert" data-state="error" className="tk-danger">
           <AlertDescription>{error || surfaceLabel("error")}</AlertDescription>
         </Alert>
       ) : null}
