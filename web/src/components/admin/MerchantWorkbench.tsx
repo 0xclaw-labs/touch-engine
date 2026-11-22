@@ -3,6 +3,13 @@
 import { useEffect, useRef, useState } from "react";
 import { AccountSeparation } from "@/components/admin/AccountSeparation";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type { SeparationView } from "@/lib/account-separation";
 import type { EcoNavModel } from "@/lib/eco-nav/model";
 import { planTaskHandoff } from "@/lib/eco-nav/touch-shell";
@@ -315,18 +322,22 @@ export function MerchantWorkbench({
             ) : null}
             <label className="tk-admin-block tk-admin-mt-8">
               当前内容任务
-              <select
+              <Select
                 value={intent}
-                onChange={(event) =>
-                  setIntent(event.target.value as ContentToolInput["intent"])
+                onValueChange={(value) =>
+                  setIntent(value as ContentToolInput["intent"])
                 }
-                className="tk-admin-ml-8"
               >
-                <option value="operate">用已有素材做活动</option>
-                <option value="creative_plan">需要脚本和分镜</option>
-                <option value="deep_edit">需要深剪成片</option>
-                <option value="avatar">需要数字人口播</option>
-              </select>
+                <SelectTrigger className="tk-admin-ml-8">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="operate">用已有素材做活动</SelectItem>
+                  <SelectItem value="creative_plan">需要脚本和分镜</SelectItem>
+                  <SelectItem value="deep_edit">需要深剪成片</SelectItem>
+                  <SelectItem value="avatar">需要数字人口播</SelectItem>
+                </SelectContent>
+              </Select>
             </label>
             {offers.map((offer) =>
               offer.shown ? (
@@ -519,10 +530,10 @@ function CopyEditor({
       }}
       className="tk-admin-grid-6 tk-admin-mt-8"
     >
-      <select
+      <Select
         value={selected.id}
-        onChange={(event) => {
-          const next = campaigns.find((item) => item.id === event.target.value);
+        onValueChange={(value) => {
+          const next = campaigns.find((item) => item.id === value);
           if (next)
             setDraft({
               id: next.id,
@@ -531,12 +542,17 @@ function CopyEditor({
             });
         }}
       >
-        {campaigns.map((item) => (
-          <option key={item.id} value={item.id}>
-            {item.title}
-          </option>
-        ))}
-      </select>
+        <SelectTrigger className="w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {campaigns.map((item) => (
+            <SelectItem key={item.id} value={item.id}>
+              {item.title}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
       <input
         value={selected.title}
         onChange={(event) =>

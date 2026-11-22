@@ -14,6 +14,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 const KIND_LABEL: Record<string, string> = {
   wifi: "门店 WiFi",
@@ -130,19 +137,18 @@ export function ExtraJumpPanel(props: {
         )}
         <label className="tk-label">
           活动
-          <select
-            className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            value={campaignId}
-            onChange={(e) => setCampaignId(e.target.value)}
-            disabled={!owner}
-          >
-            <option value="">选择活动</option>
-            {props.campaigns.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.title}
-              </option>
-            ))}
-          </select>
+          <Select value={campaignId} onValueChange={setCampaignId} disabled={!owner}>
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="选择活动" />
+            </SelectTrigger>
+            <SelectContent>
+              {props.campaigns.map((item) => (
+                <SelectItem key={item.id} value={item.id}>
+                  {item.title}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </label>
         {merchantJumpKinds().map((kind) => (
           <div key={kind} className="tk-row">
