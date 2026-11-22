@@ -29,6 +29,8 @@ import {
   type RewardBenefitPublic,
   rewardCardCopy,
 } from "@/lib/customer-journey";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 
 export interface PublicRewardSummary {
   counts?: Record<string, number>;
@@ -116,46 +118,62 @@ export function RewardStatus({ code, participation, benefit, externalPublish, be
   const stock = stockLine(slot?.available_qty);
 
   return (
-    <section className="tk-section" data-testid="reward-status" data-status={status}>
-      <h2 className="tk-section-title">领取或请店员确认</h2>
-      <p className="tk-lead" data-testid="reward-progress">当前状态:{statusLabel(status)}</p>
-      <p className="tk-note">参与编号 {id}</p>
-      {participation.expires_at && <p className="tk-note">保留期限至 {participation.expires_at}</p>}
+    <Card data-testid="reward-status" data-status={status}>
+      <CardContent className="tk-gap pt-6">
+        <h2 className="tk-section-title">领取或请店员确认</h2>
+        <p className="tk-lead" data-testid="reward-progress">当前状态:{statusLabel(status)}</p>
+        <p className="tk-note">参与编号 {id}</p>
+        {participation.expires_at && <p className="tk-note">保留期限至 {participation.expires_at}</p>}
 
-      {status === "awaiting_review" && <p className="tk-note">店员核对中。核对的结论由店员做出，这里不会提前宣布。</p>}
+        {status === "awaiting_review" && <p className="tk-note">店员核对中。核对的结论由店员做出，这里不会提前宣布。</p>}
 
-      <div data-testid="reward-card">
-        <p className={rewardLine.includes("已发放") || rewardLine.includes("已兑现") ? "tk-ok" : "tk-note"}>{rewardLine}</p>
-        {!redeemed && ready && (
-          <p className="tk-note">领取条件:店员确认完成后由门店发放;发放前不会先展示券码。</p>
-        )}
-      </div>
-
-      {!redeemed && ready && (
-        <div className="tk-row tk-gap">
-          <button type="button" className="tk-quiet" disabled={busy} data-testid="reward-verify" onClick={requestVerify}>
-            我已完成
-          </button>
-          <button type="button" className="tk-quiet" disabled={busy} data-testid="reward-show-code" onClick={showCode}>
-            出示核验码
-          </button>
+        <div data-testid="reward-card">
+          <p className={rewardLine.includes("已发放") || rewardLine.includes("已兑现") ? "tk-ok" : "tk-note"}>{rewardLine}</p>
+          {!redeemed && ready && (
+            <p className="tk-note">领取条件:店员确认完成后由门店发放;发放前不会先展示券码。</p>
+          )}
         </div>
-      )}
-      {verifyToken && (
-        <p className="tk-note" data-testid="reward-token">
-          核验码(只显示这一次，请直接给店员):
-          {" "}
-          <code>{verifyToken}</code>
-        </p>
-      )}
-      {verifyNote && <p className="tk-note" data-testid="reward-verify-note">{verifyNote}</p>}
-      {stock && <p className="tk-note">{stock}</p>}
-      {benefitsHref && (
-        <p className="tk-gap">
-          <a className="tk-quiet" href={benefitsHref} data-testid="reward-benefits-link">查看我的权益与凭证</a>
-        </p>
-      )}
-      <p className="tk-note">有问题请直接请店员确认,或联系门店。</p>
-    </section>
+
+        {!redeemed && ready && (
+          <div className="tk-row tk-gap">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              data-testid="reward-verify"
+              onClick={requestVerify}
+            >
+              我已完成
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              data-testid="reward-show-code"
+              onClick={showCode}
+            >
+              出示核验码
+            </Button>
+          </div>
+        )}
+        {verifyToken && (
+          <p className="tk-note" data-testid="reward-token">
+            核验码(只显示这一次，请直接给店员):
+            {" "}
+            <code>{verifyToken}</code>
+          </p>
+        )}
+        {verifyNote && <p className="tk-note" data-testid="reward-verify-note">{verifyNote}</p>}
+        {stock && <p className="tk-note">{stock}</p>}
+        {benefitsHref && (
+          <p className="tk-gap">
+            <a className="tk-quiet" href={benefitsHref} data-testid="reward-benefits-link">查看我的权益与凭证</a>
+          </p>
+        )}
+        <p className="tk-note">有问题请直接请店员确认,或联系门店。</p>
+      </CardContent>
+    </Card>
   );
 }

@@ -14,7 +14,7 @@ export type WorkspaceTenant =
   | { status: "choose"; options: MembershipScope[] }
   | { status: "none" };
 
-function usable(scopes: MembershipScope[] | null | undefined): MembershipScope[] {
+export function usable(scopes: MembershipScope[] | null | undefined): MembershipScope[] {
   const seen = new Set<string>();
   const out: MembershipScope[] = [];
   for (const scope of scopes ?? []) {

@@ -6,6 +6,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { admissionLines, type AdmissionView } from "@/lib/customer-journey";
+import { Button } from "@/components/ui/button";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Card, CardContent } from "@/components/ui/card";
 
 export interface ContentChoice {
   pack_id: string;
@@ -34,7 +37,7 @@ export interface ContentSnapshotView {
 
 export interface ContentPublishProps {
   code: string;
-  participationId?:string;
+  participationId?: string;
   /** 自身参与的内容版本(回显当前选中;null=还没开始参与)。 */
   selectedVersion?: string;
   /** 未交接草稿才可换(canSwitchDraft 判定在页面)。 */
@@ -137,79 +140,93 @@ export function ContentPublish({ code, participationId, selectedVersion, canSwit
   const currentChoice = choices?.find((c) => c.version_id === selectedVersion) ?? choices?.[0];
 
   return (
-    <section className="tk-section" data-testid="content-publish" data-version={selectedVersion ?? ""}>
-      <h2 className="tk-section-title">内容与发布</h2>
-      <p className="tk-note">
-        发布用的是你自己的账号。本服务不会替你发布，也不保存你的平台密码；每一步都可以取消。
-      </p>
-
-      {choicesUnavailable ? (
-        <p className="tk-note" data-testid="content-unavailable">
-          这家店还没有准备好在线内容。可以按门店现场说明参与，或请店员协助。
+    <Card data-testid="content-publish" data-version={selectedVersion ?? ""}>
+      <CardContent className="tk-gap pt-6">
+        <h2 className="tk-section-title">内容与发布</h2>
+        <p className="tk-note">
+          发布用的是你自己的账号。本服务不会替你发布，也不保存你的平台密码；每一步都可以取消。
         </p>
-      ) : (
-        <>
-          <p className="tk-note">门店已为这次活动准备好内容。先看推荐：</p>
-          {choices && choices.length > 1 && (
-            <div className="tk-row" data-testid="content-choices">
-              {choices.map((c) => (
-                <button
-                  key={c.version_id}
-                  type="button"
-                  className={c.version_id === (selectedVersion ?? choices[0].version_id) ? "tk-primary" : "tk-quiet"}
-                  disabled={!canSwitch}
-                  data-testid={`content-choice-${c.version_id}`}
-                  onClick={() => onSwitchVersion?.(c.version_id)}
-                >
-                  {c.title || "内容包"}
-                </button>
-              ))}
-            </div>
-          )}
-          {choices && choices.length > 1 && !canSwitch && (
-            <p className="tk-note" data-testid="content-switch-frozen">
-              当前参与的版本已交接，不能再换选。
-            </p>
-          )}
-          {mismatch ? (
-            <div className="tk-warn" data-testid="content-version-mismatch">
-              <p>{mismatch}</p>
-              {canSwitch && currentChoice ? (
-                <button type="button" className="tk-quiet" onClick={() => onSwitchVersion?.(currentChoice.version_id)}>
-                  换选到当前版本
-                </button>
-              ) : (
-                <p className="tk-note">当前版本不能换选，请把参与编号给店员，由门店协助处理。</p>
-              )}
-            </div>
-          ) : null}
-          {snapshot && !mismatch && (
-            <div data-testid="content-snapshot">
-              <p className="tk-lead">〈{snapshot.title || "未命名"}〉</p>
-              <p className="tk-public-value">{snapshotBody}</p>
-              {snapshot.price_note && <p className="tk-note">价格说明:{snapshot.price_note}</p>}
-              {snapshot.valid_note && <p className="tk-note">有效期说明:{snapshot.valid_note}</p>}
-              {snapshot.marking?.ai_generated ? (
-                <p className="tk-unknown" data-testid="content-ai-marking">
-                  含 AI 合成画面或配音。这是内容标识，不是发布成功，也不改变奖励条件。
-                </p>
-              ) : null}
-              {snapshot.marking?.ad_required ? (
-                <p className="tk-note" data-testid="content-ad-marking">按平台要求，这条内容属于广告或推广信息。</p>
-              ) : null}
-            </div>
-          )}
-        </>
-      )}
 
-      <div data-testid="content-admission">
-        {lines.map((line) => (
-          <p key={line} className="tk-warn">{line}</p>
-        ))}
-        {lines.length === 0 && (
-          <p className="tk-note">这个平台的发布路线已放行。往下用「发布交接」开始，视频和文案会在那一步交给你。</p>
+        {choicesUnavailable ? (
+          <p className="tk-note" data-testid="content-unavailable">
+            这家店还没有准备好在线内容。可以按门店现场说明参与，或请店员协助。
+          </p>
+        ) : (
+          <>
+            <p className="tk-note">门店已为这次活动准备好内容。先看推荐：</p>
+            {choices && choices.length > 1 && (
+              <div className="tk-row" data-testid="content-choices">
+                {choices.map((c) => (
+                  <Button
+                    key={c.version_id}
+                    type="button"
+                    variant={c.version_id === (selectedVersion ?? choices[0].version_id) ? "default" : "outline"}
+                    size="sm"
+                    disabled={!canSwitch}
+                    data-testid={`content-choice-${c.version_id}`}
+                    onClick={() => onSwitchVersion?.(c.version_id)}
+                  >
+                    {c.title || "内容包"}
+                  </Button>
+                ))}
+              </div>
+            )}
+            {choices && choices.length > 1 && !canSwitch && (
+              <p className="tk-note" data-testid="content-switch-frozen">
+                当前参与的版本已交接，不能再换选。
+              </p>
+            )}
+            {mismatch ? (
+              <Alert variant="warning" data-testid="content-version-mismatch">
+                <AlertDescription>
+                  <p>{mismatch}</p>
+                  {canSwitch && currentChoice ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => onSwitchVersion?.(currentChoice.version_id)}
+                    >
+                      换选到当前版本
+                    </Button>
+                  ) : (
+                    <p className="tk-note">当前版本不能换选，请把参与编号给店员，由门店协助处理。</p>
+                  )}
+                </AlertDescription>
+              </Alert>
+            ) : null}
+            {snapshot && !mismatch && (
+              <div data-testid="content-snapshot">
+                <p className="tk-lead">〈{snapshot.title || "未命名"}〉</p>
+                <p className="tk-public-value">{snapshotBody}</p>
+                {snapshot.price_note && <p className="tk-note">价格说明:{snapshot.price_note}</p>}
+                {snapshot.valid_note && <p className="tk-note">有效期说明:{snapshot.valid_note}</p>}
+                {snapshot.marking?.ai_generated ? (
+                  <Alert variant="default" data-testid="content-ai-marking">
+                    <AlertDescription>
+                      含 AI 合成画面或配音。这是内容标识，不是发布成功，也不改变奖励条件。
+                    </AlertDescription>
+                  </Alert>
+                ) : null}
+                {snapshot.marking?.ad_required ? (
+                  <p className="tk-note" data-testid="content-ad-marking">按平台要求，这条内容属于广告或推广信息。</p>
+                ) : null}
+              </div>
+            )}
+          </>
         )}
-      </div>
-    </section>
+
+        <div data-testid="content-admission">
+          {lines.map((line) => (
+            <Alert key={line} variant="warning" className="mb-2">
+              <AlertDescription>{line}</AlertDescription>
+            </Alert>
+          ))}
+          {lines.length === 0 && (
+            <p className="tk-note">这个平台的发布路线已放行。往下用「发布交接」开始，视频和文案会在那一步交给你。</p>
+          )}
+        </div>
+      </CardContent>
+    </Card>
   );
 }

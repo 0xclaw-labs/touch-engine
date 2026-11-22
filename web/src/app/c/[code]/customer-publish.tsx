@@ -12,7 +12,17 @@ import {
   type PlatformRow,
 } from "@/lib/customer-publish";
 import { rewardPresentation } from "@/lib/product-finish";
-import { proofNotice, publishRewardOpen, rewardNotice, type ProofView, type RewardView } from "@/lib/publish-reward";
+import {
+  proofNotice,
+  publishRewardOpen,
+  rewardNotice,
+  type ProofView,
+  type RewardView,
+} from "@/lib/publish-reward";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import { Card, CardContent } from "@/components/ui/card";
 
 interface AttemptResponse {
   attempt_id?: string;
@@ -31,7 +41,13 @@ interface AttemptResponse {
   message?: string;
 }
 
-export function CustomerPublish({ code, defaultCopy }: { code: string; defaultCopy: string }) {
+export function CustomerPublish({
+  code,
+  defaultCopy,
+}: {
+  code: string;
+  defaultCopy: string;
+}) {
   const [matrix, setMatrix] = useState<CapabilityMatrix | null>(null);
   const [legacyState, setLegacyState] = useState<"loading" | "ready" | "original" | "error">("loading");
   const [platform, setPlatform] = useState("douyin");
@@ -79,7 +95,9 @@ export function CustomerPublish({ code, defaultCopy }: { code: string; defaultCo
     };
   }, [code]);
 
-  const row: PlatformRow | undefined = matrix?.platforms.find((item) => item.platform === platform);
+  const row: PlatformRow | undefined = matrix?.platforms.find(
+    (item) => item.platform === platform,
+  );
 
   const run = useCallback(async (path: string, body: unknown, method = "POST") => {
     setBusy(true);
@@ -118,23 +136,33 @@ export function CustomerPublish({ code, defaultCopy }: { code: string; defaultCo
 
   const exportPack = () => {
     if (!attempt?.attempt_id) return;
-    run(`/api/public/links/${encodeURIComponent(code)}/publish-attempts/${attempt.attempt_id}/export`, {});
+    run(
+      `/api/public/links/${encodeURIComponent(code)}/publish-attempts/${attempt.attempt_id}/export`,
+      {},
+    );
   };
 
   const confirm = () => {
     if (!attempt?.attempt_id || !attempt.content_version) return;
     if (!draftMatchesAttempt(attempt, copy, account)) return;
-    run(`/api/public/links/${encodeURIComponent(code)}/publish-attempts/${attempt.attempt_id}/confirm`, {
-      content_version: attempt.content_version,
-      account_label: attempt.account_label,
-      publisher: "activity_customer",
-      asset_use_accepted: assetOk,
-    });
+    run(
+      `/api/public/links/${encodeURIComponent(code)}/publish-attempts/${attempt.attempt_id}/confirm`,
+      {
+        content_version: attempt.content_version,
+        account_label: attempt.account_label,
+        publisher: "activity_customer",
+        asset_use_accepted: assetOk,
+      },
+    );
   };
 
   const revise = (next: { copy?: string; account_label?: string }) => {
     if (!attempt?.attempt_id) return;
-    run(`/api/public/links/${encodeURIComponent(code)}/publish-attempts/${attempt.attempt_id}`, next, "PATCH");
+    run(
+      `/api/public/links/${encodeURIComponent(code)}/publish-attempts/${attempt.attempt_id}`,
+      next,
+      "PATCH",
+    );
   };
 
   const submitProof = () => {
@@ -176,108 +204,125 @@ export function CustomerPublish({ code, defaultCopy }: { code: string; defaultCo
   );
 
   return (
-    <section className="tk-section" data-testid="customer-publish">
-      <h2 className="tk-section-title">预览并手动发布</h2>
-      <p data-testid="publish-reward" data-reward-tone={presented.tone} data-success={presented.success ? "true" : "false"} className={presented.success ? "tk-ok" : "tk-unknown"}>
-        {rewardNotice(reward ?? {})}
-        {rewardOpen ? "" : " 预览、导出、唤起编辑器或点击「我已发布」都不能领券。"}
-      </p>
-      <p className="tk-note">
-        发布账号是你自己的。商家账号不能代替你发，再算成你的作品。
-        {matrix && !authorizedPublishEnabled(matrix) ? " 当前没有授权代你发布。" : ""}
-      </p>
-      <label className="tk-label">
-        发布到
-        <select className="tk-select" value={platform} onChange={(e) => setPlatform(e.target.value)}>
-          {(matrix?.platforms ?? [{ platform: "douyin" }]).map((item) => (
-            <option key={item.platform} value={item.platform}>
-              {platformLabel(item.platform)}
-            </option>
-          ))}
-        </select>
-      </label>
-      {row && (
-        <p className="tk-note" data-testid="publish-summary">
-          当前平台：预览{actionEnabled(row, "preview") ? "可用" : "关闭"} · 导出{actionEnabled(row, "export") ? "可用" : "关闭"} · 代发{actionEnabled(row, "authorized_publish") ? "可用" : "关闭"} · 唤起编辑器{actionEnabled(row, "open_editor") ? "可用" : "关闭"}。
-          可用方式以本次路线说明为准，素材导出不代表符合活动领奖条件。
+    <Card data-testid="customer-publish">
+      <CardContent className="tk-gap pt-6">
+        <h2 className="tk-section-title">预览并手动发布</h2>
+        <p data-testid="publish-reward" data-reward-tone={presented.tone} data-success={presented.success ? "true" : "false"} className={presented.success ? "tk-ok" : "tk-unknown"}>
+          {rewardNotice(reward ?? {})}
+          {rewardOpen ? "" : " 预览、导出、唤起编辑器或点击「我已发布」都不能领券。"}
         </p>
-      )}
-      {row && (
-        <details className="tk-gap" data-testid="publish-capability-details">
-          <summary className="tk-note">发布能力说明</summary>
-          <ul className="tk-list">
-            {(["preview", "export", "open_editor", "authorized_publish", "confirm_publish"] as const).map((kind) => {
-              const cell = row.capabilities[kind];
-              const title =
-                kind === "preview" ? "可预览" : kind === "export" ? "可导出" : kind === "open_editor" ? "可唤起编辑器" : kind === "authorized_publish" ? "可授权发布" : "可确认发布";
-              return (
-                <li key={kind}>
-                  {title}：{cell?.enabled ? "可用" : "关闭"}。{cell?.reason}
-                  {cell && !cell.enabled && cell.evidence_url ? (
-                    <>
-                      {" "}
-                      <a href={cell.evidence_url} target="_blank" rel="noreferrer">官方说明</a>
-                    </>
-                  ) : null}
-                </li>
-              );
-            })}
-          </ul>
-          {row.manual_guide && <p className="tk-note">{row.manual_guide}</p>}
-        </details>
-      )}
-      <label className="tk-label">
-        文案
-        <textarea className="tk-input tk-input-tall" value={copy} onChange={(e) => setCopy(e.target.value)} />
-      </label>
-      <label className="tk-check">
-        <input type="checkbox" checked={assetOk} onChange={(e) => setAssetOk(e.target.checked)} /> 我确认使用本次活动素材，并用我自己的账号发布
-      </label>
-      <div className="tk-row">
-        {!attempt?.attempt_id ? <button type="button" disabled={busy || !actionEnabled(row,"preview")} onClick={preview} className="tk-primary">预览本次内容</button> : !attempt.confirmation_current || !draftMatches ? <button type="button" disabled={busy || !assetOk || !draftMatches} onClick={confirm} className="tk-primary">确认这次内容</button> : <button type="button" disabled={busy || !actionEnabled(row,"export")} onClick={exportPack} className="tk-primary">导出参考文案与步骤</button>}
-      </div>
-      <details className="tk-gap"><summary>其他操作与核验</summary>
-        <p className="tk-note">这里仅准备参考文案。平台支持的实际交接请使用上方“发布交接”。</p>
-        <button type="button" disabled={busy || !attempt?.attempt_id} onClick={selfReport} className="tk-quiet">我已在平台操作（仅自报）</button>
-        <button type="button" disabled={busy || !attempt?.attempt_id || !rewardOpen} onClick={submitProof} className="tk-quiet">提交发布证明</button>
-        <p className="tk-note">自报与证明提交不表示官方发布成功，只有活动认可的核验才会进入权益判断。</p>
-      </details>
-      {attempt?.attempt_id && (
-        <div className="tk-row tk-gap">
-          <button type="button" disabled={busy} onClick={() => revise({ copy })} className="tk-quiet">
-            更新文案（需重新确认）
-          </button>
-
+        <p className="tk-note">
+          发布账号是你自己的。商家账号不能代替你发，再算成你的作品。
+          {matrix && !authorizedPublishEnabled(matrix) ? " 当前没有授权代你发布。" : ""}
+        </p>
+        {matrix?.registered_adapters && matrix.registered_adapters.length > 0 && (
+          <p className="tk-unknown">
+            已登记适配器：{matrix.registered_adapters.join("、")}
+            。登记不等于这些平台可以发布。
+          </p>
+        )}
+        <Label className="tk-label">
+          发布到
+          <select
+            className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            value={platform}
+            onChange={(e) => setPlatform(e.target.value)}
+          >
+            {(matrix?.platforms ?? [{ platform: "douyin" }]).map((item) => (
+              <option key={item.platform} value={item.platform}>
+                {platformLabel(item.platform)}
+              </option>
+            ))}
+          </select>
+        </Label>
+        {row && (
+          <p className="tk-note" data-testid="publish-summary">
+            当前平台：预览{actionEnabled(row, "preview") ? "可用" : "关闭"} · 导出{actionEnabled(row, "export") ? "可用" : "关闭"} · 代发{actionEnabled(row, "authorized_publish") ? "可用" : "关闭"} · 唤起编辑器{actionEnabled(row, "open_editor") ? "可用" : "关闭"}。
+            可用方式以本次路线说明为准，素材导出不代表符合活动领奖条件。
+          </p>
+        )}
+        {row && (
+          <details className="tk-gap" data-testid="publish-capability-details">
+            <summary className="tk-note">发布能力说明</summary>
+            <ul className="tk-list">
+              {(["preview", "export", "open_editor", "authorized_publish", "confirm_publish"] as const).map((kind) => {
+                const cell = row.capabilities[kind];
+                const title =
+                  kind === "preview" ? "可预览" : kind === "export" ? "可导出" : kind === "open_editor" ? "可唤起编辑器" : kind === "authorized_publish" ? "可授权发布" : "可确认发布";
+                return (
+                  <li key={kind}>
+                    {title}：{cell?.enabled ? "可用" : "关闭"}。{cell?.reason}
+                    {cell && !cell.enabled && cell.evidence_url ? (
+                      <>
+                        {" "}
+                        <a href={cell.evidence_url} target="_blank" rel="noreferrer">官方说明</a>
+                      </>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ul>
+            {row.manual_guide && <p className="tk-note">{row.manual_guide}</p>}
+          </details>
+        )}
+        <Label className="tk-label">
+          文案
+          <Textarea value={copy} onChange={(e) => setCopy(e.target.value)} />
+        </Label>
+        <label className="tk-check">
+          <input type="checkbox" checked={assetOk} onChange={(e) => setAssetOk(e.target.checked)} /> 我确认使用本次活动素材，并用我自己的账号发布
+        </label>
+        <div className="tk-row">
+          {!attempt?.attempt_id ? (
+            <Button type="button" disabled={busy || !actionEnabled(row, "preview")} onClick={preview}>预览本次内容</Button>
+          ) : !attempt.confirmation_current || !draftMatches ? (
+            <Button type="button" disabled={busy || !assetOk || !draftMatches} onClick={confirm}>确认这次内容</Button>
+          ) : (
+            <Button type="button" disabled={busy || !actionEnabled(row, "export")} onClick={exportPack}>导出参考文案与步骤</Button>
+          )}
         </div>
-      )}
-      {editorClosed && <p className="tk-note">{row?.capabilities.open_editor?.reason}</p>}
-      {publishClosed && <p className="tk-note">{row?.capabilities.authorized_publish?.reason}</p>}
-      {notice && (
-        <p className={succeeded ? "tk-ok" : "tk-note"} data-testid="publish-outcome" data-success={succeeded ? "true" : "false"}>
-          {notice}
-        </p>
-      )}
-      {attempt?.attempt_id && !draftMatches && (
-        <p className="tk-unknown">文案已改，需要先更新，再重新确认。现在的输入还没有确认。</p>
-      )}
-      {attempt?.confirmation_current && draftMatches && !succeeded && (
-        <p className="tk-note">你已确认这次参考文案。发布账号由你在平台内核对，确认文案不是发布成功。</p>
-      )}
-      {attempt?.package?.steps && attempt.package.steps.length > 0 && (
-        <ol className="tk-list">
-          {attempt.package.steps.map((step) => (
-            <li key={step}>{step}</li>
-          ))}
-        </ol>
-      )}
-      {attempt && attempt.platform_post_id === "" && attempt.self_reported && (
-        <p className="tk-note">没有回执，不计入已发布视频，也不发奖励。</p>
-      )}
-      {proof && (
-        <p data-testid="reward-proof" className="tk-unknown">
-          {proofNotice(proof)}
-        </p>
-      )}
-    </section>
+        <details className="tk-gap"><summary>其他操作与核验</summary>
+          <p className="tk-note">这里仅准备参考文案。平台支持的实际交接请使用上方“发布交接”。</p>
+          <Button type="button" variant="outline" size="sm" disabled={busy || !attempt?.attempt_id} onClick={selfReport}>我已在平台操作（仅自报）</Button>
+          <Button type="button" variant="outline" size="sm" disabled={busy || !attempt?.attempt_id || !rewardOpen} onClick={submitProof}>提交发布证明</Button>
+          <p className="tk-note">自报与证明提交不表示官方发布成功，只有活动认可的核验才会进入权益判断。</p>
+        </details>
+        {attempt?.attempt_id && (
+          <div className="tk-row tk-gap">
+            <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => revise({ copy })}>
+              更新文案（需重新确认）
+            </Button>
+          </div>
+        )}
+        {editorClosed && <p className="tk-note">{row?.capabilities.open_editor?.reason}</p>}
+        {publishClosed && <p className="tk-note">{row?.capabilities.authorized_publish?.reason}</p>}
+        {notice && (
+          <p className={succeeded ? "tk-ok" : "tk-note"} data-testid="publish-outcome" data-success={succeeded ? "true" : "false"}>
+            {notice}
+          </p>
+        )}
+        {attempt?.attempt_id && !draftMatches && (
+          <p className="tk-unknown">文案已改，需要先更新，再重新确认。现在的输入还没有确认。</p>
+        )}
+        {attempt?.confirmation_current && draftMatches && !succeeded && (
+          <p className="tk-note">你已确认这次参考文案。发布账号由你在平台内核对，确认文案不是发布成功。</p>
+        )}
+        {attempt?.package?.steps && attempt.package.steps.length > 0 && (
+          <ol className="tk-list">
+            {attempt.package.steps.map((step) => (
+              <li key={step}>{step}</li>
+            ))}
+          </ol>
+        )}
+        {attempt && attempt.platform_post_id === "" && attempt.self_reported && (
+          <p className="tk-note">没有回执，不计入已发布视频，也不发奖励。</p>
+        )}
+        {proof && (
+          <p data-testid="reward-proof" className="tk-unknown">
+            {proofNotice(proof)}
+          </p>
+        )}
+      </CardContent>
+    </Card>
   );
 }

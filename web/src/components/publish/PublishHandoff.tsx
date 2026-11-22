@@ -104,13 +104,17 @@ export function PublishHandoff({ code }: { code: string }) {
 
   const refresh = useCallback(
     (handoffID: string) => {
-      fetch(`/api/public/links/${encodeURIComponent(code)}/publish-handoff/${encodeURIComponent(handoffID)}`)
+      fetch(
+        `/api/public/links/${encodeURIComponent(code)}/publish-handoff/${encodeURIComponent(handoffID)}`,
+      )
         .then(async (res) => {
           const data = await res.json().catch(() => null);
           if (res.ok && data?.handoff) {
             setHandoff(data.handoff as HandoffView);
             setPlan(data.plan as PlanView);
-            setMedia(Array.isArray(data.media) ? (data.media as MediaRefView[]) : []);
+            setMedia(
+              Array.isArray(data.media) ? (data.media as MediaRefView[]) : [],
+            );
           }
         })
         .catch(() => undefined);
@@ -131,8 +135,15 @@ export function PublishHandoff({ code }: { code: string }) {
     });
     if (lookup.ok) {
       const existing = await lookup.json().catch(() => null);
-      if (existing?.id && existing?.status !== "canceled" && existing?.status !== "fulfilled") {
-        participation.current = { id: existing.id as string, idempotencyKey: "reused" };
+      if (
+        existing?.id &&
+        existing?.status !== "canceled" &&
+        existing?.status !== "fulfilled"
+      ) {
+        participation.current = {
+          id: existing.id as string,
+          idempotencyKey: "reused",
+        };
         return existing.id as string;
       }
     }
@@ -152,7 +163,10 @@ export function PublishHandoff({ code }: { code: string }) {
       setNotice("发布交接还未开通，或活动暂不可参与。");
       return null;
     }
-    participation.current = { id: data.id as string, idempotencyKey: idemKey.current };
+    participation.current = {
+      id: data.id as string,
+      idempotencyKey: idemKey.current,
+    };
     return data.id as string;
   }, [code]);
 
@@ -165,22 +179,35 @@ export function PublishHandoff({ code }: { code: string }) {
     try {
       const ptID = await ensureParticipation();
       if (!ptID) return;
-      const res = await fetch(`/api/public/links/${encodeURIComponent(code)}/publish-handoff`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          participation_id: ptID,
-          platform,
-          confirmed_content_version: snapshotVersion,
-        }),
-      });
-      const data = (await res.json().catch(() => null)) as (StartResponse & { error?: string; notice?: string; message?: string }) | null;
+      const res = await fetch(
+        `/api/public/links/${encodeURIComponent(code)}/publish-handoff`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            participation_id: ptID,
+            platform,
+            confirmed_content_version: snapshotVersion,
+          }),
+        },
+      );
+      const data = (await res.json().catch(() => null)) as
+        | (StartResponse & {
+            error?: string;
+            notice?: string;
+            message?: string;
+          })
+        | null;
       if (res.status === 422 && data?.error === "confirmation_mismatch") {
         setNotice(CONFIRM_MISMATCH_COPY);
         return;
       }
       if (data?.error === "handoff_refused") {
-        setNotice(data.notice || data.message || "该平台此场景不能通过本服务交接。这一步没有开始，也不是发布成功。");
+        setNotice(
+          data.notice ||
+            data.message ||
+            "该平台此场景不能通过本服务交接。这一步没有开始，也不是发布成功。",
+        );
         return;
       }
       if (!res.ok || !data?.handoff) {
@@ -191,7 +218,11 @@ export function PublishHandoff({ code }: { code: string }) {
       setPlan(data.plan ?? null);
       setMedia(Array.isArray(data.media) ? data.media : []);
       if (data.recovery?.token) setRecoveryShown(true);
-      setRecoveryQr(qrPayloadSafe(data.recovery?.qr_payload) ? (data.recovery?.qr_payload ?? "") : "");
+      setRecoveryQr(
+        qrPayloadSafe(data.recovery?.qr_payload)
+          ? (data.recovery?.qr_payload ?? "")
+          : "",
+      );
     } catch {
       setNotice("网络异常。交接没有开始，也没有发布。");
     } finally {
@@ -205,7 +236,11 @@ export function PublishHandoff({ code }: { code: string }) {
     try {
       const res = await fetch(
         `/api/public/links/${encodeURIComponent(code)}/publish-handoff/${encodeURIComponent(handoff.id)}/done`,
-        { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        },
       );
       if (res.ok) {
         setDoneNotice(DONE_NOTICE);
@@ -226,7 +261,11 @@ export function PublishHandoff({ code }: { code: string }) {
     try {
       const res = await fetch(
         `/api/public/links/${encodeURIComponent(code)}/publish-handoff/${encodeURIComponent(handoff.id)}/cancel`,
-        { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        },
       );
       const data = await res.json().catch(() => null);
       if (res.ok && data?.handoff) {
@@ -262,7 +301,11 @@ export function PublishHandoff({ code }: { code: string }) {
       </p>
       <label className="tk-label">
         发布到
-        <select className="tk-select" value={platform} onChange={(e) => setPlatform(e.target.value)}>
+        <select
+          className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          value={platform}
+          onChange={(e) => setPlatform(e.target.value)}
+        >
           {PLATFORMS.map((p) => (
             <option key={p.id} value={p.id}>
               {p.label}
@@ -270,7 +313,11 @@ export function PublishHandoff({ code }: { code: string }) {
           ))}
         </select>
       </label>
-      {routes?.notice && <p className="tk-unknown" data-testid="handoff-routes-notice">{routes.notice}</p>}
+      {routes?.notice && (
+        <p className="tk-unknown" data-testid="handoff-routes-notice">
+          {routes.notice}
+        </p>
+      )}
       {refused ? (
         <p className="tk-warn" data-testid="handoff-refused">
           {refusalNotice(chosen)}
@@ -279,7 +326,8 @@ export function PublishHandoff({ code }: { code: string }) {
         snapshot && (
           <div data-testid="handoff-snapshot">
             <p className="tk-note">
-              将要交接的内容:〈{snapshot.title || "未命名"}〉{snapshot.store_name ? ` @ ${snapshot.store_name}` : ""}
+              将要交接的内容:〈{snapshot.title || "未命名"}〉
+              {snapshot.store_name ? ` @ ${snapshot.store_name}` : ""}
             </p>
             <label className="tk-check">
               <input
@@ -305,31 +353,54 @@ export function PublishHandoff({ code }: { code: string }) {
         </button>
       )}
       {handoff && (
-        <div data-testid="handoff-status" data-status={known ? status : "unknown"}>
-          <p className={status === "platform_confirmed" ? "tk-ok" : "tk-note"}>{statusCopy(status)}</p>
-          {evidenceCopy(handoff.evidence_source) && <p className="tk-note">{evidenceCopy(handoff.evidence_source)}</p>}
+        <div
+          data-testid="handoff-status"
+          data-status={known ? status : "unknown"}
+        >
+          <p className={status === "platform_confirmed" ? "tk-ok" : "tk-note"}>
+            {statusCopy(status)}
+          </p>
+          {evidenceCopy(handoff.evidence_source) && (
+            <p className="tk-note">{evidenceCopy(handoff.evidence_source)}</p>
+          )}
           {timeoutCopy(handoff.timed_out, handoff.query_count) && (
-            <p className="tk-unknown">{timeoutCopy(handoff.timed_out, handoff.query_count)}</p>
+            <p className="tk-unknown">
+              {timeoutCopy(handoff.timed_out, handoff.query_count)}
+            </p>
           )}
-          <button
-            type="button"
-            className="tk-quiet"
-            disabled={busy}
-            data-testid="handoff-refresh"
-            onClick={() => handoff.id && refresh(handoff.id)}
-          >
-            刷新结果
-          </button>
-          {canRequestDone(status) && (
-            <button type="button" className="tk-quiet" disabled={busy} data-testid="handoff-done" onClick={requestDone}>
-              我已完成
+          <div className="tk-row tk-gap">
+            <button
+              type="button"
+              className="tk-quiet"
+              disabled={busy}
+              data-testid="handoff-refresh"
+              onClick={() => handoff.id && refresh(handoff.id)}
+            >
+              刷新结果
             </button>
-          )}
-          {canCancel(status) && (
-            <button type="button" className="tk-quiet" disabled={busy} data-testid="handoff-cancel" onClick={cancel}>
-              取消交接
-            </button>
-          )}
+            {canRequestDone(status) && (
+              <button
+                type="button"
+                className="tk-quiet"
+                disabled={busy}
+                data-testid="handoff-done"
+                onClick={requestDone}
+              >
+                我已完成
+              </button>
+            )}
+            {canCancel(status) && (
+              <button
+                type="button"
+                className="tk-quiet"
+                disabled={busy}
+                data-testid="handoff-cancel"
+                onClick={cancel}
+              >
+                取消交接
+              </button>
+            )}
+          </div>
         </div>
       )}
       {handoff && recoveryShown && (
@@ -338,7 +409,12 @@ export function PublishHandoff({ code }: { code: string }) {
           {recoveryQr && (
             <>
               {" "}
-              <a href={recoveryQr} target="_blank" rel="noopener,noreferrer" data-testid="handoff-recovery-link">
+              <a
+                href={recoveryQr}
+                target="_blank"
+                rel="noopener,noreferrer"
+                data-testid="handoff-recovery-link"
+              >
                 换设备恢复入口
               </a>
             </>
@@ -363,7 +439,9 @@ export function PublishHandoff({ code }: { code: string }) {
       ))}
       {steps.length > 0 && (
         <div data-testid="handoff-manual">
-          {exportCaptionFor(chosen) && <p className="tk-note">{exportCaptionFor(chosen)}</p>}
+          {exportCaptionFor(chosen) && (
+            <p className="tk-note">{exportCaptionFor(chosen)}</p>
+          )}
           <ol className="tk-list">
             {steps.map((step) => (
               <li key={step}>{step}</li>
@@ -375,8 +453,12 @@ export function PublishHandoff({ code }: { code: string }) {
         <ul className="tk-list" data-testid="handoff-media">
           {safeMedia.map((m, i) => (
             <li key={`${m.asset_id ?? "asset"}-${i}`}>
-              {m.kind === "video" ? "视频" : m.kind === "cover" ? "封面" : "图片"}:{m.filename}
-              （{m.content_type}）
+              {m.kind === "video"
+                ? "视频"
+                : m.kind === "cover"
+                  ? "封面"
+                  : "图片"}
+              :{m.filename}（{m.content_type}）
             </li>
           ))}
         </ul>
@@ -398,7 +480,9 @@ export function PublishHandoff({ code }: { code: string }) {
 // pickPlan 选出当前平台最诚实的路线:有 allowed 路线选它;全被拒选第一个
 // refused;没有登记(unknown)→ 服务端 start 会按 manual_only 处理,这里给 null。
 function pickPlan(routes: RoutesResponse | null | undefined): PlanView | null {
-  const plans = (routes?.routes ?? []).map((r) => r.plan).filter(Boolean) as PlanView[];
+  const plans = (routes?.routes ?? [])
+    .map((r) => r.plan)
+    .filter(Boolean) as PlanView[];
   if (plans.length === 0) return null;
   return plans.find((p) => p.allowed) ?? plans[0];
 }
