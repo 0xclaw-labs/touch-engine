@@ -139,7 +139,7 @@ export function MotionHandoffBrief({ campaignId }: { campaignId: string }) {
               参数版本 v{brief.params_version}
             </p>
             <p className="tk-note" data-field="digest">
-              digest 尾8位 {brief.digest.slice(-8)}
+              内容校验码尾8位 {brief.digest.slice(-8)}
             </p>
             <p className="tk-note" data-field="brand">
               品牌上下文{" "}

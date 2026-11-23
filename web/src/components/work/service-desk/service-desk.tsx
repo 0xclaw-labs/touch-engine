@@ -650,7 +650,7 @@ export function ServiceDesk() {
             </select>
           </label> : null}
           <section className="tk-section" data-field="service-history" aria-label="处理历史">
-            <h2 className="tk-subtitle">处理历史(本店台账,只读)</h2>
+            <h2 className="tk-subtitle">处理历史（本店记录，只读）</h2>
             <p className="tk-note">
               交班参考:以下为本店最近处理记录与当日按操作者聚合(仅本地事实,不含平台证实)。
               {historyLoadedAt ? ` 拉取于 ${historyLoadedAt}。` : ""}

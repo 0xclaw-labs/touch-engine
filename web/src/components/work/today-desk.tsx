@@ -35,7 +35,7 @@ function TodayBody() {
         <h2 className="tk-section-title">需要办理</h2>
         {typeof summary?.pending_confirm!=="number" || typeof summary?.rewards_issued!=="number" || typeof summary?.rewards_redeemed!=="number" ? <p className="tk-warn">摘要只读到部分数据，缺失项保持未知。可前往服务台或经营结果核对。</p> : null}
         {items.length===0 ? <p className="tk-state" data-state="empty">当前没有已知的待处理事项。正常暂停、结束的活动和未选择的服务不会列为异常。</p> : <div className="tk-stack">{items.map((item:TodayItem)=><Card key={item.id}><CardContent className="tk-gap"><strong>{item.title}</strong><p className="tk-note">{item.status} · {item.impact}</p><a className="tk-button" href={item.href}>{item.action}</a></CardContent></Card>)}</div>}
-        <Card className="tk-section"><CardContent className="tk-gap"><h2 className="tk-section-title">今天的实际结果</h2><p className="tk-note">{typeof summary?.rewards_issued==="number" ? `已发权益 ${summary.rewards_issued} 份` : "发放结果未知"} · {typeof summary?.rewards_redeemed==="number" ? `已核销 ${summary.rewards_redeemed} 份` : "核销结果未知"}。按 UTC 当天统计。</p><a href="/work/analytics">查看经营结果和统计口径</a></CardContent></Card>
+        <Card className="tk-section"><CardContent className="tk-gap"><h2 className="tk-section-title">今天的实际结果</h2><p className="tk-note">{typeof summary?.rewards_issued==="number" ? `已发权益 ${summary.rewards_issued} 份` : "发放结果未知"} · {typeof summary?.rewards_redeemed==="number" ? `已核销 ${summary.rewards_redeemed} 份` : "核销结果未知"}。按 UTC 当天统计。</p><a href="/work/analytics">查看经营结果与统计方式</a></CardContent></Card>
       </> : null}
     </main>
   </WorkFrame>;

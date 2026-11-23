@@ -168,7 +168,7 @@ export function LeadsView() {
       <p className="tk-lead">顾客授权留下的联系方式。只统计已经发生的真实事实。</p>
 
       {stats ? (
-        <section aria-label="线索口径" data-section="stats">
+        <section aria-label="线索统计" data-section="stats">
           <ul className="tk-gap" data-testid="leads-stats">
             <li>已获客（接收方确认入库）<strong data-field="stat-received">{stats.receiver_received}</strong></li>
             <li>待同步<strong data-field="stat-pending">{stats.pending_sync}</strong></li>

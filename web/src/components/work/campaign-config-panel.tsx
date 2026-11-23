@@ -623,7 +623,11 @@ export function CampaignConfigPanel({
                 {spec.reward.onsite_redemption ? " · 现场兑现" : ""}
               </p>
             </div>
-            <p className="tk-note">保存草稿只保留编辑内容，不替换或关闭线上承诺。更改承诺后必须重新准备对应版本的库存并检查启用；已有参与保留原告知快照，已发有效券不改写。暂停或结束会停止新参与和新发放，在途预留不能承诺继续发奖，可先核对记录并按原条件恢复办理。</p>
+            <p className="tk-note">保存草稿只保留编辑内容，不替换或关闭线上承诺。</p>
+            <details className="tk-note" data-field="commitment-change-note">
+              <summary>更改承诺、暂停或结束的影响</summary>
+              <p>更改承诺后必须重新准备对应版本的库存并检查启用；已有参与保留原告知记录，已发有效券不改写。暂停或结束会停止新参与和新发放，在途预留不能承诺继续发奖，可先核对记录并按原条件恢复办理。</p>
+            </details>
             <div className="tk-row">
               <button className="tk-quiet" type="button" data-action="save-draft" disabled={busy !== ""} onClick={() => void saveDraft()}>
                 保存草稿

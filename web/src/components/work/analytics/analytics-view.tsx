@@ -282,12 +282,12 @@ export function AnalyticsReport({ data, catalog, catalogNote, draft, onDraft, on
         {filterLimit(["store_id", "action_id", "environment"], "service-filter-limit")}
         <p>服务卡片打开：<strong data-field="service-opens">{serviceCount("action_clicked", "service_opens")}</strong></p>
         <p>服务跳转或唤起尝试：<strong data-field="service-jumps">{serviceCount("invoke_attempt", "service_jump_attempts")}</strong></p>
-        <p className="tk-note">仅表示本地已记录的打开或尝试，不证明服务办理完成、到店或成交。来源、去重与筛选适用范围见下方对应证据层口径。</p>
+        <p className="tk-note">仅表示本地已记录的打开或尝试，不证明服务办理完成、到店或成交。来源、去重与筛选范围见下方对应说明。</p>
         {stores.length === 0 ? <p><a href="/work/stores">查看或建立门店</a>，门店可独立运营，无需先建活动。</p> : null}
       </section>
 
       <section aria-label="漏斗" data-section="funnel">
-        <h2 className="tk-subtitle">活动参与与权益事实（七项独立口径）</h2>
+        <h2 className="tk-subtitle">活动参与与权益事实（七项分别统计）</h2>
         {data.funnel.length === 0 ? (
           <p className="tk-note">没有读到漏斗事实。缺失保持未知,不显示 0。</p>
         ) : (
@@ -310,7 +310,7 @@ export function AnalyticsReport({ data, catalog, catalogNote, draft, onDraft, on
                   ) : null}
                   {stage.note ? <span className="tk-note" data-field="stage-note">{stage.note}</span> : null}
                   <details className="tk-note" data-field="stage-definition">
-                    <summary>口径</summary>
+                    <summary>定义</summary>
                     <p>来源:{stage.definition.source}</p>
                     <p>去重:{stage.definition.dedup_key}</p>
                     <p>分母:{stage.definition.denominator}</p>
@@ -343,7 +343,7 @@ export function AnalyticsReport({ data, catalog, catalogNote, draft, onDraft, on
           本地已持久化的官方确认记录(按可信尝试):
           <strong data-field="evidence-official">{countDisplay(data.evidence.official_attempts)}</strong>
         </p>
-        <details className="tk-note" data-field="evidence-definition"><summary>来源与口径</summary><p>三类记录来自 reward_benefits 的核验证据类别，按权益账本行分别计数；总体覆盖按 distinct participation_id 去重，同参与多份证据不重复算覆盖。官方确认尝试来自 reward_official_facts，按可信 attempt_id 去重，各项不可相加。权益证据以 issued_at、官方事实以 created_at 在上方窗口落窗。</p></details>
+        <details className="tk-note" data-field="evidence-definition"><summary>统计来源</summary><p>三类记录来自 reward_benefits 的核验证据类别，按权益账本行分别计数；总体覆盖按 distinct participation_id 去重，同参与多份证据不重复算覆盖。官方确认尝试来自 reward_official_facts，按可信 attempt_id 去重，各项不可相加。权益证据以 issued_at、官方事实以 created_at 在上方窗口落窗。</p></details>
         <p className="tk-note" data-field="evidence-note">{data.evidence.note}</p>
       </section>
 
@@ -380,7 +380,7 @@ export function AnalyticsReport({ data, catalog, catalogNote, draft, onDraft, on
                   ) : null}
                   {layer.note ? <span className="tk-note" data-field="layer-note">{layer.note}</span> : null}
                   <details className="tk-note" data-field="layer-definition">
-                    <summary>口径</summary>
+                    <summary>定义</summary>
                     <p>来源:{layer.definition.source}</p>
                     <p>去重:{layer.definition.dedup_key}</p>
                     <p>分母:{layer.definition.denominator}</p>
@@ -396,8 +396,8 @@ export function AnalyticsReport({ data, catalog, catalogNote, draft, onDraft, on
         <p className="tk-note" data-field="layers-note">{data.evidence_layers.note}</p>
       </section>
 
-      <section aria-label="真实线索口径" data-section="leads">
-        <h2 className="tk-subtitle">真实线索(接收状态口径)</h2>
+      <section aria-label="真实线索统计" data-section="leads">
+        <h2 className="tk-subtitle">真实线索（按接收状态）</h2>
         {filterLimit(["campaign_id", "store_id"], "leads-filter-limit")}
         <ul className="tk-list" data-field="leads-list">
           {leadsPanelRows(data.leads).map((row) => (
@@ -408,7 +408,7 @@ export function AnalyticsReport({ data, catalog, catalogNote, draft, onDraft, on
         </ul>
         <p className="tk-note" data-field="leads-note">{data.leads.note}</p>
         <details className="tk-note" data-field="leads-definition">
-          <summary>口径</summary>
+          <summary>定义</summary>
           <p>来源:{data.leads.definition.source}</p>
           <p>去重:{data.leads.definition.dedup_key}</p>
           <p>分母:{data.leads.definition.denominator}</p>
@@ -418,7 +418,7 @@ export function AnalyticsReport({ data, catalog, catalogNote, draft, onDraft, on
       </section>
 
       <section aria-label="奖励库存" data-section="inventory">
-        <h2 className="tk-subtitle">奖励库存(账本口径)</h2>
+        <h2 className="tk-subtitle">奖励库存（按批次）</h2>
         {filterLimit(["campaign_id", "store_id"], "inventory-filter-limit")}
         {data.inventory.length === 0 ? (
           <p className="tk-note" data-field="inventory-empty">统计范围内没有库存批次。该范围批次记录为 0，不代表其他未接入事实为 0。</p>
@@ -441,7 +441,7 @@ export function AnalyticsReport({ data, catalog, catalogNote, draft, onDraft, on
             ))}
           </ul>
         )}
-        <details className="tk-note" data-field="inventory-definition"><summary>来源与口径</summary><p>来源 reward_inventory 与 reward_benefits，按 inventory_id 去重；批次及占用为当前快照，不是上方窗口内新增。总部全量可用数量 = 总量 − 预留 − 已发 − 已核销。门店视图仅计本店权益，无法证明全批次占用时可用量保持未知。空门店字段不代表共享授权，批次须结合活动归属确定可见范围。</p></details>
+        <details className="tk-note" data-field="inventory-definition"><summary>统计来源</summary><p>来源 reward_inventory 与 reward_benefits，按 inventory_id 去重；批次及占用为当前快照，不是上方窗口内新增。总部全量可用数量 = 总量 − 预留 − 已发 − 已核销。门店视图仅计本店权益，无法证明全批次占用时可用量保持未知。空门店字段不代表共享授权，批次须结合活动归属确定可见范围。</p></details>
       </section>
 
       <section aria-label="成本" data-section="cost">
@@ -454,7 +454,7 @@ export function AnalyticsReport({ data, catalog, catalogNote, draft, onDraft, on
         <p data-field="cost-face-total">
           券面额合计(营销面值,不是支出):{formatMinor(data.cost.reward_face_minor)}
         </p>
-        <p className="tk-note">内容生成费用按活动当前归属门店筛选，未归属门店的费用不作分摊，不代表门店完整总费用；其他上方筛选未生效。未录成本批次按当前批次快照披露。</p>
+        <p className="tk-note">内容生成费用按活动当前归属门店筛选，未归属门店的费用不作分摊，不代表门店完整总费用；其他上方筛选未生效。未录入的成本批次按当前批次记录披露。</p>
         {data.cost.content_generation_available && data.cost.content_generation_amount_minor != null ? (
           <p data-field="cost-content">
             内容实际生成费用:{formatMinor(data.cost.content_generation_amount_minor)}
@@ -470,7 +470,7 @@ export function AnalyticsReport({ data, catalog, catalogNote, draft, onDraft, on
             未录成本的批次:{data.cost.unrecorded_batches} 个,按未录入展示,不冒充 0。
           </p>
         ) : null}
-        <details className="tk-note" data-field="cost-definition"><summary>来源与口径</summary>
+        <details className="tk-note" data-field="cost-definition"><summary>统计来源</summary>
           <p>权益金额来自 reward_benefits 的冻结面额、成本；以权益账本唯一参与与权益槽去重。已发金额按 issued_at、已核销成本按 redeemed_at 落在上方窗口，撤销及过期权益不算当前有效兑现。</p>
           <p>内容实际生成费用来自 copy_jobs 的已结算 trace.amount_minor，按生成任务与 created_at 落窗。任一匹配记录缺失有效结算金额时，合计保持未知；此项与 AI 用量投影可能有关联，不叠加计为总支出。</p>
         </details>
@@ -556,7 +556,7 @@ export function AnalyticsReport({ data, catalog, catalogNote, draft, onDraft, on
           </p>
         ) : null}
         <details className="tk-note" data-field="recon-definition">
-          <summary>口径</summary>
+          <summary>定义</summary>
           <p>来源:{data.cost_reconciliation.definition.source}</p>
           <p>去重:{data.cost_reconciliation.definition.dedup_key}</p>
           <p>分母:{data.cost_reconciliation.definition.denominator}</p>
@@ -598,7 +598,7 @@ export function AnalyticsReport({ data, catalog, catalogNote, draft, onDraft, on
                   {known && typeof metric.unique_contacts === "number" ? (
                     <span className="tk-note"> · 唯一联系人 {metric.unique_contacts}</span>
                   ) : null}
-                  {metric.definition ? <details className="tk-note" data-field="catalog-definition"><summary>来源与口径</summary>
+                  {metric.definition ? <details className="tk-note" data-field="catalog-definition"><summary>统计来源</summary>
                     <p>来源：{metric.definition.source}</p><p>去重：{metric.definition.dedup_key}</p>
                     <p>分母：{metric.definition.denominator}</p><p>事件时间：{metric.definition.event_time}</p><p>窗口：{metric.definition.window}</p>
                   </details> : null}

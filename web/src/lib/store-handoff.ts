@@ -101,7 +101,7 @@ export function planCopy(kind: PlanKind): string {
 
 /** evidence_level → 证据口径转述(不升级为平台成功)。 */
 export function evidenceFace(level: string): string {
-  return EVIDENCE_FACE[(level ?? "").trim()] ?? "完成口径未认定:请保留记录并请店员确认。";
+  return EVIDENCE_FACE[(level ?? "").trim()] ?? "完成结果未认定：请保留记录并请店员确认。";
 }
 
 // ---- 交接状态(续查 GET /api/v1/public/handoffs/{handoffId}) --------------------

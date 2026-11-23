@@ -153,7 +153,7 @@ export function ContentPackPanel({ campaignId }: { campaignId: string }) {
   return (
     <section id="content-packs" className="tk-section">
       <h2 className="tk-section-title">活动内容</h2>
-      <p className="tk-note">候选内容先预览，再点「采用这一版」。当前采用为已选用待发布；线上是否使用，以活动已发布版本为准，既有顾客会话保留原快照。</p>
+      <p className="tk-note">候选内容先预览，再点「采用这一版」。当前采用为已选用待发布；线上是否使用，以活动已发布版本为准，既有顾客会话保留原记录。</p>
       {phase === "loading" ? <p className="tk-state" data-state="loading">{surfaceLabel("loading")}</p> : null}
       {phase === "empty" ? (
         <p className="tk-state" data-state="empty">

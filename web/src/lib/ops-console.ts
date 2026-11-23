@@ -320,7 +320,7 @@ export function evidenceGradeText(v: string): string {
   switch (v) {
     case "official_spec": return "官方规范";
     case "official_doc": return "官方文档";
-    case "official_snapshot": return "官方快照";
+    case "official_snapshot": return "官方存档";
     case "device_test": return "真机实测";
     case "unverified": return "未核实";
     default: return v;

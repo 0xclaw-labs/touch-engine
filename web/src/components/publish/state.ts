@@ -203,7 +203,7 @@ export const DONE_NOTICE =
 
 /** 确认不符(换稿)的固定说明:换稿=新指纹,必须重新确认,不静默更新。 */
 export const CONFIRM_MISMATCH_COPY =
-  "内容版本与当前快照不符。商家换了稿，需要你重新确认后才能交接；不会静默更新你要发出的内容。";
+  "内容版本已更新，请重新确认后再交接；不会静默更新你要发出的内容。";
 
 /** 超时后的固定说明:只查询,不重发(防重复提交)。 */
 export function timeoutCopy(timedOut: boolean | undefined, queryCount: number | undefined): string {

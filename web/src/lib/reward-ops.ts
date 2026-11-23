@@ -157,7 +157,7 @@ export function summaryLines(summary: RewardSummaryView): string[] {
     `已核销 ${counts.redeemed ?? 0}`,
     `已更正撤销 ${counts.reversed ?? 0}`,
     `预留过期 ${counts.expired ?? 0}`,
-    `—— 证据（发放+核销口径）：`,
+    `—— 证据（发放与核销分别统计）：`,
     `店员见到提交 ${evidence.staff_observed_submission ?? 0}`,
     `店员核对作品 ${evidence.staff_verified_post ?? 0}`,
     `官方确认 ${evidence.official_publish_confirmed ?? 0}`,

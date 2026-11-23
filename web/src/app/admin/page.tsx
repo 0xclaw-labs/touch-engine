@@ -1199,7 +1199,7 @@ function AdminWorkspace({ onAccountChanged }: { onAccountChanged: () => void }) 
         </div>
 
         {/* 标签表 */}
-        <AdminDataTable head={["标签", "短码 / URL", "门店", "分组", "状态", "UID 提示(写入后回填)", "操作"]}>
+        <AdminDataTable head={["标签", "短码 / URL", "门店", "分组", "状态", "UID（保存后展示）", "操作"]}>
             {tags.map((t) => (
               <tr key={t.id} className="tk-admin-divider-soft">
                 <td>{t.label}</td>
