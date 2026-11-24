@@ -128,6 +128,22 @@ const contentPacks = [
   },
 ];
 
+const opsTenantRow = {
+  id: TENANT_ID,
+  name: "演示门店",
+  created_at: "2026-10-01T08:00:00Z",
+  brand_id: "",
+  lifecycle: "active",
+  charge_hold: false,
+  store_count: 2,
+  member_count: 3,
+  agency_count: 0,
+  subscription_status: "active",
+  paid_until: "2026-12-31T23:59:59Z",
+  retain_until: "",
+  ops_revision: 1,
+};
+
 // 1x1 透明 PNG（合法图片，供 <img onLoad> 触发 ready 态）。
 const PNG_1X1 = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
@@ -302,7 +318,76 @@ const server = createServer((req, res) => {
   if (root === "stores" && a && b === "content-media") return sendJson(res, 200, list([]));
   if (root === "stores" && a && b === "actions") return sendJson(res, 200, list([]));
   if (root === "stores" && a && b === "services") return sendJson(res, 200, list([]));
-  if (method === "GET" && pathname === "/access/effective") return sendJson(res, 200, { scopes: [] });
+  if (method === "GET" && pathname === "/access/effective") {
+    return sendJson(res, 200, {
+      scopes: [],
+      // 本地取证用 ops grant：仅 fixture 侧补发，不进入生产鉴权逻辑。
+      ops_permissions: [
+        { command: "ops:tenants.read" },
+        { command: "ops:plans.read" },
+        { command: "ops:orders.read" },
+        { command: "ops:channels.read" },
+        { command: "ops:templates.read" },
+        { command: "ops:operations.read" },
+      ],
+    });
+  }
+
+  // ---- 平台运营控制台只读投影（本地取证；空事实不冒充已发放/已开通）----
+  if (method === "GET" && root === "ops" && a === "orders") {
+    return sendJson(res, 200, { orders: [], refunds: [], ai_usage: [], discrepancy_queue: [] });
+  }
+  if (method === "GET" && root === "ops" && a === "tenants" && !b) {
+    return sendJson(res, 200, { tenants: [opsTenantRow] });
+  }
+  if (method === "GET" && root === "ops" && a === "tenants" && b) {
+    return sendJson(res, 200, {
+      tenant: opsTenantRow,
+      ops_revision: opsTenantRow.ops_revision,
+      subscription: {
+        available: true,
+        status: "active",
+        paid_until: opsTenantRow.paid_until,
+        retain_until: "",
+        effective_status: "active",
+        state: "active",
+      },
+      business_data: {
+        available: true,
+        state: "ok",
+        message: "",
+        store_count: opsTenantRow.store_count,
+        member_count: opsTenantRow.member_count,
+        stores: [],
+        members: [],
+      },
+    });
+  }
+  if (method === "GET" && root === "ops" && a === "support-access") {
+    return sendJson(res, 200, { support_access: [] });
+  }
+  if (method === "GET" && root === "ops" && a === "plans") {
+    return sendJson(res, 200, { plans: [] });
+  }
+  if (method === "GET" && root === "ops" && a === "channels") {
+    return sendJson(res, 200, { records: [] });
+  }
+  if (method === "GET" && root === "ops" && a === "templates") {
+    return sendJson(res, 200, { templates: [], content_versions: [], assignments: [] });
+  }
+  if (method === "GET" && root === "ops" && a === "operations") {
+    return sendJson(res, 200, {
+      domain_health: { status: "degraded", targets: [] },
+      hardware_fulfillment: { state: "unavailable", source: "billing", note: "本地取证：硬件履约投影不可用。", orders: [] },
+      touchpoint_inventory: {},
+      tickets: [],
+      drills: [],
+      recent_operations: [],
+    });
+  }
+  if (method === "GET" && root === "ops" && a === "audit") {
+    return sendJson(res, 200, { audit: [] });
+  }
 
   // ---- 写端点：交互冒烟统一 200（非事实下发；页面按既有成功分支刷新）----
   if (method !== "GET" && method !== "HEAD") return sendJson(res, 200, { ok: true });

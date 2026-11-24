@@ -23,12 +23,16 @@ describe("HUI-2628 creation route", () => {
     expect(list).not.toContain("<select");
   });
 
-  it("wizard keeps a local draft, uses local datetime inputs, and has one primary per step", () => {
+  it("wizard keeps a local draft, uses the datetime composite, and has one primary per step", () => {
     const wizard = read("src/components/work/campaign-create-wizard.tsx");
     expect(wizard).toContain("draftStorageKey");
     expect(wizard).toContain("serializeDraft");
     expect(wizard).toContain("parseDraft");
-    expect(wizard).toContain('type="datetime-local"');
+    // D7 等价替换：裸 datetime-local 已迁入 DateTimeField 复合件；提交值由
+    // 复合件触发器 + hidden input（name 承载 starts/ends_at_local）等价承载。
+    expect(wizard).toContain("<DateTimeField");
+    expect(wizard).toContain('name="starts_at_local"');
+    expect(wizard).toContain('name="ends_at_local"');
     expect(wizard).not.toMatch(/placeholder="[^"]*RFC3339/);
     expect(wizard.match(/data-primary-action="true"/g)?.length).toBe(3);
     expect(wizard).toContain("生成链接并发布");

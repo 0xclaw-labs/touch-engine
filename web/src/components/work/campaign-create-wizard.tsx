@@ -17,6 +17,7 @@ import {
 } from "@/lib/campaign-create";
 import { campaignShareText, campaignShareUrl, pickShareLink, shareAvailability, type ShareLink } from "@/lib/campaign-share";
 import { surfaceLabel } from "@/lib/product-finish";
+import { DateTimeField } from "@/components/ui/date-time-field";
 
 interface StoreRec {
   id: string;
@@ -298,13 +299,27 @@ export function CampaignCreateWizard() {
           </label>
           <label className="tk-label">
             开始时间（北京时间 UTC+8）
-            <input className="tk-input" type="datetime-local" value={draft.starts_at_local} onChange={(event) => setDraft({ ...draft, starts_at_local: event.target.value })} />
-            {errors.starts_at ? <span className="tk-danger">{errors.starts_at}</span> : null}
+            <DateTimeField
+              name="starts_at_local"
+              aria-label="活动开始时间"
+              value={draft.starts_at_local}
+              invalid={Boolean(errors.starts_at)}
+              errorId="wizard-starts-at-error"
+              onChange={(value) => setDraft({ ...draft, starts_at_local: value })}
+            />
+            {errors.starts_at ? <span className="tk-danger" id="wizard-starts-at-error" role="alert" aria-live="polite">{errors.starts_at}</span> : null}
           </label>
           <label className="tk-label">
             结束时间（北京时间 UTC+8）
-            <input className="tk-input" type="datetime-local" value={draft.ends_at_local} onChange={(event) => setDraft({ ...draft, ends_at_local: event.target.value })} />
-            {errors.ends_at ? <span className="tk-danger">{errors.ends_at}</span> : null}
+            <DateTimeField
+              name="ends_at_local"
+              aria-label="活动结束时间"
+              value={draft.ends_at_local}
+              invalid={Boolean(errors.ends_at)}
+              errorId="wizard-ends-at-error"
+              onChange={(value) => setDraft({ ...draft, ends_at_local: value })}
+            />
+            {errors.ends_at ? <span className="tk-danger" id="wizard-ends-at-error" role="alert" aria-live="polite">{errors.ends_at}</span> : null}
           </label>
           <button className="tk-primary" type="submit" disabled={busy || storesPhase !== "ready"} data-primary-action="true">
             {busy ? "正在保存…" : "保存草稿并继续"}

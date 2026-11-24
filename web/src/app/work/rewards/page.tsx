@@ -6,6 +6,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { presentAccountSeparation, type SeparationView } from "@/lib/account-separation";
 import { CampaignInventoryPrepare } from "@/components/work/campaign-inventory-prepare";
 import { toRFC3339,benefitKindLabel,verificationModeLabel,type PublishConfigRecord } from "@/lib/campaign-config";
+import { DateTimeField } from "@/components/ui/date-time-field";
 import { formatCampaignWindow } from "@/lib/public-time";
 import { rewardPresentation, surfaceLabel } from "@/lib/product-finish";
 import { rewardNotice, type RewardView } from "@/lib/publish-reward";
@@ -726,7 +727,14 @@ function DealOfferCreateForm(props: {
       </label>
       <label className="tk-label">
         有效期至（北京时间 UTC+8，可空）
-        <input className="tk-input" type="datetime-local" data-field="offer-valid-until" value={form.valid_until} onChange={set("valid_until")} />
+        <span data-field="offer-valid-until">
+          <DateTimeField
+            name="valid_until"
+            aria-label="套餐有效期至（北京时间 UTC+8，可空）"
+            value={form.valid_until}
+            onChange={(value) => setForm({ ...form, valid_until: value })}
+          />
+        </span>
       </label>
       <button className="tk-quiet" type="button" data-action="create-offer" disabled={busy} onClick={() => { setBusy(true); try { props.onCreate(form); } finally { setBusy(false); } setForm(initial); }}>
         {busy ? "提交中…" : "上架套餐"}

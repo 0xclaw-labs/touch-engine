@@ -5,6 +5,7 @@ import { failureText, useSession } from "@/components/work/merchant-session";
 import { CampaignInventoryPrepare } from "@/components/work/campaign-inventory-prepare";
 import { ContentEditor } from "@/components/work/store-content-drawer";
 import { formatMoney, moneyInputMinor } from "@/lib/reward-ops";
+import { DateTimeField } from "@/components/ui/date-time-field";
 import { surfaceLabel } from "@/lib/product-finish";
 import {
   admissionNote,
@@ -321,41 +322,49 @@ export function CampaignConfigPanel({
             </p>
             <label className="tk-label" data-field="claim_window">
               领取时间（北京时间 UTC+8）
-              <input
-                className="tk-input"
-                type="datetime-local"
-                name="claim_from"
-                value={spec.reward.claim_from}
-                onChange={(e) => patch({ claim_from: e.target.value })}
-              />
-              <span> 到 </span>
-              <input
-                className="tk-input"
-                type="datetime-local"
-                name="claim_until"
-                value={spec.reward.claim_until}
-                onChange={(e) => patch({ claim_until: e.target.value })}
-              />
+              <span className="tk-row tk-gap">
+                <DateTimeField
+                  name="claim_from"
+                  aria-label="领取开始时间"
+                  value={spec.reward.claim_from}
+                  invalid={Boolean(windowWarn)}
+                  errorId="window-problem-error"
+                  onChange={(v) => patch({ claim_from: v })}
+                />
+                <span> 到 </span>
+                <DateTimeField
+                  name="claim_until"
+                  aria-label="领取结束时间"
+                  value={spec.reward.claim_until}
+                  invalid={Boolean(windowWarn)}
+                  errorId="window-problem-error"
+                  onChange={(v) => patch({ claim_until: v })}
+                />
+              </span>
             </label>
             <label className="tk-label" data-field="redeem_window">
               优惠使用时间（北京时间 UTC+8）
-              <input
-                className="tk-input"
-                type="datetime-local"
-                name="redeem_from"
-                value={spec.reward.redeem_from}
-                onChange={(e) => patch({ redeem_from: e.target.value })}
-              />
-              <span> 到 </span>
-              <input
-                className="tk-input"
-                type="datetime-local"
-                name="redeem_until"
-                value={spec.reward.redeem_until}
-                onChange={(e) => patch({ redeem_until: e.target.value })}
-              />
+              <span className="tk-row tk-gap">
+                <DateTimeField
+                  name="redeem_from"
+                  aria-label="优惠使用开始时间"
+                  value={spec.reward.redeem_from}
+                  invalid={Boolean(windowWarn)}
+                  errorId="window-problem-error"
+                  onChange={(v) => patch({ redeem_from: v })}
+                />
+                <span> 到 </span>
+                <DateTimeField
+                  name="redeem_until"
+                  aria-label="优惠使用结束时间"
+                  value={spec.reward.redeem_until}
+                  invalid={Boolean(windowWarn)}
+                  errorId="window-problem-error"
+                  onChange={(v) => patch({ redeem_until: v })}
+                />
+              </span>
             </label>
-            {windowWarn ? <p className="tk-danger" data-field="window_problem">{windowWarn}</p> : null}
+            {windowWarn ? <p className="tk-danger" id="window-problem-error" data-field="window_problem" role="alert" aria-live="polite">{windowWarn}</p> : null}
           </fieldset>
 
           {/* 第 2 步:准备内容(只选 3553 已采用版本,不复制状态) */}

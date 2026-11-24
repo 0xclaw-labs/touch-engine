@@ -19,6 +19,7 @@ import { failureText, useSession } from "@/components/work/merchant-session";
 import { useTaskReview } from "./task-review";
 import { PersonPicker } from "./person-picker";
 import { surfaceLabel } from "@/lib/product-finish";
+import { DateField } from "@/components/ui/date-field";
 
 // export:A1 /agency 控制台复用同一裁决读面形状,不另造权限类型。
 export interface AccessEffective {
@@ -695,12 +696,11 @@ function AgencySection({
                 ))}
               </div>
               <div className="tk-row tk-gap">
-                <input
-                  className="tk-input"
-                  type="date"
+                <DateField
+                  name="valid_until"
                   aria-label="代理授权截止日期（留空为长期）"
                   value={cur.until.slice(0, 10)}
-                  onChange={(e) => setScopes({ ...scopes, [rel.id]: { ...cur, until: e.target.value ? new Date(e.target.value).toISOString() : "" } })}
+                  onChange={(date) => setScopes({ ...scopes, [rel.id]: { ...cur, until: date ? new Date(date).toISOString() : "" } })}
                 />
                 <p>付款资格：{rel.payer_grant_ref ? "已有独立付款授权" : "尚无独立付款授权"}。配置授权不新增付款资格；收费由组织负责人或已获原付款授权的人办理。</p>
               </div>
