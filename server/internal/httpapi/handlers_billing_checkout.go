@@ -1,27 +1,27 @@
-// handlers_billing_checkout.go: HUI-4664 原单收银接续 HTTP 面(ADV-9 PR12,
-// R3 §2.2/§2.3 的任务适配版)。
+// handlers_billing_checkout.go: HUI-4664 原单收银接续 HTTP 面(统一收敛公共
+// Mint/Inspect 消费者,覆盖内容制作原单 cph_* 与订阅/续费/扩店/硬件原单 bo_*)。
 //
-// 纪律(裁定书/实现方案/2222 红线):
-//   - 续付=读回原单登记接续引用,不是新购:一切事实(tenant/store/handoff/
-//     quote/金额/币种/付款主体)服务端从既有行装配,请求体零输入,浏览器
-//     声明一律忽略;
-//   - 原单成立判定:quote 已消费(ConsumeQuoteProjection 已发生)且消费方
-//     =本 handoff——未成立的发起如实 409,绝不按申报放行;
-//   - seam 配置驱动:FEATURE_BILLING_CHECKOUT=on 且 PLATFORM_BILLING_BASE_URL
-//     在场才报可续付;未配置=诚实 503 checkout_unavailable,报价与原单保留,
-//     回查不受影响(绝不伪造收银地址);
-//   - 收银门语义升级(cashierCheckout):有 checkout 引用=可续付(报
-//     checkout_ref 与续付 URL);无=诚实 checkout_unwired——已存在的
-//     checkout.available 门,语义现在为真;
-//   - checkout_url 是公共结算侧 URL:只在本响应即时给出,永不落库
-//     (落库即制造可重放凭据);返回落地只走读面回查(GET),浏览器携带的
-//     任何 query 参数永不推进支付状态(状态只由 billing_authority 事实驱动);
-//   - 幂等键贯穿:同单(order_ref)复用同一 checkout_ref;同 payment_ref
-//     重放零新增零改写。
+// 纪律(裁定书 / touch-order-checkout/v1.1 / 2222 红线):
+//   - 续付 = 读回原单发起/恢复公共 Mint,不是新购:一切资金与身份事实(tenant/
+//     order/quote/pricing_version/金额/币种/付款主体/代付授权快照)全部由服务端
+//     从既有不可变快照装配;请求体最多接受 provider(wechat/alipay,缺省 wechat),
+//     浏览器声明的价格/金额/付款人一律忽略;
+//   - 真实调用公共 Mint/Inspect:绝不在本地硬拼假收银路径,也绝不伪造本地 paid
+//     状态。code_url / return_url 只在权威响应中即时给出,永不落库;
+//   - seam 配置驱动:TouchCheckout 客户端就绪(或 FEATURE_BILLING_CHECKOUT=on 且
+//     PLATFORM_BILLING_BASE_URL + PLATFORM_BILLING_TOKEN 齐备)才允许 Mint/Inspect;
+//     未配置 = 诚实 503 checkout_unavailable,原单与报价保留,回查不受影响;
+//   - paid 禁再付:一旦原单已付(order.status!=processing / payment_ref!="" /
+//     checkout.state!=checkout_pending / 已有同单退款),再次发起 Mint 一律 409
+//     order_already_paid,返回原单只读投影与下一步;
+//   - 普通返回(GET)只读回查:忽略所有 query 参数,绝不推进本地支付/开通状态。
 package httpapi
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 
@@ -30,71 +30,239 @@ import (
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
 )
 
-// billingCheckoutSeamReady answers honestly whether the public checkout seam
-// is wired: the capability switch is on AND the public billing base URL is
-// configured (Gate already fails startup on the half-wired pairings).
-func (s *Server) billingCheckoutSeamReady() bool {
-	return s.Cfg.FeatureBillingCheckout && strings.TrimSpace(s.Cfg.BillingBaseURL) != ""
+type checkoutInitiateBody struct {
+	Provider string `json:"provider"`
 }
 
-// checkoutURLFor derives the public settlement-side checkout URL for one
-// checkout reference. Seam-config-driven only; the URL never lands in the
-// database and is never browser-supplied. 对齐点(R3 §6.3.5):上游 PR-4 到位
-// 后改为透传公共侧返回的收银 URL,本函数是唯一换源点。
-func (s *Server) checkoutURLFor(checkoutRef string) string {
-	return s.Cfg.BillingBaseURL + "/billing/touch-checkout/" + checkoutRef
-}
-
-// checkoutRefView projects one billing_checkout_refs row onto the merchant
-// checkout gate vocabulary. available=true 只在「引用存在 + 等待支付 + seam
-// 已接通」时成立;paid/activated/failed 都如实答 not_awaiting_payment
-//(没有可续付的款项;failed 附留因)。
-func (s *Server) checkoutRefView(row store.BillingCheckoutRefRow) map[string]any {
-	view := map[string]any{
-		"checkout_ref": row.CheckoutRef,
-		"order_ref":    row.OrderRef,
-		"quote_ref":    row.QuoteRef,
-		"state":        row.State,
-		"amount_minor": row.AmountMinor,
-		"currency":     row.Currency,
-		"available":    false,
+func parseCheckoutProvider(r *http.Request) (string, error) {
+	if r.Body == nil {
+		return billing.TouchProviderWechat, nil
 	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 4<<10))
+	if err != nil {
+		return "", err
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return billing.TouchProviderWechat, nil
+	}
+	var body checkoutInitiateBody
+	if err := json.Unmarshal([]byte(trimmed), &body); err != nil {
+		return "", err
+	}
+	provider := strings.TrimSpace(body.Provider)
+	if provider == "" {
+		return billing.TouchProviderWechat, nil
+	}
+	if !billing.ValidTouchProvider(provider) {
+		return "", errors.New("unsupported checkout provider")
+	}
+	return provider, nil
+}
+
+// billingCheckoutSeamReady answers honestly whether the real public-ai
+// Mint/Inspect consumer seam is wired.
+func (s *Server) billingCheckoutSeamReady() bool {
+	if s.TouchCheckout != nil {
+		return true
+	}
+	return s.Cfg.FeatureBillingCheckout &&
+		strings.TrimSpace(s.Cfg.BillingBaseURL) != "" &&
+		strings.TrimSpace(s.Cfg.BillingToken) != ""
+}
+
+func (s *Server) touchCheckoutClient() billing.TouchCheckoutClient {
+	if s.TouchCheckout != nil {
+		return s.TouchCheckout
+	}
+	if !s.billingCheckoutSeamReady() {
+		return nil
+	}
+	return billing.NewHTTPTouchCheckoutClient(s.Cfg.BillingBaseURL, s.Cfg.BillingToken, checkoutActivationClient)
+}
+
+func (s *Server) checkoutReturnTarget() string {
+	if t := strings.TrimSpace(s.Cfg.CashierTargetID); t != "" {
+		return t
+	}
+	return billing.TouchCheckoutReturnTarget
+}
+
+// checkoutRefView projects one billing_checkout_refs row plus optional live
+// authoritative Mint/Inspect payload onto the merchant checkout gate vocabulary.
+// code_url / checkout_url ONLY come from authoritative remote responses and are
+// NEVER fabricated locally or stored in SQLite.
+func (s *Server) checkoutRefView(row store.BillingCheckoutRefRow, remote *billing.TouchCheckoutResult, inspectUnavailable bool) map[string]any {
+	remoteStatus := row.RemoteStatus
+	remoteRef := row.RemoteCheckoutRef
+	outTradeNo := row.OutTradeNo
+	expiresAt := row.ExpiresAt
+	priceDigest := row.PriceDigest
+	returnTarget := row.ReturnTarget
+	codeURL := ""
+	returnURL := ""
+	if remote != nil {
+		if remote.CheckoutRef != "" {
+			remoteRef = remote.CheckoutRef
+		}
+		if remote.OutTradeNo != "" {
+			outTradeNo = remote.OutTradeNo
+		}
+		if remote.Status != "" {
+			remoteStatus = remote.Status
+		}
+		if remote.ExpiresAt != "" {
+			expiresAt = remote.ExpiresAt
+		}
+		if remote.PriceDigest != "" {
+			priceDigest = remote.PriceDigest
+		}
+		if remote.ReturnTarget != "" {
+			returnTarget = remote.ReturnTarget
+		}
+		codeURL = strings.TrimSpace(remote.CodeURL)
+		returnURL = strings.TrimSpace(remote.ReturnURL)
+	}
+
+	view := map[string]any{
+		"checkout_ref":        row.CheckoutRef,
+		"remote_checkout_ref": remoteRef,
+		"out_trade_no":        outTradeNo,
+		"provider":            row.Provider,
+		"order_ref":           row.OrderRef,
+		"order_kind":          row.OrderKind,
+		"quote_ref":           row.QuoteRef,
+		"state":               row.State,
+		"remote_status":       remoteStatus,
+		"amount_minor":        row.AmountMinor,
+		"currency":            row.Currency,
+		"expires_at":          expiresAt,
+		"price_digest":        priceDigest,
+		"return_target":       returnTarget,
+		"available":           false,
+		"app_id":              "",
+		"launch_target_id":    "",
+	}
+	if returnURL != "" {
+		view["return_url"] = returnURL
+	}
+	if inspectUnavailable {
+		view["inspect_unavailable"] = true
+	}
+
 	switch {
-	case row.State == billing.CheckoutStatePending && s.billingCheckoutSeamReady():
-		view["available"] = true
-		view["checkout_url"] = s.checkoutURLFor(row.CheckoutRef)
-		view["app_id"] = s.Cfg.CashierAppID
-		view["launch_target_id"] = s.Cfg.CashierTargetID
-	case row.State == billing.CheckoutStatePending:
-		view["reason"] = "checkout_unavailable"
-	default:
+	case row.State != billing.CheckoutStatePending:
 		view["reason"] = "not_awaiting_payment"
 		if row.State == billing.CheckoutStateFailed && row.FailReason != "" {
 			view["fail_reason"] = row.FailReason
 		}
+	case remoteStatus == "paid":
+		// 公共侧已结算,等待 billing_authority payment_paid 事实同步至本地:
+		// 绝不再开放支付按钮,避免二次扣费。
+		view["reason"] = "not_awaiting_payment"
+		view["sync_pending"] = true
+	case remoteStatus == "cancelled" || remoteStatus == "mismatch":
+		view["reason"] = "not_awaiting_payment"
+	case !s.billingCheckoutSeamReady():
+		view["reason"] = "checkout_unavailable"
+	case codeURL != "":
+		view["available"] = true
+		view["code_url"] = codeURL
+		view["checkout_url"] = codeURL
+		view["app_id"] = s.Cfg.CashierAppID
+		view["launch_target_id"] = returnTarget
+	default:
+		// 已有本地引用但本次未拿到权威即时 code_url(例如 Inspect 暂不可用或尚未 Mint):
+		// 诚实告知 checkout_unavailable,不伪造本地 URL。
+		view["reason"] = "checkout_unavailable"
 	}
 	return view
 }
 
-// orderCheckoutGate upgrades the cashier read for ONE original order: 有
-// checkout 引用=可续付(报 checkout_ref 与续付 URL);无引用/未接通=诚实
-// checkout_unwired(与既有门的字段逐字节兼容)。浏览器返回只走本读门,
-// 任何 query 参数不产生状态变化。
+// inspectCheckoutRef performs a strictly read-only Inspect against public-ai
+// when the seam is wired. It refreshes non-URL metadata (remote_status/out_trade_no/
+// remote_checkout_ref) without EVER advancing local payment/activation state.
+func (s *Server) inspectCheckoutRef(ctx context.Context, tenantID string, row store.BillingCheckoutRefRow) (store.BillingCheckoutRefRow, *billing.TouchCheckoutResult, bool) {
+	client := s.touchCheckoutClient()
+	if client == nil {
+		return row, nil, false
+	}
+	res, err := client.Inspect(ctx, row.CheckoutRef)
+	if err != nil {
+		if errors.Is(err, billing.ErrRemoteCheckoutNotFound) {
+			return row, nil, false
+		}
+		return row, nil, true
+	}
+	if updated, uerr := s.St.UpdateBillingCheckoutRemoteMetadata(tenantID, row.CheckoutRef, store.BillingCheckoutRemoteMeta{
+		RemoteCheckoutRef: res.CheckoutRef,
+		OutTradeNo:        res.OutTradeNo,
+		RemoteStatus:      res.Status,
+		ReturnTarget:      res.ReturnTarget,
+		PriceDigest:       res.PriceDigest,
+		ExpiresAt:         res.ExpiresAt,
+	}, nowRFC3339()); uerr == nil {
+		row = updated
+	}
+	return row, &res, false
+}
+
+// orderCheckoutGate upgrades the cashier read for ONE original order:
+//   - 无 checkout 引用:若 seam 就绪则诚实标注可发起 Mint(available=false,
+//     reason=checkout_mint_ready / checkout_unwired);为兼容既有未接线读面纪律,
+//     当 seam 未就绪时保持字节兼容的 checkout_unwired。
+//   - 有 checkout 引用:通过只读 Inspect 透出权威远端状态与即时 code_url。
 func (s *Server) orderCheckoutGate(tenantID, orderRef string) map[string]any {
 	gate := s.cashierCheckout() // base: available=false, reason=checkout_unwired
 	row, err := s.St.GetBillingCheckoutRefByOrder(tenantID, orderRef)
 	if err != nil {
-		return gate // 无引用 = 诚实未接通(同形掩蔽不泄漏存在性)
+		if s.billingCheckoutSeamReady() {
+			gate["mint_supported"] = true
+		}
+		return gate
 	}
-	for k, v := range s.checkoutRefView(row) {
+	row, remote, inspectErr := s.inspectCheckoutRef(context.Background(), tenantID, row)
+	for k, v := range s.checkoutRefView(row, remote, inspectErr) {
 		gate[k] = v
 	}
 	return gate
 }
 
-// handoffCheckoutGuard resolves the caller-owned handoff for the checkout
-// faces: tenant-scoped read, URL store must match the stored row (跨店/跨租户
-// 一律同形 404,不泄漏存在性——同 retry 面纪律)。
+func writeRemoteCheckoutError(w http.ResponseWriter, err error, extra map[string]any) {
+	body := map[string]any{}
+	for k, v := range extra {
+		body[k] = v
+	}
+	switch {
+	case errors.Is(err, billing.ErrRemotePriceChanged):
+		body["error"] = "price_changed"
+		body["message"] = "原报价版本已变更或已过期，未生成新的收费单；原单记录已保留，请先刷新生效目录后再确认。"
+		writeJSON(w, http.StatusConflict, body)
+	case errors.Is(err, billing.ErrRemoteIdempotencyConflict):
+		body["error"] = "idempotency_conflict"
+		body["message"] = "同一原单或幂等键携带了不同参数（金额/付款主体/价格版本不一致），已拒绝重复下单。"
+		writeJSON(w, http.StatusConflict, body)
+	case errors.Is(err, billing.ErrRemoteTargetNotAllowed):
+		body["error"] = "return_target_not_allowed"
+		body["message"] = "公共收银侧拒绝了当前受控回跳目标，请联系平台核对配置。"
+		writeJSON(w, http.StatusForbidden, body)
+	case errors.Is(err, billing.ErrRemotePayerUnknown):
+		body["error"] = "payer_unknown"
+		body["message"] = "公共结算侧未找到当前付款主体锚点，拒绝收款；请核对付款主体身份后重试。"
+		writeJSON(w, http.StatusConflict, body)
+	case errors.Is(err, billing.ErrRemoteInvalidRequest):
+		body["error"] = "invalid_checkout_request"
+		body["message"] = "收银单参数不符合公共结算契约，已拒绝发起。"
+		writeJSON(w, http.StatusBadRequest, body)
+	default:
+		body["error"] = "checkout_unavailable"
+		body["message"] = "公共结算侧收银暂时不可用：原单与报价均已保留，稍后重试会沿用同一原单引用，切勿重复下单。"
+		writeJSON(w, http.StatusServiceUnavailable, body)
+	}
+}
+
+// ---- 内容制作原单 cph_* 收银接续面 -------------------------------------------
+
 func (s *Server) handoffCheckoutGuard(w http.ResponseWriter, r *http.Request, tenantID, storeID string) (store.ProductionHandoff, bool) {
 	h, err := s.St.GetProductionHandoff(tenantID, r.PathValue("handoffId"))
 	if err != nil {
@@ -108,9 +276,6 @@ func (s *Server) handoffCheckoutGuard(w http.ResponseWriter, r *http.Request, te
 	return h, true
 }
 
-// handoffOriginalOrder verifies 原单成立: the handoff's quote was consumed by
-// THIS handoff (ConsumeQuoteProjection 已发生). Anything else answers an
-// honest 409 — the continuation never acts on an unestablished original.
 func (s *Server) handoffOriginalOrder(w http.ResponseWriter, tenantID string, h store.ProductionHandoff) (store.BillingAIUsageRow, bool) {
 	usage, err := s.St.GetBillingAIUsage(tenantID, h.QuoteRef)
 	if err != nil || usage.State != billing.QuoteStateConsumed || usage.ConsumedByRef != h.ID {
@@ -123,18 +288,22 @@ func (s *Server) handoffOriginalOrder(w http.ResponseWriter, tenantID string, h 
 
 // handleProductionHandoffCheckout answers
 // POST /api/v1/stores/{id}/content-production-handoffs/{handoffId}/checkout —
-// 续付登记面:生成/复用 checkout_ref(同单恢复复用同一引用),seam 未配置=
-// 诚实 503(报价与原单保留)。请求体零输入;金额/币种/付款主体全部服务端装配。
+// 真实调用公共 Mint(touch-order-checkout/v1.1), 返回权威 checkout_ref / remote_checkout_ref /
+// code_url。已付原单禁止再付(409 order_already_paid); 受理丢响应/重启后同单重试复用同一 ck_*。
 func (s *Server) handleProductionHandoffCheckout(w http.ResponseWriter, r *http.Request) {
 	c := callerFrom(r)
 	if !s.packTenantAction(c, authz.ActionManageContentPacks, w) {
 		return
 	}
-	// 续付资格=付款资格(同报价面):org_owner 恒有;agent 需激活关系含
-	// renewal 且 payer_grant_ref 非空——服务端解析,客户端声明一律忽略。
-	if !s.callerHasPayerGrant(c) || !s.payerDecisionFor(c).Authorized {
+	payer := s.payerDecisionFor(c)
+	if !s.callerHasPayerGrant(c) || !payer.Authorized {
 		fail(w, http.StatusForbidden, billing.PayerReasonRequired,
-			"当前账号没有付款授权,不能续付原单。请付款管理员确认后续付;原单与报价都保留,不会丢失。")
+			"当前账号没有独立付款授权，不能为制作原单发起付款。请交由商家负责人确认办理；原单与报价均已保留。")
+		return
+	}
+	provider, perr := parseCheckoutProvider(r)
+	if perr != nil {
+		fail(w, http.StatusBadRequest, "bad_provider", "provider must be wechat or alipay")
 		return
 	}
 	tenantID := c.Member.TenantID
@@ -152,7 +321,6 @@ func (s *Server) handleProductionHandoffCheckout(w http.ResponseWriter, r *http.
 		return
 	}
 	if !s.billingCheckoutSeamReady() {
-		// 诚实 503:公共结算侧收银 seam 未接通;报价与原单保留,回查不受影响。
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"error":   "checkout_unavailable",
 			"message": "公共结算侧收银尚未接通:这次没有生成可续付引用;报价与原单都已保留,可继续回查,无需重新报价或重新发起制作。",
@@ -164,14 +332,42 @@ func (s *Server) handleProductionHandoffCheckout(w http.ResponseWriter, r *http.
 		})
 		return
 	}
+	// 先查既有引用:一旦本地已落 paid / activated, 严格禁止再次支付(409)。
+	if existing, gerr := s.St.GetBillingCheckoutRefByOrder(tenantID, h.ID); gerr == nil &&
+		(existing.State == billing.CheckoutStatePaid || existing.State == billing.CheckoutStateActivated) {
+		view := s.checkoutRefView(existing, nil, false)
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":      "order_already_paid",
+			"message":    "该制作原单已收到支付事实，禁止再次发起付款；请回查原单同步状态。",
+			"handoff":    productionHandoffView(h),
+			"checkout":   view,
+			"continuity": buildProductionContinuityForCaller(c, h, existing, false),
+		})
+		return
+	}
+
+	payerPrincipal := strings.TrimSpace(payer.PayerPrincipal)
+	if payerPrincipal == "" {
+		payerPrincipal = s.productionAccount(tenantID)
+	}
+	pricingVer := strings.TrimSpace(usage.PricingVersion)
+	if pricingVer == "" {
+		pricingVer = firstNonEmptyStr(strings.TrimSpace(s.Cfg.ProductionPricingVersion), "v1")
+	}
 	row, replayed, err := s.St.UpsertBillingCheckoutRef(store.NewBillingCheckoutRef{
-		TenantID:    tenantID,
-		HandoffID:   h.ID,
-		QuoteRef:    h.QuoteRef,
-		OrderRef:    h.ID, // 制作接续的原单引用=handoff id(cph_…;同恢复域,见迁移 0139 注)
-		AmountMinor: usage.AmountMinor,
-		Currency:    usage.Currency,
-		PayerRef:    s.productionAccount(tenantID),
+		TenantID:           tenantID,
+		HandoffID:          h.ID,
+		QuoteRef:           h.QuoteRef,
+		OrderRef:           h.ID,
+		OrderKind:          "content_production",
+		AmountMinor:        usage.AmountMinor,
+		Currency:           usage.Currency,
+		PayerRef:           payerPrincipal,
+		PayerGrantRef:      payer.PayerGrantRef,
+		PayerGrantRevision: payer.GrantRevision,
+		PricingVersion:     pricingVer,
+		IntentKey:          firstNonEmptyStr(h.IdempotencyKey, h.ID),
+		ReturnTarget:       s.checkoutReturnTarget(),
 	}, nowRFC3339())
 	if err != nil {
 		if errors.Is(err, store.ErrBillingIdempotencyConflict) {
@@ -182,20 +378,107 @@ func (s *Server) handleProductionHandoffCheckout(w http.ResponseWriter, r *http.
 		packStoreFail(w, err)
 		return
 	}
+	if row.State == billing.CheckoutStatePaid || row.State == billing.CheckoutStateActivated {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":      "order_already_paid",
+			"message":    "该制作原单已收到支付事实，禁止再次发起付款；请回查原单状态。",
+			"handoff":    productionHandoffView(h),
+			"checkout":   s.checkoutRefView(row, nil, false),
+			"continuity": buildProductionContinuityForCaller(c, h, row, false),
+		})
+		return
+	}
+
+	// 真实调用公共 Mint(source_order_ref = 本地稳定 ck_* 路由键)。
+	client := s.touchCheckoutClient()
+	mintRes, merr := client.Mint(r.Context(), billing.TouchCheckoutMintRequest{
+		SourceApp:      billing.TouchCheckoutAppID,
+		SourceOrderRef: row.CheckoutRef,
+		IntentKey:      firstNonEmptyStr(row.IntentKey, row.CheckoutRef),
+		TenantRef:      tenantID,
+		Provider:       provider,
+		Payer: billing.TouchCheckoutPayer{
+			PrincipalRef:  firstNonEmptyStr(row.PayerRef, payerPrincipal),
+			GrantRef:      row.PayerGrantRef,
+			GrantRevision: row.PayerGrantRevision,
+		},
+		Line: billing.TouchCheckoutLine{
+			Kind:           firstNonEmptyStr(usage.Capability, "content_production"),
+			PlanCode:       "",
+			PriceRef:       usage.QuoteRef,
+			PricingVersion: pricingVer,
+			AmountMinor:    row.AmountMinor,
+			Currency:       firstNonEmptyStr(row.Currency, "CNY"),
+		},
+		ReturnTarget: s.checkoutReturnTarget(),
+	})
+	if merr != nil {
+		writeRemoteCheckoutError(w, merr, map[string]any{
+			"handoff": productionHandoffView(h),
+			"quote":   map[string]any{"quote_ref": h.QuoteRef, "amount_minor": usage.AmountMinor, "currency": usage.Currency},
+			"checkout": map[string]any{
+				"checkout_ref": row.CheckoutRef, "order_ref": row.OrderRef, "state": row.State,
+				"available": false, "app_id": "", "launch_target_id": "", "reason": "checkout_unavailable",
+			},
+		})
+		return
+	}
+	if mintRes.Status == "paid" {
+		// 公共侧已付款但本地尚未收到 webhook:禁止重复付款,回写只读远端状态并返回 409。
+		row, _ = s.St.UpdateBillingCheckoutRemoteMetadata(tenantID, row.CheckoutRef, store.BillingCheckoutRemoteMeta{
+			RemoteCheckoutRef: mintRes.CheckoutRef,
+			OutTradeNo:        mintRes.OutTradeNo,
+			Provider:          provider,
+			RemoteStatus:      mintRes.Status,
+			ReturnTarget:      mintRes.ReturnTarget,
+			PriceDigest:       mintRes.PriceDigest,
+			ExpiresAt:         mintRes.ExpiresAt,
+		}, nowRFC3339())
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":      "order_already_paid",
+			"message":    "公共收银侧显示该原单已付款，正在等待服务端权威同步；请回查原单，切勿重复付款。",
+			"handoff":    productionHandoffView(h),
+			"checkout":   s.checkoutRefView(row, &mintRes, false),
+			"continuity": buildProductionContinuityForCaller(c, h, row, false),
+		})
+		return
+	}
+	updated, uerr := s.St.UpdateBillingCheckoutRemoteMetadata(tenantID, row.CheckoutRef, store.BillingCheckoutRemoteMeta{
+		RemoteCheckoutRef: mintRes.CheckoutRef,
+		OutTradeNo:        mintRes.OutTradeNo,
+		Provider:          provider,
+		RemoteStatus:      firstNonEmptyStr(mintRes.Status, "pending"),
+		ReturnTarget:      firstNonEmptyStr(mintRes.ReturnTarget, s.checkoutReturnTarget()),
+		PriceDigest:       mintRes.PriceDigest,
+		ExpiresAt:         mintRes.ExpiresAt,
+	}, nowRFC3339())
+	if uerr != nil {
+		if errors.Is(uerr, store.ErrBillingIdempotencyConflict) {
+			fail(w, http.StatusConflict, "idempotency_conflict", "公共侧返回了与既有原单不一致的远端收银引用，已拒绝覆盖。")
+			return
+		}
+		packStoreFail(w, uerr)
+		return
+	}
+	row = updated
+	isReplay := replayed || mintRes.Replayed
 	status := http.StatusCreated
-	if replayed {
+	if isReplay {
 		status = http.StatusOK
 	}
+	view := s.checkoutRefView(row, &mintRes, false)
+	avail, _ := view["available"].(bool)
 	writeJSON(w, status, map[string]any{
-		"handoff":  productionHandoffView(h),
-		"replayed": replayed,
-		"checkout": s.checkoutRefView(row),
+		"handoff":    productionHandoffView(h),
+		"replayed":   isReplay,
+		"checkout":   view,
+		"continuity": buildProductionContinuityForCaller(c, h, row, avail),
 	})
 }
 
 // handleProductionHandoffCheckoutGet answers
 // GET /api/v1/stores/{id}/content-production-handoffs/{handoffId}/checkout —
-// 只读回查投影(浏览器从收银台返回的落地调用;永不信 query 参数,永不写状态)。
+// 只读回查投影(浏览器从收银台返回的落地调用;永不信 query 参数,永不写本地支付状态)。
 func (s *Server) handleProductionHandoffCheckoutGet(w http.ResponseWriter, r *http.Request) {
 	c := callerFrom(r)
 	if !s.storeContentPackRead(c, r.PathValue("id"), w) {
@@ -217,15 +500,277 @@ func (s *Server) handleProductionHandoffCheckoutGet(w http.ResponseWriter, r *ht
 			packStoreFail(w, err)
 			return
 		}
-		// 无引用:诚实未接通(同形答 available=false,不泄漏存在性之外的信息)。
 		writeJSON(w, http.StatusOK, map[string]any{
 			"handoff":  productionHandoffView(h),
 			"checkout": map[string]any{"available": false, "app_id": "", "launch_target_id": "", "reason": "checkout_unwired"},
 		})
 		return
 	}
+	row, remote, inspectErr := s.inspectCheckoutRef(r.Context(), tenantID, row)
+	view := s.checkoutRefView(row, remote, inspectErr)
+	avail, _ := view["available"].(bool)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"handoff":  productionHandoffView(h),
-		"checkout": s.checkoutRefView(row),
+		"handoff":    productionHandoffView(h),
+		"checkout":   view,
+		"continuity": buildProductionContinuityForCaller(c, h, row, avail),
+	})
+}
+
+func buildProductionContinuityForCaller(c *caller, h store.ProductionHandoff, row store.BillingCheckoutRefRow, checkoutAvailable bool) billing.OrderContinuityProjection {
+	isAgent := c != nil && c.Member != nil && c.Member.Role == string(authz.RoleAgent)
+	canPay := c != nil && c.Member != nil && (c.Member.Role == string(authz.RoleOrgOwner) || (isAgent && row.PayerGrantRef != ""))
+	return billing.BuildProductionContinuity(billing.ProductionContinuityInput{
+		CheckoutRef:       row.CheckoutRef,
+		OrderRef:          row.OrderRef,
+		HandoffStatus:     h.Status,
+		State:             row.State,
+		RemoteStatus:      row.RemoteStatus,
+		PaymentRef:        row.PaymentRef,
+		FailReason:        row.FailReason,
+		CheckoutAvailable: checkoutAvailable,
+		ActorCanPay:       canPay,
+		ActorIsAgent:      isAgent,
+		CreatedAt:         row.CreatedAt,
+		UpdatedAt:         row.UpdatedAt,
+	})
+}
+
+// ---- 订阅/续费/扩店/硬件原单 bo_* 统一公共 Mint/Inspect 面 --------------------
+
+type frozenOrderSnapshot struct {
+	PriceRef           string `json:"price_ref"`
+	PricingVersion     string `json:"pricing_version"`
+	ServiceDays        int    `json:"service_days"`
+	IncludedStoreCount int    `json:"included_store_count"`
+	AdditionalStores   int    `json:"additional_stores"`
+}
+
+func parseFrozenOrderSnapshot(order store.BillingOrderRow) frozenOrderSnapshot {
+	var snap frozenOrderSnapshot
+	_ = json.Unmarshal([]byte(order.PriceSnapshot), &snap)
+	if snap.PriceRef == "" {
+		snap.PriceRef = firstNonEmptyStr(order.PriceRef, order.Kind)
+	}
+	if snap.PricingVersion == "" {
+		snap.PricingVersion = firstNonEmptyStr(order.PricingVersion, "v1")
+	}
+	return snap
+}
+
+// handleBillingOrderCheckout answers POST /api/v1/billing/orders/{id}/checkout —
+// 为既有订阅(new/renew/expand)或硬件(purchase)原单发起/恢复公共 Mint。
+// 绝不按今日目录重计价,绝不转移付款主体,已付/退款中原单严禁再付。
+func (s *Server) handleBillingOrderCheckout(w http.ResponseWriter, r *http.Request) {
+	c := callerFrom(r)
+	if d := authz.Can(s.resolveAccess(c), string(authz.PermBillingView), ""); !d.Allowed {
+		fail(w, http.StatusForbidden, d.Reason, "billing access is not allowed for this member")
+		return
+	}
+	provider, perr := parseCheckoutProvider(r)
+	if perr != nil {
+		fail(w, http.StatusBadRequest, "bad_provider", "provider must be wechat or alipay")
+		return
+	}
+	order, err := s.St.GetBillingOrder(c.Member.TenantID, r.PathValue("id"))
+	if err != nil {
+		fail(w, http.StatusNotFound, "not_found", "order not found in this tenant scope")
+		return
+	}
+	// 严格复核实时付款授权与原单不可变付款主体一致(撤权立即拦截)。
+	payer := s.payerDecisionFor(c)
+	if !s.callerHasPayerGrant(c) || !payer.Authorized ||
+		payer.PayerPrincipal != order.PayerPrincipal ||
+		payer.PayerGrantRef != order.PayerGrantRef ||
+		payer.RelationRef != order.AgencyRelationRef {
+		fail(w, http.StatusForbidden, "original_payer_required",
+			"当前账号不具备这笔原单的有效付款授权（代理无独立付款权或原授权已变更/撤回）；请交由商家负责人或原付款人处理，绝不误扣他人账户。")
+		return
+	}
+	refunds, rerr := s.St.ListBillingRefundsByOrder(c.Member.TenantID, order.ID)
+	if rerr != nil {
+		fail(w, http.StatusInternalServerError, "internal", "order refunds lookup failed")
+		return
+	}
+	// paid / opening / active / cancelled / failed / refunding 一律禁止再付!
+	if order.Status != billing.OrderProcessing || order.PaymentRef != "" || len(refunds) > 0 {
+		checkout := s.originalOrderCheckout(c, order)
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":      "order_already_paid",
+			"message":    "该原单已不在待支付状态（已付款/开通中/已生效/已撤单或已进入退款对账），禁止再次付款；请按原单回查结果继续办理。",
+			"order":      order,
+			"checkout":   checkout,
+			"refunds":    refunds,
+			"continuity": s.buildOrderContinuityForCaller(c, order, checkout, nil, nil, refunds),
+		})
+		return
+	}
+	if !s.billingCheckoutSeamReady() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error":   "checkout_unavailable",
+			"message": "公共结算侧收银尚未接通：原单与价格快照均已保留，可继续回查，无需重新下单。",
+			"order":   order,
+			"checkout": map[string]any{
+				"available": false, "app_id": "", "launch_target_id": "", "reason": "checkout_unavailable",
+			},
+		})
+		return
+	}
+
+	snap := parseFrozenOrderSnapshot(order)
+	row, replayed, err := s.St.UpsertBillingCheckoutRef(store.NewBillingCheckoutRef{
+		TenantID:           c.Member.TenantID,
+		OrderRef:           order.ID,
+		OrderKind:          order.Kind,
+		QuoteRef:           snap.PriceRef,
+		AmountMinor:        order.AmountMinor,
+		Currency:           firstNonEmptyStr(order.Currency, "CNY"),
+		PayerRef:           order.PayerPrincipal,
+		PayerGrantRef:      order.PayerGrantRef,
+		PayerGrantRevision: order.PayerGrantRevision,
+		PricingVersion:     snap.PricingVersion,
+		IntentKey:          order.IdempotencyKey,
+		ReturnTarget:       s.checkoutReturnTarget(),
+	}, nowRFC3339())
+	if err != nil {
+		if errors.Is(err, store.ErrBillingIdempotencyConflict) {
+			fail(w, http.StatusConflict, "idempotency_conflict", "原单已绑定不同的收银引用，已拒绝重复发起。")
+			return
+		}
+		fail(w, http.StatusInternalServerError, "internal", "checkout reference registration failed")
+		return
+	}
+	if row.State == billing.CheckoutStatePaid || row.State == billing.CheckoutStateActivated {
+		view := s.checkoutRefView(row, nil, false)
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":      "order_already_paid",
+			"message":    "该原单已收到支付事实，禁止再次付款；请回查原单状态。",
+			"order":      order,
+			"checkout":   view,
+			"continuity": s.buildOrderContinuityForCaller(c, order, view, nil, nil, refunds),
+		})
+		return
+	}
+
+	client := s.touchCheckoutClient()
+	mintRes, merr := client.Mint(r.Context(), billing.TouchCheckoutMintRequest{
+		SourceApp:      billing.TouchCheckoutAppID,
+		SourceOrderRef: row.CheckoutRef,
+		IntentKey:      order.IdempotencyKey,
+		TenantRef:      c.Member.TenantID,
+		Provider:       provider,
+		Payer: billing.TouchCheckoutPayer{
+			PrincipalRef:  order.PayerPrincipal,
+			GrantRef:      order.PayerGrantRef,
+			GrantRevision: order.PayerGrantRevision,
+		},
+		Line: billing.TouchCheckoutLine{
+			Kind:               order.Kind,
+			PlanCode:           order.PlanCode,
+			PriceRef:           snap.PriceRef,
+			PricingVersion:     snap.PricingVersion,
+			AmountMinor:        order.AmountMinor,
+			Currency:           firstNonEmptyStr(order.Currency, "CNY"),
+			ServiceDays:        snap.ServiceDays,
+			IncludedStoreCount: snap.IncludedStoreCount,
+			AdditionalStores:   snap.AdditionalStores,
+		},
+		ReturnTarget: s.checkoutReturnTarget(),
+	})
+	if merr != nil {
+		writeRemoteCheckoutError(w, merr, map[string]any{
+			"order": order,
+			"checkout": map[string]any{
+				"checkout_ref": row.CheckoutRef, "order_ref": order.ID, "state": row.State,
+				"available": false, "app_id": "", "launch_target_id": "", "reason": "checkout_unavailable",
+			},
+		})
+		return
+	}
+	if mintRes.Status == "paid" {
+		row, _ = s.St.UpdateBillingCheckoutRemoteMetadata(c.Member.TenantID, row.CheckoutRef, store.BillingCheckoutRemoteMeta{
+			RemoteCheckoutRef: mintRes.CheckoutRef,
+			OutTradeNo:        mintRes.OutTradeNo,
+			Provider:          provider,
+			RemoteStatus:      mintRes.Status,
+			ReturnTarget:      mintRes.ReturnTarget,
+			PriceDigest:       mintRes.PriceDigest,
+			ExpiresAt:         mintRes.ExpiresAt,
+		}, nowRFC3339())
+		view := s.checkoutRefView(row, &mintRes, false)
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":      "order_already_paid",
+			"message":    "公共收银侧显示该原单已付款，正在等待权威事实同步；请回查原单，切勿重复付款。",
+			"order":      order,
+			"checkout":   view,
+			"continuity": s.buildOrderContinuityForCaller(c, order, view, nil, nil, refunds),
+		})
+		return
+	}
+	updated, uerr := s.St.UpdateBillingCheckoutRemoteMetadata(c.Member.TenantID, row.CheckoutRef, store.BillingCheckoutRemoteMeta{
+		RemoteCheckoutRef: mintRes.CheckoutRef,
+		OutTradeNo:        mintRes.OutTradeNo,
+		Provider:          provider,
+		RemoteStatus:      firstNonEmptyStr(mintRes.Status, "pending"),
+		ReturnTarget:      firstNonEmptyStr(mintRes.ReturnTarget, s.checkoutReturnTarget()),
+		PriceDigest:       mintRes.PriceDigest,
+		ExpiresAt:         mintRes.ExpiresAt,
+	}, nowRFC3339())
+	if uerr != nil {
+		if errors.Is(uerr, store.ErrBillingIdempotencyConflict) {
+			fail(w, http.StatusConflict, "idempotency_conflict", "远端收银引用与既有原单不一致，已拒绝覆盖。")
+			return
+		}
+		fail(w, http.StatusInternalServerError, "internal", "checkout metadata persist failed")
+		return
+	}
+	row = updated
+	isReplay := replayed || mintRes.Replayed
+	status := http.StatusCreated
+	if isReplay {
+		status = http.StatusOK
+	}
+	view := s.checkoutRefView(row, &mintRes, false)
+	writeJSON(w, status, map[string]any{
+		"order":      order,
+		"replayed":   isReplay,
+		"checkout":   view,
+		"continuity": s.buildOrderContinuityForCaller(c, order, view, nil, nil, refunds),
+	})
+}
+
+// handleBillingOrderCheckoutGet answers GET /api/v1/billing/orders/{id}/checkout —
+// 只读回查原单收银状态(浏览器普通返回落地,忽略一切 query 参数,永不推进本地状态)。
+func (s *Server) handleBillingOrderCheckoutGet(w http.ResponseWriter, r *http.Request) {
+	c := callerFrom(r)
+	if d := authz.Can(s.resolveAccess(c), string(authz.PermBillingView), ""); !d.Allowed {
+		fail(w, http.StatusForbidden, d.Reason, "billing view is not allowed for this member")
+		return
+	}
+	order, err := s.St.GetBillingOrder(c.Member.TenantID, r.PathValue("id"))
+	if err != nil {
+		fail(w, http.StatusNotFound, "not_found", "order not found in this tenant scope")
+		return
+	}
+	checkout := s.originalOrderCheckout(c, order)
+	refunds, _ := s.St.ListBillingRefundsByOrder(c.Member.TenantID, order.ID)
+	var fulfillmentPtr *billing.HardwareFulfillment
+	var deliveries []store.TouchpointDeliveryView
+	if order.Kind == billing.KindHardware {
+		if f, ferr := s.St.GetHardwareFulfillment(c.Member.TenantID, order.ID); ferr == nil {
+			fulfillmentPtr = &f
+		}
+		if all, derr := s.St.ListTouchpointDeliveryViews(c.Member.TenantID, store.TouchpointDeliveryFilter{}); derr == nil {
+			for _, dv := range all {
+				if dv.HardwareOrderID == order.ID {
+					deliveries = append(deliveries, dv)
+				}
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"order":      order,
+		"checkout":   checkout,
+		"refunds":    refunds,
+		"continuity": s.buildOrderContinuityForCaller(c, order, checkout, fulfillmentPtr, deliveries, refunds),
 	})
 }

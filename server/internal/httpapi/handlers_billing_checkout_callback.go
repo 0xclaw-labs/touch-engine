@@ -31,6 +31,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -92,9 +93,12 @@ type checkoutActivationWire struct {
 }
 
 // checkoutCallbackConfigured answers whether the send-back channel can
-// deliver: the checkout capability is on AND the producer base URL AND
-// Touch's registered token are configured.
+// deliver: either an injected TouchCheckout client is present, or the checkout
+// capability is on AND the producer base URL AND Touch's registered token are configured.
 func (s *Server) checkoutCallbackConfigured() bool {
+	if s.TouchCheckout != nil {
+		return true
+	}
 	return s.Cfg.FeatureBillingCheckout &&
 		strings.TrimSpace(s.Cfg.BillingBaseURL) != "" &&
 		strings.TrimSpace(s.Cfg.BillingToken) != ""
@@ -156,11 +160,34 @@ func (s *Server) checkoutSelfActivation(w http.ResponseWriter, tenantID string, 
 // other error = contract violation (loud, not fixable by retry) — including
 // 404, the producer honestly reporting an unknown checkout_ref.
 func (s *Server) postCheckoutActivationActive(row store.BillingCheckoutRefRow) error {
+	return s.postCheckoutActivationActiveWithSubscription(row, "", "")
+}
+
+func (s *Server) postCheckoutActivationActiveWithSubscription(row store.BillingCheckoutRefRow, subscriptionRef, paidUntil string) error {
 	eventID := checkoutActivationEventIDPrefix + row.CheckoutRef
+	if s.TouchCheckout != nil {
+		_, err := s.TouchCheckout.NotifyActivated(context.Background(), billing.TouchActivationActiveNotice{
+			CheckoutRef:     row.CheckoutRef,
+			SourceOrderRef:  row.OrderRef,
+			OccurredAt:      row.UpdatedAt,
+			SubscriptionRef: subscriptionRef,
+			PaidUntil:       paidUntil,
+		})
+		if err == nil {
+			s.Log.Printf("billing_checkout_callback_delivered checkout_ref=%s event_id=%s", row.CheckoutRef, eventID)
+			return nil
+		}
+		if errors.Is(err, billing.ErrRemoteCheckoutUnavailable) {
+			return fmt.Errorf("%w: %v", errRetryableDelivery, err)
+		}
+		return fmt.Errorf("%w: %v", errActivationDeliveryViolation, err)
+	}
 	body, err := json.Marshal(checkoutActivationWire{
-		CheckoutRef:    row.CheckoutRef,
-		SourceOrderRef: row.OrderRef,  // 原单引用回声(制作接续=cph_* handoff id)
-		OccurredAt:     row.UpdatedAt, // 激活落行时刻:重发字节恒等(确定性纪律)
+		CheckoutRef:     row.CheckoutRef,
+		SourceOrderRef:  row.OrderRef,  // 原单引用回声(制作接续=cph_* handoff id; 订阅/硬件=bo_*)
+		OccurredAt:      row.UpdatedAt, // 激活落行时刻:重发字节恒等(确定性纪律)
+		SubscriptionRef: subscriptionRef,
+		PaidUntil:       paidUntil,
 	})
 	if err != nil {
 		return fmt.Errorf("%w: marshal: %v", errActivationDeliveryViolation, err)

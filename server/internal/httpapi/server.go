@@ -29,6 +29,7 @@ import (
 
 	"github.com/bianjiefilm/touch-engine/server/internal/appjump"
 	"github.com/bianjiefilm/touch-engine/server/internal/authz"
+	"github.com/bianjiefilm/touch-engine/server/internal/billing"
 	"github.com/bianjiefilm/touch-engine/server/internal/brandctx"
 	"github.com/bianjiefilm/touch-engine/server/internal/channeladmission"
 	"github.com/bianjiefilm/touch-engine/server/internal/config"
@@ -78,6 +79,11 @@ type Server struct {
 	// CopyModel replaces the platform text client when tests inject one.
 	// Production leaves it nil: missing credentials stay fail-closed.
 	CopyModel copyjob.TextModel
+
+	// TouchCheckout replaces the public-ai touch-orders Mint/Inspect/NotifyActivated
+	// HTTP client when tests inject one. Production leaves it nil and derives the
+	// client fail-closed from Cfg.FeatureBillingCheckout + BillingBaseURL + BillingToken.
+	TouchCheckout billing.TouchCheckoutClient
 
 	// StoreMotionProbe counts model and render calls for the store-motion
 	// slice. Production leaves it nil. The handlers pass it through and do
@@ -808,6 +814,8 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("PUT /api/v1/agency/relations/{id}/scope", s.requireSession(s.handleAgencyRelationScopeSet))
 		// 修复轮 2(F1):主体视角跨租户代管关系全集(行集恒以调用主体收口)。
 		mux.Handle("GET /api/v1/agency/relations/granted", s.requireSession(s.handleAgencyGrantedList))
+		// HUI-4664 A1: 代理真实授权商户待办投影(零示例任务,仅返回当前有效授权商户的真实待办)。
+		mux.Handle("GET /api/v1/agency/todos", s.requireSession(s.handleAgencyTodos))
 		mux.Handle("POST /api/v1/agency/sub-accounts", s.requireSession(s.handleAgencySubAccountCreate))
 		mux.Handle("GET /api/v1/agency/sub-accounts", s.requireSession(s.handleAgencySubAccountList))
 	}

@@ -30,14 +30,20 @@ func TestGateBillingCheckoutPairing(t *testing.T) {
 	if cfg := load(nil); len(cfg.Gate()) != 0 {
 		t.Fatalf("off gate = %v, want none", cfg.Gate())
 	}
-	// on 但两件套都缺:两条问题(BASE_URL + billing_authority 生产者)。
+	// on 但三件套都缺:三条问题(BASE_URL + TOKEN + billing_authority 生产者)。
 	env := map[string]string{"FEATURE_BILLING_CHECKOUT": "on"}
 	problems := load(env).Gate()
-	if len(problems) != 2 {
-		t.Fatalf("half-wired gate = %v, want 2 problems", problems)
+	if len(problems) != 3 {
+		t.Fatalf("half-wired gate = %v, want 3 problems", problems)
 	}
-	// 只配 BASE_URL(半环:付款成功永不开通):仍拒绝启动。
+	// 只配 BASE_URL(缺 TOKEN 和生产者):两条问题。
 	env["PLATFORM_BILLING_BASE_URL"] = "https://billing.test"
+	problems = load(env).Gate()
+	if len(problems) != 2 {
+		t.Fatalf("missing token+producer gate = %v, want 2 problems", problems)
+	}
+	// 配齐 BASE_URL + TOKEN 但缺生产者(半环:付款成功永不开通):仍拒绝启动。
+	env["PLATFORM_BILLING_TOKEN"] = "billing-app-token"
 	problems = load(env).Gate()
 	if len(problems) != 1 || !strings.Contains(problems[0], "billing_authority") {
 		t.Fatalf("missing producer gate = %v, want 1 billing_authority problem", problems)

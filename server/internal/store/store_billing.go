@@ -45,29 +45,33 @@ type BillingOrderRow struct {
 	PayerGrantRef     string `json:"payer_grant_ref,omitempty"`
 	AgencyRelationRef string `json:"agency_relation_ref,omitempty"`
 	PayerPrincipal    string `json:"payer_principal,omitempty"`
-	ActorPrincipal    string `json:"actor_principal"`
-	ActorRole         string `json:"actor_role"`
-	FailReason        string `json:"fail_reason,omitempty"`
-	CreatedAt         string `json:"created_at"`
-	UpdatedAt         string `json:"updated_at"`
+	ActorPrincipal     string `json:"actor_principal"`
+	ActorRole          string `json:"actor_role"`
+	FailReason         string `json:"fail_reason,omitempty"`
+	PricingVersion     string `json:"pricing_version,omitempty"`
+	PayerGrantRevision int64  `json:"payer_grant_revision,omitempty"`
+	CreatedAt          string `json:"created_at"`
+	UpdatedAt          string `json:"updated_at"`
 }
 
 // NewBillingOrder is a merchant-initiated order (price snapshot attached).
 type NewBillingOrder struct {
-	TenantID          string
-	Kind              string
-	Action            string
-	PlanCode          string
-	PriceRef          string
-	PriceSnapshot     string
-	AmountMinor       int64
-	Currency          string
-	IdempotencyKey    string
-	PayerGrantRef     string
-	AgencyRelationRef string
-	PayerPrincipal    string
-	ActorPrincipal    string
-	ActorRole         string
+	TenantID           string
+	Kind               string
+	Action             string
+	PlanCode           string
+	PriceRef           string
+	PriceSnapshot      string
+	AmountMinor        int64
+	Currency           string
+	IdempotencyKey     string
+	PayerGrantRef      string
+	AgencyRelationRef  string
+	PayerPrincipal     string
+	ActorPrincipal     string
+	ActorRole          string
+	PricingVersion     string
+	PayerGrantRevision int64
 }
 
 func scanBillingOrder(row interface{ Scan(...any) error }) (BillingOrderRow, error) {
@@ -75,7 +79,8 @@ func scanBillingOrder(row interface{ Scan(...any) error }) (BillingOrderRow, err
 	err := row.Scan(&r.ID, &r.TenantID, &r.Kind, &r.Action, &r.PlanCode, &r.PriceRef,
 		&r.PriceSnapshot, &r.AmountMinor, &r.Currency, &r.Status, &r.OrderRef, &r.PaymentRef,
 		&r.IdempotencyKey, &r.PayerGrantRef, &r.AgencyRelationRef, &r.PayerPrincipal,
-		&r.ActorPrincipal, &r.ActorRole, &r.FailReason, &r.CreatedAt, &r.UpdatedAt)
+		&r.ActorPrincipal, &r.ActorRole, &r.FailReason, &r.PricingVersion, &r.PayerGrantRevision,
+		&r.CreatedAt, &r.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		// 统一契约 v1.1 D4(ADV-9 INT4):未知订单一律 ErrNotFound(同形掩蔽)
 		// ——受信权威缝经 writeAuthorityError 答 404,不再透传 sql.ErrNoRows
@@ -88,7 +93,7 @@ func scanBillingOrder(row interface{ Scan(...any) error }) (BillingOrderRow, err
 const billingOrderCols = `id,tenant_id,kind,action,plan_code,price_ref,price_snapshot,
 amount_minor,currency,status,order_ref,payment_ref,idempotency_key,
 payer_grant_ref,agency_relation_ref,payer_principal,actor_principal,actor_role,
-fail_reason,created_at,updated_at`
+fail_reason,pricing_version,payer_grant_revision,created_at,updated_at`
 
 // canonicalBillingJSON ignores object field order and whitespace in stored snapshots.
 func canonicalBillingJSON(raw string) string {
@@ -124,9 +129,9 @@ func createBillingOrderTx(tx *sql.Tx, in NewBillingOrder, at string) (BillingOrd
 	// the winning committed row rather than passing a separate check/insert gap.
 	id := newID("bo_")
 	result, err := tx.Exec(`INSERT INTO billing_orders(`+billingOrderCols+`)
- VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(tenant_id,idempotency_key) DO NOTHING`,
+ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(tenant_id,idempotency_key) DO NOTHING`,
 		id, in.TenantID, in.Kind, in.Action, in.PlanCode, in.PriceRef, in.PriceSnapshot, in.AmountMinor, in.Currency, billing.OrderProcessing, "", "", in.IdempotencyKey,
-		in.PayerGrantRef, in.AgencyRelationRef, in.PayerPrincipal, in.ActorPrincipal, in.ActorRole, "", at, at)
+		in.PayerGrantRef, in.AgencyRelationRef, in.PayerPrincipal, in.ActorPrincipal, in.ActorRole, "", in.PricingVersion, in.PayerGrantRevision, at, at)
 	if err != nil {
 		return BillingOrderRow{}, false, err
 	}
@@ -811,6 +816,9 @@ func (s *Store) ApplyBillingRefund(tenantID, orderID string, in billing.RefundIn
 	var orderAmount int64
 	if err := tx.QueryRow(`SELECT amount_minor FROM billing_orders WHERE tenant_id=? AND id=?`,
 		tenantID, orderID).Scan(&orderAmount); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return BillingRefundRow{}, false, ErrNotFound
+		}
 		return BillingRefundRow{}, false, err
 	}
 	var refunded int64
@@ -869,6 +877,26 @@ func (s *Store) ListBillingRefunds(tenantID string) ([]BillingRefundRow, error) 
 	rows, err := s.DB.Query(`SELECT id,tenant_id,order_id,refund_ref,amount_minor,currency,reason,
 		invoice_title,invoice_status,invoice_ref,auditor,source,event_id,occurred_at,created_at
 		FROM billing_refunds WHERE tenant_id=? ORDER BY occurred_at DESC, id LIMIT 200`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []BillingRefundRow{}
+	for rows.Next() {
+		r, err := scanRefund(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ListBillingRefundsByOrder lists refund/invoice reconciliation rows for one original order.
+func (s *Store) ListBillingRefundsByOrder(tenantID, orderID string) ([]BillingRefundRow, error) {
+	rows, err := s.DB.Query(`SELECT id,tenant_id,order_id,refund_ref,amount_minor,currency,reason,
+		invoice_title,invoice_status,invoice_ref,auditor,source,event_id,occurred_at,created_at
+		FROM billing_refunds WHERE tenant_id=? AND order_id=? ORDER BY occurred_at ASC, id`, tenantID, orderID)
 	if err != nil {
 		return nil, err
 	}

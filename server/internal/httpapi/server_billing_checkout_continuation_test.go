@@ -16,7 +16,11 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,14 +28,129 @@ import (
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
 )
 
-// checkoutFixture wires FEATURE_BILLING_CHECKOUT=on with the public billing
-// base URL and the trusted authority producer (pai-billing → billing_authority
-// role); off-fixture = billingFixture(t, false) default honest state.
+// fakeTouchProducer implements public-ai's touch-order-checkout/v1.1 HTTP wire
+// contract (/internal/v1/billing/touch-orders/checkout POST Mint & GET Inspect
+// and /activation-active) for in-process HTTP integration tests.
+type fakeTouchProducer struct {
+	ts *httptest.Server
+
+	mu            sync.Mutex
+	intents       map[string]billing.TouchCheckoutResult
+	mintCalls     int
+	inspectCalls  int
+	notifyCalls   int
+	failNextMint  int
+	mintErrStatus int
+	mintErrCode   string
+}
+
+func newFakeTouchProducer(t *testing.T) *fakeTouchProducer {
+	t.Helper()
+	p := &fakeTouchProducer{intents: map[string]billing.TouchCheckoutResult{}}
+	p.ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(billing.TouchCheckoutAppHeader) != billing.TouchCheckoutAppID ||
+			r.Header.Get(billing.TouchCheckoutTokenHeader) == "" {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":"billing_forbidden"}`))
+			return
+		}
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == billing.TouchCheckoutPath:
+			p.mintCalls++
+			if p.failNextMint > 0 {
+				p.failNextMint--
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":"touch_checkout_provider_unavailable"}`))
+				return
+			}
+			if p.mintErrStatus != 0 {
+				w.WriteHeader(p.mintErrStatus)
+				_, _ = w.Write([]byte(fmt.Sprintf(`{"error":%q}`, p.mintErrCode)))
+				return
+			}
+			var req billing.TouchCheckoutMintRequest
+			dec := json.NewDecoder(r.Body)
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&req); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"touch_checkout_invalid_request"}`))
+				return
+			}
+			if existing, ok := p.intents[req.SourceOrderRef]; ok {
+				if existing.Line.AmountMinor != req.Line.AmountMinor || existing.Payer.PrincipalRef != req.Payer.PrincipalRef {
+					w.WriteHeader(http.StatusConflict)
+					_, _ = w.Write([]byte(`{"error":"touch_checkout_idempotency_conflict"}`))
+					return
+				}
+				existing.Replayed = true
+				_ = json.NewEncoder(w).Encode(existing)
+				return
+			}
+			res := billing.TouchCheckoutResult{
+				CheckoutRef:    "tco_" + req.SourceOrderRef,
+				OutTradeNo:     "OTN_" + req.SourceOrderRef,
+				SourceApp:      req.SourceApp,
+				SourceOrderRef: req.SourceOrderRef,
+				Status:         "pending",
+				CodeURL:        "weixin://wxpay/bizpayurl?pr=" + req.SourceOrderRef,
+				Replayed:       false,
+				ExpiresAt:      time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339),
+				ReturnTarget:   req.ReturnTarget,
+				ReturnURL:      "https://touch.test/work/billing",
+				PriceDigest:    "sha256:test-" + req.Line.PricingVersion,
+				Payer:          req.Payer,
+				Line:           req.Line,
+				CreatedAtUnix:  time.Now().Unix(),
+			}
+			p.intents[req.SourceOrderRef] = res
+			_ = json.NewEncoder(w).Encode(res)
+		case r.Method == http.MethodGet && r.URL.Path == billing.TouchCheckoutPath:
+			p.inspectCalls++
+			ref := r.URL.Query().Get("source_order_ref")
+			existing, ok := p.intents[ref]
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"error":"touch_checkout_not_found"}`))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(existing)
+		case r.Method == http.MethodPost && r.URL.Path == billing.TouchActivationActivePath:
+			p.notifyCalls++
+			var body billing.TouchActivationActiveNotice
+			dec := json.NewDecoder(r.Body)
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&body); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"touch_checkout_invalid_request"}`))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(billing.TouchActivationActiveReceipt{
+				CheckoutRef:     body.CheckoutRef,
+				SourceOrderRef:  body.SourceOrderRef,
+				Status:          "paid",
+				Activated:       true,
+				ActivatedAtUnix: time.Now().Unix(),
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(p.ts.Close)
+	return p
+}
+
+// checkoutFixture wires FEATURE_BILLING_CHECKOUT=on with a real-contract
+// public-ai touch-orders producer (Mint/Inspect/NotifyActivated) and the
+// trusted authority producer (billing_authority role).
 func checkoutFixture(t *testing.T) *fixture {
 	t.Helper()
+	p := newFakeTouchProducer(t)
 	f := billingFixture(t, true)
 	f.s.Cfg.FeatureBillingCheckout = true
-	f.s.Cfg.BillingBaseURL = "https://billing.test"
+	f.s.Cfg.BillingBaseURL = p.ts.URL
+	f.s.Cfg.BillingToken = "test-billing-app-token"
 	return f
 }
 
@@ -128,8 +247,11 @@ func TestHandoffCheckoutContinuationRecoveryAndFacts(t *testing.T) {
 	if checkout["available"] != true || ref == "" {
 		t.Fatalf("continuation not offered: %v", checkout)
 	}
-	if checkout["checkout_url"] != "https://billing.test/billing/touch-checkout/"+ref || checkout["state"] != "checkout_pending" {
-		t.Fatalf("checkout_url/state wrong: %v", checkout)
+	if checkout["checkout_url"] != "weixin://wxpay/bizpayurl?pr="+ref ||
+		checkout["code_url"] != "weixin://wxpay/bizpayurl?pr="+ref ||
+		checkout["remote_checkout_ref"] != "tco_"+ref ||
+		checkout["state"] != "checkout_pending" {
+		t.Fatalf("checkout authoritative Mint fields wrong: %v", checkout)
 	}
 	// 同单重试:复用同一引用(replayed=true,零新增)。
 	status, out = f.do2(t, "POST", path, "sess-owner-a", f.tenA, "")
@@ -308,19 +430,21 @@ func TestOrderCheckoutGateUpgradesOnlyWithReference(t *testing.T) {
 	if status != 200 || checkout["available"] != false || checkout["reason"] != "checkout_unwired" {
 		t.Fatalf("no-ref gate = %d %v", status, out)
 	}
-	amount, _ := order["amount_minor"].(float64)
-	row, replayed, err := f.s.St.UpsertBillingCheckoutRef(store.NewBillingCheckoutRef{
-		TenantID: f.tenA, OrderRef: id, AmountMinor: int64(amount), Currency: "CNY",
-	}, time.Now().UTC().Format(time.RFC3339))
-	mustNoErr(t, err)
-	if replayed {
-		t.Fatal("seed ref should be new")
+	// 通过正常原单 Mint 端点发起公共收银单(绝不本地拼假 URL)。
+	status, out = f.do2(t, "POST", path+"/checkout", "sess-owner-a", f.tenA, `{"provider":"wechat"}`)
+	if status != 201 {
+		t.Fatalf("order mint checkout = %d %v", status, out)
 	}
-	// 有引用:可续付(报 checkout_ref 与续付 URL)。
+	mintedCheckout, _ := out["checkout"].(map[string]any)
+	ref, _ := mintedCheckout["checkout_ref"].(string)
+	if ref == "" || mintedCheckout["remote_checkout_ref"] != "tco_"+ref {
+		t.Fatalf("minted checkout missing authoritative refs: %v", mintedCheckout)
+	}
+	// 有引用:可续付(GET 经公共 Inspect 返回权威 code_url/checkout_url)。
 	status, out = f.do2(t, "GET", path, "sess-owner-a", f.tenA, "")
 	checkout, _ = out["checkout"].(map[string]any)
-	if status != 200 || checkout["available"] != true || checkout["checkout_ref"] != row.CheckoutRef ||
-		checkout["checkout_url"] != "https://billing.test/billing/touch-checkout/"+row.CheckoutRef {
+	if status != 200 || checkout["available"] != true || checkout["checkout_ref"] != ref ||
+		checkout["checkout_url"] != "weixin://wxpay/bizpayurl?pr="+ref {
 		t.Fatalf("ref-bound gate = %d %v", status, out)
 	}
 	// 订单已付:not_awaiting_payment 优先(门不再提供续付)。

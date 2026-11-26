@@ -15,13 +15,19 @@ import { failureText, useSession } from "@/components/work/merchant-session";
 import { useAppSwitch } from "@/components/eco-nav/use-app-switch";
 import {
   blocksNewSubscription,
+  canContinueCheckout,
+  checkoutUnavailableText,
+  lifecycleStageText,
+  milestoneStatusText,
   nextOrderStep,
   AIUsageView,
+  BillingContinuityView,
   BillingOrderView,
   CheckoutRef,
   HARDWARE_STEPS,
   HardwareFulfillmentView,
   HardwareItemView,
+  OrderContinuityView,
   RefundView,
   SubscriptionView,
   aiUsageStateText,
@@ -63,6 +69,9 @@ interface OrderDetail {
   checkout?: CheckoutRef & { reason?: string };
   items?: HardwareItemView[];
   fulfillment?: HardwareFulfillmentView;
+  deliveries?: PhysicalDelivery[];
+  refunds?: RefundView[];
+  continuity?: OrderContinuityView;
 }
 
 const TABS: { key: BillingTab; label: string }[] = [
@@ -79,6 +88,7 @@ export function BillingDesk() {
   const [error, setError] = useState("");
   const [tab, setTab] = useState<BillingTab>("plan");
   const [sub, setSub] = useState<SubscriptionView | null>(null);
+  const [continuity, setContinuity] = useState<BillingContinuityView | null>(null);
   const [effective, setEffective] = useState<CatalogResolved>({});
   const [orders, setOrders] = useState<BillingOrderView[]>([]);
   const [aiUsage, setAiUsage] = useState<AIUsageView[]>([]);
@@ -110,9 +120,9 @@ export function BillingDesk() {
     setPhase("loading");
     setError("");
     const seq = ++generation.current;
-    setSub(null); setOrders([]); setDetail(null); setEffective({}); setPermissions([]); setAiUsage([]); setRefunds([]); setOrdersReady(false); setPurchase(null); setQuote(null);
+    setSub(null); setContinuity(null); setOrders([]); setDetail(null); setEffective({}); setPermissions([]); setAiUsage([]); setRefunds([]); setOrdersReady(false); setPurchase(null); setQuote(null);
     setContinuations([]);
-    const [subRes, catRes, ordRes, aiRes, refRes, accRes, deliveryRes] = await Promise.all([
+    const [subRes, catRes, ordRes, aiRes, refRes, accRes, deliveryRes, contRes] = await Promise.all([
       session.api("GET", "billing/subscription"),
       session.api("GET", "billing/price-catalog"),
       session.api("GET", "billing/orders"),
@@ -120,8 +130,12 @@ export function BillingDesk() {
       session.api("GET", "billing/refunds"),
       session.api("GET", "access/effective"),
       session.api("GET", "touchpoint-deliveries"),
+      session.api("GET", "billing/continuity"),
     ]);
     if (seq !== generation.current) return;
+    if (contRes.ok) {
+      setContinuity(contRes.data as unknown as BillingContinuityView);
+    }
     setOrdersReady(ordRes.ok);
     setDeliveries(deliveryRes.ok && Array.isArray(deliveryRes.data.items) ? deliveryRes.data.items as PhysicalDelivery[] : []);
     setDeliveryError(deliveryRes.ok ? "" : "实卡记录暂不可查或当前账号无交付查询权限，请由商家负责人从「门店投放入口」核对交付记录。");
@@ -215,17 +229,30 @@ export function BillingDesk() {
     setOrdering(true); setNote("");
     const seq = generation.current;
     try {
+      // HUI-4664: 统一走公共 Mint/Inspect 消费者(POST /billing/orders/{id}/checkout)
+      // 发起或恢复原单收银;已付/撤权/未接通时 fail-closed 返回诚实投影,绝不重造新单。
+      const mintRes = await session.api("POST", `billing/orders/${id}/checkout`, { provider: "wechat" });
+      if (seq !== generation.current) return;
+      if (mintRes.ok) {
+        const fresh = mintRes.data as unknown as OrderDetail;
+        setDetail(fresh);
+        const payTarget = fresh.checkout?.code_url || fresh.checkout?.checkout_url;
+        if (canContinueCheckout(fresh.checkout) && payTarget) {
+          setNote(`已获取权威收银单（引用 ${fresh.checkout?.checkout_ref}）。付款状态以服务端事实为准，完成后请点击「回查」。`);
+          return;
+        }
+      }
       const res = await session.api("GET", `billing/orders/${id}`);
       if (seq !== generation.current) return;
       if (!res.ok) { setNote(failureText(res.status, res.data)); return; }
       const original = res.data as unknown as OrderDetail;
       setDetail(original);
       if (!original.checkout?.available) {
-        setNote(original.checkout?.reason === "original_payer_required"
-          ? "原付款授权已变化，请由原付款人或平台核对这笔订单。此次没有重新下单。"
-          : original.checkout?.reason === "not_awaiting_payment"
-            ? "原订单已不在待支付状态，请按回查结果继续办理，无需再次付款。"
-            : "收费通道尚未可用。原订单保留，请联系平台恢复后继续办理，无需重新下单。");
+        setNote(checkoutUnavailableText(original.checkout));
+        return;
+      }
+      if (canContinueCheckout(original.checkout)) {
+        setNote(`原单已就绪（引用 ${original.checkout.checkout_ref}），请通过权威收银链接继续支付，付款后回查原单。`);
         return;
       }
       await openCheckout(original.checkout, seq);
@@ -344,7 +371,20 @@ export function BillingDesk() {
         {!ordersReady ? <p role="alert">订单暂时读不到，请刷新重试，确认已有订单后再购买。</p> : null}
         {orders.filter((o) => blocksNewSubscription(o) || (o.kind === "hardware" && o.status !== "cancelled")).map((o) => <p key={o.id}>{planCodeText(o.plan_code)} · {formatAmount(o.amount_minor,o.currency)} · {nextOrderStep(o)} <button type="button" className="tk-quiet" onClick={() => { setTab("orders"); void lookupOrder(o.id); }}>回查原订单</button></p>)}
         <CheckoutContinuationBlock entries={continuations} />
-        {!sub?.checkout?.available ? <p>支付接续尚未开通，暂不能确认下单。已有订单会保留，可继续回查；请联系平台完成接入。</p> : null}
+        {continuity && (!continuity.catalog_readiness.ready || !continuity.payer_authority.can_pay || !continuity.checkout_channel.ready) ? (
+          <ul data-testid="billing-readiness-gaps">
+            {!continuity.catalog_readiness.ready && continuity.catalog_readiness.next_step ? (
+              <li>缺生效目录：{continuity.catalog_readiness.next_step.summary}</li>
+            ) : null}
+            {!continuity.payer_authority.can_pay && continuity.payer_authority.next_step ? (
+              <li>付款授权：{continuity.payer_authority.next_step.summary}</li>
+            ) : null}
+            {!continuity.checkout_channel.ready && continuity.checkout_channel.next_step ? (
+              <li>收费通道：{continuity.checkout_channel.next_step.summary}</li>
+            ) : null}
+          </ul>
+        ) : null}
+        {!sub?.checkout?.available && !continuity?.checkout_channel?.ready ? <p>支付接续尚未开通，暂不能确认下单。已有订单会保留，可继续回查；请联系平台完成接入。</p> : null}
       </section>
       <div role="tablist" aria-label="账单页签">
         {TABS.map((t) => (
@@ -478,13 +518,39 @@ export function BillingDesk() {
             <div data-testid="order-detail">
               <h3>订单详情（状态回查结果）</h3>
               <p>
-                {nextOrderStep(detail.order)} 状态：{orderStatusText(detail.order.status)}
+                {detail.continuity ? lifecycleStageText(detail.continuity.lifecycle_stage) : nextOrderStep(detail.order)} · 状态：{orderStatusText(detail.order.status)}
                 {detail.order.payment_ref ? ` · 支付引用 ${detail.order.payment_ref}` : " · 暂无支付事实"}
                 {detail.order.order_ref ? ` · 权威订单引用 ${detail.order.order_ref}` : ""}
               </p>
-              {detail.checkout?.available ? <button className="tk-button" type="button" disabled={ordering} onClick={() => void continuePayment(detail.order.id)}>继续支付原订单</button> : null}
-              {detail.checkout?.reason === "checkout_unwired" ? <p>支付接续尚未开通，原订单已保留。请联系平台完成接入；无需重新下单，可继续回查这笔订单。</p> : null}
-              {detail.checkout?.reason === "original_payer_required" ? <p>原付款授权已变化，请由原付款人或平台核对这笔订单。查看订单不会授予付款权限。</p> : null}
+              {detail.continuity ? (
+                <div data-testid="order-continuity">
+                  <p>{detail.continuity.next_step.summary}</p>
+                  <ul data-testid="order-milestones">
+                    {detail.continuity.milestones.map((m) => (
+                      <li key={m.key}>
+                        {m.label}：{milestoneStatusText(m.status)}
+                        {m.detail ? `（${m.detail}）` : ""}
+                        {m.occurred_at ? ` · ${m.occurred_at}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              {detail.checkout?.code_url ? (
+                <p data-testid="order-code-url">
+                  权威收银单（引用 {detail.checkout.checkout_ref}
+                  {detail.checkout.remote_checkout_ref ? ` / 远端 ${detail.checkout.remote_checkout_ref}` : ""}）：
+                  <code>{detail.checkout.code_url}</code>
+                </p>
+              ) : null}
+              {(detail.checkout?.available || detail.continuity?.next_step?.allow_retry_payment) ? (
+                <button className="tk-button" type="button" disabled={ordering} onClick={() => void continuePayment(detail.order.id)}>
+                  继续支付原订单
+                </button>
+              ) : null}
+              {!detail.checkout?.available && detail.checkout?.reason ? (
+                <p>{checkoutUnavailableText(detail.checkout)}</p>
+              ) : null}
               {detail.items && detail.fulfillment ? (
                 <ul data-testid="hardware-facts">
                   {detail.items.map((it) => (

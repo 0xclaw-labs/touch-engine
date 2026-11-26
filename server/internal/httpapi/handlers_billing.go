@@ -26,12 +26,15 @@ import (
 // registerBillingRoutes wires the M12 merchant surface (admin side; no flag).
 func (s *Server) registerBillingRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/v1/billing/subscription", s.requireSession(s.handleBillingSubscription))
+	mux.Handle("GET /api/v1/billing/continuity", s.requireSession(s.handleBillingContinuity))
 	mux.Handle("GET /api/v1/billing/price-catalog", s.requireSession(s.handleBillingCatalog))
 	mux.Handle("POST /api/v1/billing/subscription-quote", s.requireSession(s.handleBillingSubscriptionQuote))
 	mux.Handle("POST /api/v1/billing/subscription-orders", s.requireSession(s.handleBillingSubscriptionOrder))
 	mux.Handle("POST /api/v1/billing/hardware-orders", s.requireSession(s.handleBillingHardwareOrder))
 	mux.Handle("GET /api/v1/billing/orders", s.requireSession(s.handleBillingOrdersList))
 	mux.Handle("GET /api/v1/billing/orders/{id}", s.requireSession(s.handleBillingOrderGet))
+	mux.Handle("POST /api/v1/billing/orders/{id}/checkout", s.requireSession(s.handleBillingOrderCheckout))
+	mux.Handle("GET /api/v1/billing/orders/{id}/checkout", s.requireSession(s.handleBillingOrderCheckoutGet))
 	mux.Handle("GET /api/v1/billing/ai-usage", s.requireSession(s.handleBillingAIUsage))
 	mux.Handle("GET /api/v1/billing/refunds", s.requireSession(s.handleBillingRefunds))
 }
@@ -110,6 +113,10 @@ func (s *Server) cashierCheckout() map[string]any {
 func (s *Server) originalOrderCheckout(c *caller, order store.BillingOrderRow) map[string]any {
 	denied := map[string]any{"available": false, "app_id": "", "launch_target_id": ""}
 	if order.Status != billing.OrderProcessing || order.PaymentRef != "" {
+		denied["reason"] = "not_awaiting_payment"
+		return denied
+	}
+	if refunds, err := s.St.ListBillingRefundsByOrder(c.Member.TenantID, order.ID); err == nil && len(refunds) > 0 {
 		denied["reason"] = "not_awaiting_payment"
 		return denied
 	}
@@ -228,7 +235,14 @@ func subscriptionReplayInput(order store.BillingOrderRow, body billingSubscripti
 		}
 	}
 
-	return store.NewBillingOrder{TenantID: order.TenantID, Kind: order.Kind, Action: order.Action, PlanCode: order.PlanCode, PriceRef: order.PriceRef, PriceSnapshot: order.PriceSnapshot, AmountMinor: order.AmountMinor, Currency: order.Currency, IdempotencyKey: body.IdempotencyKey, PayerGrantRef: payer.PayerGrantRef, AgencyRelationRef: payer.RelationRef, PayerPrincipal: payer.PayerPrincipal, ActorPrincipal: c.Member.PrincipalRef, ActorRole: c.Member.Role}, nil
+	return store.NewBillingOrder{
+		TenantID: order.TenantID, Kind: order.Kind, Action: order.Action, PlanCode: order.PlanCode,
+		PriceRef: order.PriceRef, PriceSnapshot: order.PriceSnapshot, AmountMinor: order.AmountMinor,
+		Currency: order.Currency, IdempotencyKey: body.IdempotencyKey, PayerGrantRef: payer.PayerGrantRef,
+		AgencyRelationRef: payer.RelationRef, PayerPrincipal: payer.PayerPrincipal,
+		ActorPrincipal: c.Member.PrincipalRef, ActorRole: c.Member.Role,
+		PricingVersion: order.PricingVersion, PayerGrantRevision: payer.GrantRevision,
+	}, nil
 }
 
 func (s *Server) writeBillingOrder(w http.ResponseWriter, order store.BillingOrderRow, replayed bool) {
@@ -366,7 +380,8 @@ func (s *Server) handleBillingSubscriptionOrder(w http.ResponseWriter, r *http.R
 		AmountMinor: amount, Currency: entry.Currency, IdempotencyKey: body.IdempotencyKey,
 		PayerGrantRef: payer.PayerGrantRef, AgencyRelationRef: payer.RelationRef,
 		PayerPrincipal: payer.PayerPrincipal, ActorPrincipal: c.Member.PrincipalRef,
-		ActorRole: c.Member.Role,
+		ActorRole: c.Member.Role, PricingVersion: entry.PricingVersion,
+		PayerGrantRevision: payer.GrantRevision,
 	}, nowRFC3339())
 	if errors.Is(err, store.ErrBillingIdempotencyConflict) && recoverOriginal() {
 		return
@@ -439,7 +454,7 @@ func (s *Server) handleBillingHardwareOrder(w http.ResponseWriter, r *http.Reque
 		IdempotencyKey: body.IdempotencyKey,
 		PayerGrantRef:  payer.PayerGrantRef, AgencyRelationRef: payer.RelationRef,
 		PayerPrincipal: payer.PayerPrincipal, ActorPrincipal: c.Member.PrincipalRef,
-		ActorRole: c.Member.Role,
+		ActorRole: c.Member.Role, PayerGrantRevision: payer.GrantRevision,
 	}, items, nowRFC3339())
 	if err != nil {
 		billingCreateFail(w, err)
@@ -479,7 +494,10 @@ func (s *Server) handleBillingOrderGet(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, "not_found", "order not found in this tenant scope")
 		return
 	}
-	out := map[string]any{"order": order, "checkout": s.originalOrderCheckout(c, order)}
+	checkout := s.originalOrderCheckout(c, order)
+	out := map[string]any{"order": order, "checkout": checkout}
+	var fulfillmentPtr *billing.HardwareFulfillment
+	var deliveryViews []store.TouchpointDeliveryView
 	if order.Kind == billing.KindHardware {
 		items, err := s.St.ListHardwareItems(c.Member.TenantID, order.ID)
 		if err != nil {
@@ -487,13 +505,32 @@ func (s *Server) handleBillingOrderGet(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		fulfillment, err := s.St.GetHardwareFulfillment(c.Member.TenantID, order.ID)
-		if err != nil {
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			fail(w, http.StatusInternalServerError, "internal", "fulfillment lookup failed")
 			return
 		}
 		out["items"] = items
 		out["fulfillment"] = fulfillment
+		fulfillmentPtr = &fulfillment
+		if allDeliveries, derr := s.St.ListTouchpointDeliveryViews(c.Member.TenantID, store.TouchpointDeliveryFilter{}); derr == nil {
+			for _, dv := range allDeliveries {
+				if dv.HardwareOrderID == order.ID {
+					deliveryViews = append(deliveryViews, dv)
+				}
+			}
+		}
+		if deliveryViews == nil {
+			deliveryViews = []store.TouchpointDeliveryView{}
+		}
+		out["deliveries"] = deliveryViews
 	}
+	refunds, rerr := s.St.ListBillingRefundsByOrder(c.Member.TenantID, order.ID)
+	if rerr != nil {
+		fail(w, http.StatusInternalServerError, "internal", "order refunds lookup failed")
+		return
+	}
+	out["refunds"] = refunds
+	out["continuity"] = s.buildOrderContinuityForCaller(c, order, checkout, fulfillmentPtr, deliveryViews, refunds)
 	writeJSON(w, http.StatusOK, out)
 }
 
