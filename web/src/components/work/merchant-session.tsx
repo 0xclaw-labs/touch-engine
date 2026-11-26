@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { failureText, loginFailureText } from "@/lib/failure-copy";
 import { ApiFailure } from "@painuo/login-page";
 import { SharedLogin, type SignInBridge } from "@/components/login/SharedLogin";
-import { buildPortalLoginUrl } from "@/lib/portal-sso";
+import { canUsePortalSso, portalBrowser, switchPortalAccount } from "@/lib/portal-sso";
 import { loginReturnTargetFromSearch } from "@/lib/login-return";
 import { surfaceLabel } from "@/lib/product-finish";
 import { createScopeReader } from "@/lib/session-continuity";
@@ -92,29 +92,59 @@ export function MerchantGate({ children }: { children: ReactNode }) {
     );
   }
   if (session.phase === "choose") return <OrgChoices session={session} />;
-  if (session.phase === "none") {
-    const switchAccountHref = buildPortalLoginUrl({
-      promptLogin: true,
-      currentOrigin: typeof window !== "undefined" ? window.location.origin : null,
-      currentPathname: typeof window !== "undefined" ? window.location.pathname : null,
-    });
-    return (
-      <main className="tk-page">
-        <p className="tk-state" data-state="empty">当前账号没有可进入的组织。</p>
-        <p className="tk-lead">当前账号尚未开通碰一碰团队席位，请联系管理员开通，或切换其他已开通账号。</p>
-        <div className="tk-actions">
-          <a className="tk-button" href={switchAccountHref} data-action="switch-account">
-            切换其他账号
-          </a>
-          <button className="tk-quiet" type="button" data-action="logout" onClick={() => void session.logout()}>
-            退出当前账号
-          </button>
-        </div>
-      </main>
-    );
-  }
+  if (session.phase === "none") return <NoSeatView session={session} />;
   if (session.phase !== "ready") return <Login session={session} />;
   return <SessionContext.Provider value={session}>{session.role === "agent" ? <AgencyWorkContext session={session} /> : null}{children}</SessionContext.Provider>;
+}
+
+function NoSeatView({ session }: { session: MerchantSession }) {
+  const [switching, setSwitching] = useState(false);
+  const [switchError, setSwitchError] = useState("");
+  const allowPortalSwitch = canUsePortalSso(
+    portalBrowser.location(),
+    process.env.NEXT_PUBLIC_TOUCH_SSO_ENABLED,
+  );
+
+  async function handleSwitchAccount() {
+    setSwitchError("");
+    setSwitching(true);
+    try {
+      const ok = await switchPortalAccount({
+        onCleared: () => resetWorkspaceForAccountChange(window.localStorage),
+      });
+      if (!ok) {
+        setSwitchError("退出没有完成，请重试。当前身份仍需核验。");
+      }
+    } finally {
+      setSwitching(false);
+    }
+  }
+
+  return (
+    <main className="tk-page">
+      <p className="tk-state" data-state="empty">当前账号没有可进入的组织。</p>
+      <p className="tk-lead">当前账号尚未开通碰一碰团队席位，请联系管理员开通，或切换其他已开通账号。</p>
+      {switchError ? (
+        <p className="tk-state tk-danger" data-state="error">{switchError}</p>
+      ) : null}
+      <div className="tk-actions">
+        {allowPortalSwitch ? (
+          <button
+            className="tk-button"
+            type="button"
+            data-action="switch-account"
+            disabled={switching}
+            onClick={() => void handleSwitchAccount()}
+          >
+            切换其他账号
+          </button>
+        ) : null}
+        <button className="tk-quiet" type="button" data-action="logout" onClick={() => void session.logout()}>
+          退出当前账号
+        </button>
+      </div>
+    </main>
+  );
 }
 
 function Login({ session }: { session: MerchantSession }) {

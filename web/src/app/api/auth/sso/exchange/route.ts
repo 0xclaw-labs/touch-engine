@@ -49,7 +49,7 @@ function membershipRequiredResponse(appHost: string, returnPath: string): NextRe
       "content-type": "text/html; charset=utf-8",
       "x-content-type-options": "nosniff",
       "x-frame-options": "DENY",
-      "content-security-policy": "frame-ancestors 'none'",
+      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
     },
   });
 }

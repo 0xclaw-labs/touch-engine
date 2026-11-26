@@ -1,8 +1,9 @@
 // 碰一碰统一门户 SSO 入口策略（零 Node 依赖，SSR 安全）。
 //
 // 边界约束：
-// 1. 只在官方生态域（https://*.modelxing.com）或显式配置启用（且非第三方白标品牌域）
-//    时展示「使用生态账号登录」，保护白标自定义品牌域的隔离与准入边界；
+// 1. 仅当显式配置 NEXT_PUBLIC_TOUCH_SSO_ENABLED === "1" 且处于官方生态域
+//    （https://modelxing.com 或 https://*.modelxing.com）时启用门户 SSO，
+//    既避免门户未登记 touch-engine 前默认触发原地死循环，也保护第三方白标自定义品牌域隔离；
 // 2. next 落点只允许站内合法路径（复用 safe-redirect 白名单）拼接生态域 origin，
 //    与门户 safeReturnTarget（只认站内或 *.modelxing.com）双重对齐，防开放重定向。
 
@@ -17,33 +18,34 @@ export function isPortalSsoHost(hostname: string | null | undefined): boolean {
   return host === "modelxing.com" || host.endsWith(".modelxing.com");
 }
 
-function isLoopbackHost(hostname: string | null | undefined): boolean {
-  if (typeof hostname !== "string") return false;
-  const host = hostname.trim().toLowerCase();
-  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
-}
-
 /**
  * 判断当前浏览宿主是否可安全启用生态门户 SSO：
- * - 显式关闭（"0" / "false"）一律关闭；
- * - https 协议下的 modelxing.com / *.modelxing.com 自动开启；
- * - 显式开启（"1" / "true"）时允许生态域或本地 loopback，但仍拒绝第三方白标品牌域。
+ * - 仅当显式配置 NEXT_PUBLIC_TOUCH_SSO_ENABLED === "1" 且处于官方生态域
+ *   （https://modelxing.com 或 https://*.modelxing.com）时返回 true；
+ * - 未显式开启时默认关闭，第三方白标品牌域与非 HTTPS 来源一律返回 false。
  */
 export function canUsePortalSso(
   locationLike?: { protocol?: string; hostname?: string } | null,
   explicitFlag?: string | undefined,
 ): boolean {
-  const flag = (explicitFlag ?? "").trim().toLowerCase();
-  if (flag === "0" || flag === "false") return false;
+  if ((explicitFlag ?? "").trim() !== "1") return false;
   if (!locationLike) return false;
   const host = (locationLike.hostname ?? "").trim().toLowerCase();
   const protocol = (locationLike.protocol ?? "").trim().toLowerCase();
-  if (protocol === "https:" && isPortalSsoHost(host)) return true;
-  if ((flag === "1" || flag === "true") && (isPortalSsoHost(host) || isLoopbackHost(host))) {
-    return true;
-  }
-  return false;
+  return protocol === "https:" && isPortalSsoHost(host);
 }
+
+/** 浏览器位置与导航出口（生产直读 window.location，单测可安全拦截白标域/生态域与跳转顺序）。 */
+export const portalBrowser = {
+  location(): { protocol: string; hostname: string; origin: string; pathname: string } | null {
+    return typeof window === "undefined" ? null : window.location;
+  },
+  assign(url: string): void {
+    if (typeof window !== "undefined") {
+      window.location.assign(url);
+    }
+  },
+};
 
 function safeNextOrigin(rawOrigin: string | null | undefined): string | null {
   if (typeof rawOrigin !== "string" || rawOrigin.trim() === "") return null;
@@ -86,12 +88,43 @@ export function buildPortalLoginUrl(options?: {
 
 /** 浏览器侧跳往统一门户；SSR/无 window 环境下安全无副作用。 */
 export function startPortalSso(options?: { promptLogin?: boolean; next?: string | null }): void {
-  if (typeof window === "undefined") return;
+  const loc = portalBrowser.location();
+  if (!loc) return;
   const target = buildPortalLoginUrl({
     promptLogin: options?.promptLogin,
     next: options?.next,
-    currentOrigin: window.location.origin,
-    currentPathname: window.location.pathname,
+    currentOrigin: loc.origin,
+    currentPathname: loc.pathname,
   });
-  window.location.assign(target);
+  portalBrowser.assign(target);
+}
+
+/**
+ * 无席位态切号：先 await 本地退出接口清掉本域 touch_session Cookie，
+ * 成功后再触发 onCleared 并跳转门户 ?prompt=login，避免旧 Cookie 死锁。
+ */
+export async function switchPortalAccount(options?: {
+  next?: string | null;
+  currentOrigin?: string | null;
+  currentPathname?: string | null;
+  onCleared?: () => void;
+}): Promise<boolean> {
+  const loc = portalBrowser.location();
+  if (!loc) return false;
+  let result: Response;
+  try {
+    result = await fetch("/api/auth/logout", { method: "POST" });
+  } catch {
+    return false;
+  }
+  if (!result.ok) return false;
+  options?.onCleared?.();
+  const target = buildPortalLoginUrl({
+    promptLogin: true,
+    next: options?.next,
+    currentOrigin: options?.currentOrigin ?? loc.origin,
+    currentPathname: options?.currentPathname ?? loc.pathname,
+  });
+  portalBrowser.assign(target);
+  return true;
 }

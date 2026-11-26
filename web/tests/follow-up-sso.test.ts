@@ -37,6 +37,9 @@ it("renders switch-account guidance with prompt=login when identity rejects with
   expect(res.status).toBe(403);
   expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
   expect(res.headers.get("cache-control")).toBe("no-store");
+  expect(res.headers.get("content-security-policy")).toBe(
+    "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+  );
   const html = await res.text();
   expect(html).toContain("尚未开通团队席位");
   expect(html).toContain("切换其他账号");
