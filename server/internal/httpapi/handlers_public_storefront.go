@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/bianjiefilm/touch-engine/server/internal/matrixhandoff"
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
 	"github.com/bianjiefilm/touch-engine/server/internal/storefrontversion"
 )
@@ -52,6 +53,7 @@ func (s *Server) handlePublicStorefront(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, status, payload)
 		return
 	}
+	payload, _ = matrixhandoff.StripMerchantFields(payload)
 	if s.Cfg.FeaturePublicCache {
 		s.StorefrontCache.Set("sf:"+code, payload)
 	}

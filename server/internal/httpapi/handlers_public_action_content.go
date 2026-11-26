@@ -31,6 +31,7 @@ import (
 	"github.com/bianjiefilm/touch-engine/server/internal/authz"
 	"github.com/bianjiefilm/touch-engine/server/internal/channeladmission"
 	"github.com/bianjiefilm/touch-engine/server/internal/contentpack"
+	"github.com/bianjiefilm/touch-engine/server/internal/matrixhandoff"
 	"github.com/bianjiefilm/touch-engine/server/internal/participation"
 	"github.com/bianjiefilm/touch-engine/server/internal/publishhandoff"
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
@@ -303,7 +304,7 @@ func (s *Server) handlePublicActionContent(w http.ResponseWriter, r *http.Reques
 		}
 		candidates = append(candidates, candidate)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	cleanPayload, _ := matrixhandoff.StripMerchantFields(map[string]any{
 		"action_id":                     actionID,
 		"action_revision":               revision,
 		"content_binding_ref":           actionContentBindingRef(packID),
@@ -321,6 +322,7 @@ func (s *Server) handlePublicActionContent(w http.ResponseWriter, r *http.Reques
 		"media":                         media,
 		"candidates":                    candidates,
 	})
+	writeJSON(w, http.StatusOK, cleanPayload)
 }
 
 // POST /api/v1/public/content/{version}/media-access

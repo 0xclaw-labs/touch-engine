@@ -218,11 +218,22 @@ func wireRequest(doc matrixhandoff.Draft, auth Authority) matrixDraftRequest {
 	if strings.TrimSpace(doc.Activity.GrantRef) != "" {
 		grant = strings.TrimSpace(doc.Activity.GrantRef)
 	}
+	sourceProjectID := strings.TrimSpace(doc.Activity.ActivityID)
+	campaignID := strings.TrimSpace(doc.Activity.ActivityID)
+	returnPath := strings.TrimSpace(doc.ReturnURL)
+	if doc.ScopeKind == matrixhandoff.ScopeStore && campaignID == "" {
+		sourceProjectID = "store:" + strings.TrimSpace(doc.Activity.StoreID)
+		if returnPath == "" {
+			returnPath = "/work/stores/" + strings.TrimSpace(doc.Activity.StoreID) + "/content"
+		}
+	} else if returnPath == "" {
+		returnPath = "/work/campaigns/" + campaignID
+	}
 	req := matrixDraftRequest{
 		SchemaVersion:   "matrix-draft-request/v1",
 		SourceApp:       "touch",
-		SourceProjectID: doc.Activity.ActivityID,
-		CampaignID:      doc.Activity.ActivityID,
+		SourceProjectID: sourceProjectID,
+		CampaignID:      campaignID,
 		Revision:        version,
 		AssetID:         assetID,
 		AssetHash:       sha,
@@ -232,7 +243,7 @@ func wireRequest(doc matrixhandoff.Draft, auth Authority) matrixDraftRequest {
 		BrandID:         doc.Activity.BrandID,
 		PayerID:         strings.TrimSpace(auth.PayerID),
 		LicenseRef:      strings.TrimSpace(auth.LicenseRef),
-		ReturnTarget:    matrixReturnPath{App: "touch", Path: "/work/campaigns/" + doc.Activity.ActivityID},
+		ReturnTarget:    matrixReturnPath{App: "touch", Path: returnPath},
 	}
 	if !auth.LicenseExpiresAt.IsZero() {
 		u := auth.LicenseExpiresAt.UTC().Format(time.RFC3339)

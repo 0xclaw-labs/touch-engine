@@ -464,6 +464,11 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PATCH /api/v1/campaigns/{id}", s.requireSession(s.handleCampaignPatch))
 	mux.Handle("POST /api/v1/campaigns/{id}/status", s.requireSession(s.handleCampaignStatus))
 	mux.Handle("POST /api/v1/campaigns/{id}/matrix-draft", s.requireSession(s.handleMatrixDraft))
+	mux.Handle("GET /api/v1/campaigns/{id}/matrix-drafts", s.requireSession(s.handleCampaignMatrixDraftList))
+	mux.Handle("POST /api/v1/stores/{id}/matrix-draft", s.requireSession(s.handleStoreMatrixDraft))
+	mux.Handle("GET /api/v1/stores/{id}/matrix-drafts", s.requireSession(s.handleStoreMatrixDraftList))
+	mux.Handle("POST /api/v1/matrix-drafts/{draftId}/confirm", s.requireSession(s.handleMatrixDraftConfirm))
+	mux.Handle("POST /api/v1/matrix-drafts/{draftId}/receipt", s.requireSession(s.handleMatrixDraftReceipt))
 
 	mux.Handle("GET /api/v1/campaigns/{id}/assets", s.requireSession(s.handleAssetList))
 	mux.Handle("POST /api/v1/campaigns/{id}/assets", s.requireSession(s.handleAssetAdd))

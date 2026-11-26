@@ -748,3 +748,65 @@ func hasAction(actions []StepAction, kind ActionKind) bool {
 	}
 	return false
 }
+
+// TestMerchantMatrixReceiptNeverEscalatesCustomerPublishOrReward verifies HUI-2390:
+// merchant matrix publish receipts are strictly separated from customer publish
+// facts and can NEVER escalate customer publish status to official_confirmed or
+// trigger/alter customer UGC rewards.
+func TestMerchantMatrixReceiptNeverEscalatesCustomerPublishOrReward(t *testing.T) {
+	if !IsWeakSignal(SignalMerchantMatrixReceipt) {
+		t.Fatal("SignalMerchantMatrixReceipt must be treated as non-escalating weak signal on customer path")
+	}
+	got := ReconcilePublishAndRewardFacts(FactReconcileInput{
+		CurrentPublishStatus: PublishFactHandoffPrepared,
+		CurrentRewardStatus:  RewardFactNone,
+		HasCampaign:          true,
+		CampaignID:           "cmp_1",
+		Events: []IncomingPublishEvent{
+			{
+				Kind:           SignalMerchantMatrixReceipt,
+				Verified:       true,
+				BindingMatched: true,
+				ReceiptOutcome: "published",
+			},
+		},
+	})
+	if got.PublishFact.Status != PublishFactHandoffPrepared || got.PublishFact.OfficialConfirmed || got.PublishFact.ManualVerified {
+		t.Fatalf("merchant matrix receipt escalated customer publish fact: %+v", got.PublishFact)
+	}
+	if got.RewardFact.Status != RewardFactNone {
+		t.Fatalf("merchant matrix receipt altered customer reward fact: %+v", got.RewardFact)
+	}
+	if got.EscalationBlockedCount != 1 || len(got.BlockedWeakSignals) != 1 || got.BlockedWeakSignals[0] != SignalMerchantMatrixReceipt {
+		t.Fatalf("expected merchant matrix receipt blocked, got count=%d signals=%v", got.EscalationBlockedCount, got.BlockedWeakSignals)
+	}
+}
+
+// TestSanitizeStripsMerchantMatrixAndQuotaDiagnostics verifies that merchant
+// matrix plan, account pool, scheduling credentials, quota, and payer/license
+// terms are stripped from customer-visible copy and params.
+func TestSanitizeStripsMerchantMatrixAndQuotaDiagnostics(t *testing.T) {
+	raw := "已关联 matrix_plan=pln_1 account_pool=dy_pool merchant_quota=99 payer_id=pay_1 schedule_token=tok_x"
+	cleaned := SanitizeCustomerText(raw, "可继续查看门店内容")
+	if ContainsTechnicalDiagnostic(cleaned) {
+		t.Fatalf("cleaned text still contains merchant/internal diagnostic: %q", cleaned)
+	}
+	safe, diag := SanitizeCustomerParams(map[string]string{
+		"label":               "门店视频",
+		"matrix_plan_id":      "pln_1",
+		"publish_plan":        "pp_1",
+		"account_pool":        "brand_acc",
+		"merchant_account":    "dy_official",
+		"schedule_credential": "cred_1",
+		"merchant_quota":      "100",
+		"payer_id":            "pay_1",
+		"license_ref":         "lic_1",
+		"grant_ref":           "grant_1",
+	})
+	if len(safe) != 1 || safe["label"] != "门店视频" {
+		t.Fatalf("safe params leaked merchant keys: %+v", safe)
+	}
+	if len(diag) != 9 {
+		t.Fatalf("expected 9 merchant diagnostic keys segregated, got %d: %+v", len(diag), diag)
+	}
+}

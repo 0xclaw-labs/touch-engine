@@ -105,10 +105,14 @@ type DraftSink interface {
 // Actor is the signed-in member. The tenant comes from membership resolution,
 // not from a hand-filled request field.
 type Actor struct {
-	PrincipalID string
-	TenantID    string
-	BrandID     string
-	Role        string
+	PrincipalID            string
+	TenantID               string
+	BrandID                string
+	Role                   string
+	Revoked                bool
+	PaymentScope           string
+	OfficialPublishGranted bool
+	IsCustomer             bool
 }
 
 // Button is one surface control. Lead and UGC are echoed unchanged.
@@ -125,14 +129,21 @@ type Surfaces struct {
 
 // Outcome is the consumer result. OutboundComplete is never set for a draft.
 type Outcome struct {
-	MatrixButton     Button
-	LeadButton       Button
-	UGCButton        Button
-	Draft            matrixhandoff.Draft
-	Copy             string
-	OutboundComplete bool
-	// ActivityVersion is the exact Touch campaign version handed off. The
-	// browser displays it so a returned candidate can be tied to its source.
+	MatrixButton             Button
+	LeadButton               Button
+	UGCButton                Button
+	Draft                    matrixhandoff.Draft
+	PlanID                   string
+	PlanState                string
+	ReturnURL                string
+	Metrics                  matrixhandoff.PlanMetrics
+	OfficialAuthorityGranted bool
+	CustomerEvidenceEligible bool
+	CustomerRewardEligible   bool
+	Copy                     string
+	OutboundComplete         bool
+	// ActivityVersion is the exact Touch campaign/content version handed off.
+	// The browser displays it so a returned candidate can be tied to its source.
 	ActivityVersion int
 }
 
@@ -170,21 +181,109 @@ func (c *Consumer) Drafts() []matrixhandoff.Draft {
 	return c.handoff.List()
 }
 
+// DraftsForScope returns drafts strictly filtered by tenant and optional
+// store/activity scope.
+func (c *Consumer) DraftsForScope(tenantID, storeID, activityID string) []matrixhandoff.Draft {
+	if c == nil || c.handoff == nil {
+		return nil
+	}
+	return c.handoff.ListByScope(tenantID, storeID, activityID)
+}
+
+// GetDraftForTenant returns a draft only when it belongs to tenantID.
+func (c *Consumer) GetDraftForTenant(tenantID, id string) (matrixhandoff.Draft, bool) {
+	if c == nil || c.handoff == nil {
+		return matrixhandoff.Draft{}, false
+	}
+	return c.handoff.GetForTenant(tenantID, id)
+}
+
+// ConfirmDraft approves one recorded draft for its merchant scope without
+// rewriting any previously approved plan content.
+func (c *Consumer) ConfirmDraft(now time.Time, actor Actor, id string) (matrixhandoff.Result, error) {
+	if c == nil || c.handoff == nil {
+		return matrixhandoff.Result{}, errors.New("matrixconsume: draft store missing")
+	}
+	return c.handoff.Confirm(now, mapHandoffActor(actor), id)
+}
+
+// ApplyReceipt reconciles an incoming matrix status receipt for a recorded
+// merchant draft. It enforces tenant/brand/role checks, stale-receipt guards,
+// layered plan states, null unknown metrics, and absolute customer separation.
+func (c *Consumer) ApplyReceipt(now time.Time, actor Actor, id string, receipt matrixhandoff.Receipt) (matrixhandoff.ReceiptOutcome, error) {
+	if c == nil || c.handoff == nil {
+		return matrixhandoff.ReceiptOutcome{}, errors.New("matrixconsume: draft store missing")
+	}
+	return c.handoff.ApplyReceipt(now, mapHandoffActor(actor), id, receipt)
+}
+
+func mapHandoffActor(actor Actor) matrixhandoff.Actor {
+	role := strings.TrimSpace(actor.Role)
+	if role == "org_owner" {
+		role = matrixhandoff.RoleBrandPublisher
+	}
+	return matrixhandoff.Actor{
+		PrincipalID:            actor.PrincipalID,
+		TenantID:               actor.TenantID,
+		BrandID:                actor.BrandID,
+		Role:                   role,
+		Revoked:                actor.Revoked,
+		PaymentScope:           actor.PaymentScope,
+		OfficialPublishGranted: actor.OfficialPublishGranted,
+		IsCustomer:             actor.IsCustomer,
+	}
+}
+
 // Schedule records a matrix draft or disables only the matrix button.
 // Customer lead and UGC buttons are returned as given. Customer effect
 // counters are not incremented.
 func (c *Consumer) Schedule(ctx context.Context, now time.Time, actor Actor, req matrixhandoff.Request, surfaces Surfaces) (Outcome, error) {
 	out := Outcome{
-		LeadButton: Button{Enabled: surfaces.LeadEnabled},
-		UGCButton:  Button{Enabled: surfaces.UGCEnabled},
+		LeadButton:               Button{Enabled: surfaces.LeadEnabled},
+		UGCButton:                Button{Enabled: surfaces.UGCEnabled},
+		Metrics:                  matrixhandoff.PlanMetrics{},
+		OfficialAuthorityGranted: false,
+		CustomerEvidenceEligible: false,
+		CustomerRewardEligible:   false,
+	}
+	role := strings.TrimSpace(actor.Role)
+	if actor.IsCustomer || role == "customer" || role == "visitor" || role == "guest" {
+		out.MatrixButton = Button{Enabled: false, Reason: matrixhandoff.ReasonCustomerPathForbidden}
+		return out, errors.New("matrixconsume: customer path cannot create merchant publish plan")
 	}
 	if strings.TrimSpace(actor.TenantID) == "" || actor.TenantID != strings.TrimSpace(req.TenantID) || actor.BrandID != strings.TrimSpace(req.BrandID) {
 		out.MatrixButton = Button{Enabled: false, Reason: ReasonCrossTenant}
 		return out, ErrCrossTenant
 	}
-	if actor.Role != "org_owner" && actor.Role != matrixhandoff.RoleBrandPublisher {
+	switch role {
+	case "org_owner", matrixhandoff.RoleBrandPublisher:
+		if req.ActingAsPersonalPayer || strings.TrimSpace(actor.PaymentScope) == matrixhandoff.PaymentScopeDelegatePersonal {
+			out.MatrixButton = Button{Enabled: false, Reason: matrixhandoff.ReasonDelegatePaymentForbidden}
+			return out, errors.New("matrixconsume: merchant quota cannot act as delegate personal payment")
+		}
+	case matrixhandoff.RoleDelegate:
+		if actor.Revoked {
+			out.MatrixButton = Button{Enabled: false, Reason: matrixhandoff.ReasonDelegateRevoked}
+			return out, errors.New("matrixconsume: delegate authorization revoked")
+		}
+		if req.ActingAsPersonalPayer || strings.TrimSpace(actor.PaymentScope) == matrixhandoff.PaymentScopeDelegatePersonal {
+			out.MatrixButton = Button{Enabled: false, Reason: matrixhandoff.ReasonDelegatePaymentForbidden}
+			return out, errors.New("matrixconsume: merchant quota cannot act as delegate personal payment")
+		}
+	case matrixhandoff.RoleOperatorAdmin:
+		out.MatrixButton = Button{Enabled: false, Reason: matrixhandoff.ReasonOperatorNotPublisher}
+		return out, errors.New("matrixconsume: operator admin is not brand publisher")
+	default:
 		out.MatrixButton = Button{Enabled: false, Reason: ReasonForbidden}
 		return out, errors.New("matrixconsume: role cannot schedule a brand draft")
+	}
+	if !req.OfferExpiry.IsZero() && !req.OfferExpiry.After(now) {
+		out.MatrixButton = Button{Enabled: false, Reason: matrixhandoff.ReasonOfferExpired}
+		return out, nil
+	}
+	if reason := checkScheduleAssets(now, req.Assets); reason != "" {
+		out.MatrixButton = Button{Enabled: false, Reason: reason}
+		return out, nil
 	}
 	perm, err := c.decide(ctx, actor)
 	if err != nil || perm.Supply != SupplyReady {
@@ -212,7 +311,14 @@ func (c *Consumer) Schedule(ctx context.Context, now time.Time, actor Actor, req
 	if existing, ok := c.handoff.Existing(req); ok {
 		existing.Executed = false
 		existing.CustomerPublish = false
+		existing.CustomerEvidenceEligible = false
+		existing.CustomerRewardEligible = false
 		out.Draft = existing
+		out.PlanID = existing.Plan.ID
+		out.PlanState = existing.PlanState
+		out.ReturnURL = existing.ReturnURL
+		out.Metrics = existing.Metrics
+		out.OfficialAuthorityGranted = existing.OfficialAuthorityGranted
 		out.Copy = existing.Copy
 		out.OutboundComplete = false
 		out.MatrixButton = Button{Enabled: true, Reason: ReasonDraftRecorded}
@@ -247,11 +353,41 @@ func (c *Consumer) Schedule(ctx context.Context, now time.Time, actor Actor, req
 	}
 	recorded.Draft.Executed = false
 	recorded.Draft.CustomerPublish = false
+	recorded.Draft.CustomerEvidenceEligible = false
+	recorded.Draft.CustomerRewardEligible = false
 	out.Draft = recorded.Draft
+	out.PlanID = recorded.Draft.Plan.ID
+	out.PlanState = recorded.Draft.PlanState
+	out.ReturnURL = recorded.Draft.ReturnURL
+	out.Metrics = recorded.Draft.Metrics
+	out.OfficialAuthorityGranted = recorded.Draft.OfficialAuthorityGranted
 	out.Copy = recorded.Draft.Copy
 	out.OutboundComplete = false
 	out.MatrixButton = Button{Enabled: true, Reason: ReasonDraftRecorded}
 	return out, nil
+}
+
+func checkScheduleAssets(now time.Time, assets []matrixhandoff.Asset) string {
+	hasVid := false
+	for _, asset := range assets {
+		if asset.Revoked {
+			return matrixhandoff.ReasonAssetRevoked
+		}
+		if !asset.ExpiresAt.IsZero() && !asset.ExpiresAt.After(now) {
+			return matrixhandoff.ReasonAssetExpired
+		}
+		kind := strings.ToLower(strings.TrimSpace(asset.Kind))
+		if declared := strings.ToLower(strings.TrimSpace(asset.DeclaredContentType)); declared != "" && declared != kind {
+			return matrixhandoff.ReasonWrongContentType
+		}
+		if kind == "video" {
+			hasVid = true
+		}
+	}
+	if !hasVid {
+		return matrixhandoff.ReasonNeedsVideo
+	}
+	return ""
 }
 
 func (c *Consumer) decide(ctx context.Context, actor Actor) (Permission, error) {
@@ -264,8 +400,8 @@ func (c *Consumer) decide(ctx context.Context, actor Actor) (Permission, error) 
 // remember keeps the full draft on the process-lifetime handoff service.
 // The HTTP sink already posted this document. The handoff client only stamps
 // the plan id the sink returned; it does not post a second, thinner body.
-// Role is rewritten to brand_publisher only after the caller passed the role
-// gate. A disabled member never reaches this function.
+// Role is mapped only after the caller passed the role gate. A disabled member
+// never reaches this function.
 func (c *Consumer) remember(now time.Time, actor Actor, req matrixhandoff.Request, planID string) (matrixhandoff.Result, error) {
 	if c == nil || c.handoff == nil || c.plans == nil {
 		return matrixhandoff.Result{}, errors.New("matrixconsume: draft store missing")
@@ -273,11 +409,7 @@ func (c *Consumer) remember(now time.Time, actor Actor, req matrixhandoff.Reques
 	c.recordMu.Lock()
 	defer c.recordMu.Unlock()
 	c.plans.set(planID)
-	return c.handoff.CreateDraft(now, matrixhandoff.Actor{
-		TenantID: actor.TenantID,
-		BrandID:  actor.BrandID,
-		Role:     matrixhandoff.RoleBrandPublisher,
-	}, req)
+	return c.handoff.CreateDraft(now, mapHandoffActor(actor), req)
 }
 
 func previewDraft(req matrixhandoff.Request) matrixhandoff.Draft {
@@ -295,24 +427,47 @@ func previewDraft(req matrixhandoff.Request) matrixhandoff.Draft {
 	if version < 1 {
 		version = 1
 	}
+	scope := strings.TrimSpace(req.ScopeKind)
+	if scope == "" {
+		scope = matrixhandoff.ScopeCampaign
+	}
+	returnURL := strings.TrimSpace(req.ReturnURL)
+	if returnURL == "" {
+		if scope == matrixhandoff.ScopeStore {
+			returnURL = "/work/stores/" + strings.TrimSpace(req.StoreID) + "/content"
+		} else if strings.TrimSpace(req.ActivityID) != "" {
+			returnURL = "/work/campaigns/" + strings.TrimSpace(req.ActivityID)
+		}
+	}
 	return matrixhandoff.Draft{
+		ScopeKind: scope,
 		Activity: matrixhandoff.TouchActivity{
-			TenantID:    strings.TrimSpace(req.TenantID),
-			BrandID:     strings.TrimSpace(req.BrandID),
-			StoreID:     strings.TrimSpace(req.StoreID),
-			ActivityID:  strings.TrimSpace(req.ActivityID),
-			Version:     version,
-			AssetIDs:    ids,
-			AssetHashes: hashes,
-			GrantRef:    grant,
-			OfferText:   strings.TrimSpace(req.OfferText),
-			OfferExpiry: req.OfferExpiry.UTC(),
-			Disclosure:  strings.TrimSpace(req.Disclosure),
+			TenantID:         strings.TrimSpace(req.TenantID),
+			BrandID:          strings.TrimSpace(req.BrandID),
+			StoreID:          strings.TrimSpace(req.StoreID),
+			ActivityID:       strings.TrimSpace(req.ActivityID),
+			ContentPackID:    strings.TrimSpace(req.ContentPackID),
+			ContentVersionID: strings.TrimSpace(req.ContentVersionID),
+			Version:          version,
+			AssetIDs:         ids,
+			AssetHashes:      hashes,
+			GrantRef:         grant,
+			OfferText:        strings.TrimSpace(req.OfferText),
+			OfferExpiry:      req.OfferExpiry.UTC(),
+			Disclosure:       strings.TrimSpace(req.Disclosure),
 		},
-		ReturnLocationToken: strings.TrimSpace(req.ReturnLocationToken),
-		ActivityStatus:      matrixhandoff.ActivityOpen,
-		Status:              matrixhandoff.StatusDraft,
-		Copy:                matrixhandoff.CopyDraft,
+		PlanState:                matrixhandoff.PlanStateDraftSaved,
+		ReturnLocationToken:      strings.TrimSpace(req.ReturnLocationToken),
+		ReturnURL:                returnURL,
+		IdempotencyKey:           strings.TrimSpace(req.IdempotencyKey),
+		ActivityStatus:           matrixhandoff.ActivityOpen,
+		Status:                   matrixhandoff.StatusDraft,
+		Copy:                     matrixhandoff.CopyDraft,
+		Metrics:                  matrixhandoff.PlanMetrics{},
+		OfficialAuthorityGranted: false,
+		CustomerPublish:          false,
+		CustomerEvidenceEligible: false,
+		CustomerRewardEligible:   false,
 	}
 }
 
