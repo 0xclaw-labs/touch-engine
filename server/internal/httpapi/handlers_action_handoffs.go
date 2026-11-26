@@ -38,6 +38,7 @@ import (
 	"github.com/bianjiefilm/touch-engine/server/internal/channeladmission"
 	"github.com/bianjiefilm/touch-engine/server/internal/contentpack"
 	"github.com/bianjiefilm/touch-engine/server/internal/participation"
+	"github.com/bianjiefilm/touch-engine/server/internal/publishflow"
 	"github.com/bianjiefilm/touch-engine/server/internal/publishhandoff"
 	"github.com/bianjiefilm/touch-engine/server/internal/publishhandoff/adapters"
 	"github.com/bianjiefilm/touch-engine/server/internal/store"
@@ -432,7 +433,8 @@ func (s *Server) handlePublicActionHandoffPlan(w http.ResponseWriter, r *http.Re
 	if !plan.Allowed {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"action_id": actionID, "method": method, "environment": environment,
-			"plan": actionPlanView(plan),
+			"plan":      actionPlanView(plan),
+			"next_step": s.projectActionPlanNextStep(sess, plan, payloadKind, ""),
 		})
 		return
 	}
@@ -455,11 +457,14 @@ func (s *Server) handlePublicActionHandoffPlan(w http.ResponseWriter, r *http.Re
 		"environment": environment,
 		"plan":        actionPlanView(plan),
 	}
+	confirmationToken := ""
 	if payloadKind != "" && plan.Allowed {
 		if token, terr := publishhandoff.ConfirmationFor(payloadKind, payload); terr == nil {
+			confirmationToken = token
 			out["confirmation_required"] = token
 		}
 	}
+	out["next_step"] = s.projectActionPlanNextStep(sess, plan, payloadKind, confirmationToken)
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -900,7 +905,191 @@ func (s *Server) currentActionHandoffResponse(r *http.Request, h publishhandoff.
 		}
 		delete(view, "client_action")
 	}
-	return map[string]any{"handoff": view, "plan": actionPlanView(plan), "execution": execution, "media": media}
+	nextStep, facts := s.projectActionHandoffNextStep(r.Context(), h, plan, denied)
+	return map[string]any{
+		"handoff":   view,
+		"plan":      actionPlanView(plan),
+		"execution": execution,
+		"media":     media,
+		"next_step": nextStep,
+		"facts":     facts,
+	}
+}
+
+func customerPlatformLabel(platform string) string {
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case "douyin":
+		return "抖音"
+	case "xiaohongshu":
+		return "小红书"
+	case "kuaishou":
+		return "快手"
+	case "wechat":
+		return "微信"
+	case "bilibili":
+		return "哔哩哔哩"
+	case "dianping":
+		return "大众点评"
+	case "meituan":
+		return "美团"
+	default:
+		return "目标平台"
+	}
+}
+
+func (s *Server) projectActionPlanNextStep(sess participation.ActionSession, plan publishhandoff.ActionPlan, payloadKind, confirmationToken string) publishflow.NextStepProjection {
+	assetCount := len(sess.ContentCandidates)
+	if assetCount == 0 && strings.TrimSpace(sess.ContentPackVersion) != "" {
+		assetCount = 1
+	}
+	var rawParams map[string]string
+	rawNotice := plan.Notice
+	if plan.ClientAction != nil {
+		rawParams = plan.ClientAction.Params
+		if rawNotice == "" {
+			rawNotice = plan.ClientAction.Note
+		}
+	}
+	planKind := publishflow.PlanKind(plan.Kind)
+	state := publishflow.FlowStateFromHandoff(publishhandoff.StateHandoffReady, planKind, "")
+	if !plan.Allowed {
+		state = publishflow.StateRejected
+	}
+	return publishflow.ProjectCustomerNextStep(publishflow.NextStepInput{
+		PlanKind:       planKind,
+		State:          state,
+		PlatformLabel:  customerPlatformLabel(sess.Platform),
+		HasContent:     payloadKind != publishhandoff.PayloadKindLinkShare && strings.TrimSpace(sess.ContentPackVersion) != "",
+		AssetCount:     assetCount,
+		HasCampaign:    strings.TrimSpace(sess.ParticipationID) != "",
+		NoAutoReturn:   true,
+		ContentVersion: confirmationToken,
+		RawReason:      plan.ReasonText,
+		RawNotice:      rawNotice,
+		RawParams:      rawParams,
+	})
+}
+
+func (s *Server) projectActionHandoffNextStep(ctx context.Context, h publishhandoff.ActionHandoff, plan publishhandoff.ActionPlan, denied error) (publishflow.NextStepProjection, publishflow.ReconciledFacts) {
+	planKind := publishflow.PlanKind(h.PlanKind)
+	if planKind == "" {
+		planKind = publishflow.PlanKind(plan.Kind)
+	}
+	condition := ""
+	if denied != nil && (h.Status == publishhandoff.StateHandoffReady || h.Status == publishhandoff.StateEditorOpened) {
+		var coded *mediaExportError
+		var refused *publishhandoff.HandoffRefusedError
+		switch {
+		case errors.As(denied, &refused):
+			if refused.PendingExternal {
+				planKind = publishflow.PlanPendingExternal
+			} else {
+				planKind = publishflow.PlanRefused
+			}
+			condition = string(publishflow.StateRejected)
+		case errors.As(denied, &coded):
+			if coded.code == "media_missing" {
+				condition = string(publishflow.StateMediaFailed)
+			} else {
+				planKind = publishflow.PlanRefused
+				condition = string(publishflow.StateRejected)
+			}
+		}
+	}
+	state := publishflow.FlowStateFromHandoff(h.Status, planKind, condition)
+
+	oauthAuthorized := false
+	trustedAccount := ""
+	accountSource := publishflow.AccountSourceNone
+	var rawParams map[string]string
+	rawNotice := plan.Notice
+	if h.ClientAction != nil {
+		rawParams = h.ClientAction.Params
+		if rawNotice == "" {
+			rawNotice = h.ClientAction.Note
+		}
+		if h.ClientAction.Params["phase"] == "confirm_submit" {
+			oauthAuthorized = true
+			if acc := strings.TrimSpace(h.ClientAction.Params["account_ref"]); acc != "" {
+				trustedAccount = acc
+				accountSource = publishflow.AccountSourceVerifiedOAuth
+			}
+		}
+	}
+
+	assetCount := 0
+	if h.PayloadKind == publishhandoff.PayloadKindMedia {
+		assetCount = 1
+	}
+	hasCampaign := strings.TrimSpace(h.ParticipationID) != ""
+	campaignID := ""
+	if hasCampaign {
+		campaignID = h.ParticipationID
+	}
+
+	nextStep := publishflow.ProjectCustomerNextStep(publishflow.NextStepInput{
+		PlanKind:             planKind,
+		State:                state,
+		PlatformLabel:        customerPlatformLabel(h.Platform),
+		HasContent:           h.PayloadKind == publishhandoff.PayloadKindMedia,
+		AssetCount:           assetCount,
+		OAuthAuthorized:      oauthAuthorized,
+		OfficialVerified:     h.Status == publishhandoff.StatePlatformConfirmed && h.EvidenceSource == publishhandoff.EvidenceOfficialReceipt,
+		HasCampaign:          hasCampaign,
+		NoAutoReturn:         true,
+		ContentVersion:       h.ContentVersion,
+		TargetAccountRef:     trustedAccount,
+		AccountSource:        accountSource,
+		PriorConfirmedDigest: publishflow.ConfirmationDigest(planKind, h.ContentVersion, trustedAccount),
+		RawReason:            plan.ReasonText,
+		RawNotice:            rawNotice,
+		RawParams:            rawParams,
+	})
+
+	pubFact := publishFactFromHandoff(h, planKind, denied)
+	facts := publishflow.ReconcilePublishAndRewardFacts(publishflow.FactReconcileInput{
+		CurrentPublishStatus: pubFact,
+		CurrentRewardStatus:  publishflow.RewardFactNone,
+		HasCampaign:          hasCampaign,
+		CampaignID:           campaignID,
+	})
+	_ = ctx
+	return nextStep, facts
+}
+
+func publishFactFromHandoff(h publishhandoff.ActionHandoff, planKind publishflow.PlanKind, denied error) publishflow.PublishFactStatus {
+	if planKind == publishflow.PlanRefused || planKind == publishflow.PlanPendingExternal {
+		if h.Status == publishhandoff.StateCanceled {
+			return publishflow.PublishFactCancelled
+		}
+		if h.Status == publishhandoff.StatePlatformConfirmed {
+			return publishflow.PublishFactOfficialConfirmed
+		}
+		if denied != nil && (h.Status == publishhandoff.StateHandoffReady || h.Status == publishhandoff.StateEditorOpened) {
+			return publishflow.PublishFactRefused
+		}
+	}
+	switch h.Status {
+	case publishhandoff.StatePreviewed, publishhandoff.StateHandoffPreparing, publishhandoff.StateHandoffReady:
+		return publishflow.PublishFactHandoffPrepared
+	case publishhandoff.StateEditorOpened, publishhandoff.StateSubmitting:
+		return publishflow.PublishFactInProgress
+	case publishhandoff.StateAwaitingReview:
+		if h.EvidenceSource == publishhandoff.EvidenceStaffObservation {
+			return publishflow.PublishFactManualVerified
+		}
+		return publishflow.PublishFactUnderReview
+	case publishhandoff.StatePlatformConfirmed:
+		return publishflow.PublishFactOfficialConfirmed
+	case publishhandoff.StateCanceled:
+		return publishflow.PublishFactCancelled
+	case publishhandoff.StateFailed:
+		return publishflow.PublishFactFailed
+	case publishhandoff.StateUnknown:
+		return publishflow.PublishFactUnknown
+	default:
+		return publishflow.PublishFactUnknown
+	}
 }
 
 func (s *Server) currentActionExecution(ctx context.Context, h publishhandoff.ActionHandoff) error {
