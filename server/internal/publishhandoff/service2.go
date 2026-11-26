@@ -238,11 +238,18 @@ func (s *Service) StartAction(_ context.Context, in ActionStartInput) (ActionRes
 	if err != nil {
 		return ActionResult{}, err
 	}
+	contentPackVersionID := ""
+	if in.PayloadKind == PayloadKindMedia {
+		// media 路线的版本引用由 httpapi 随输入解析冻结(3553 已采用版本)。
+		contentPackVersionID = in.ContentPackVersionID
+	}
 	now := rfc3339(s.now())
 	h := ActionHandoff{Handoff: Handoff{
 		ID: newID("pha_"), TenantID: in.TenantID, StoreID: in.StoreID,
+		ParticipationID: in.ParticipationID, AttemptID: in.AttemptID,
 		Platform: in.Platform, Scenario: in.Scenario, Status: StatePreviewed,
 		EvidenceSource: EvidenceCustomerAction, ContentVersion: wantConfirmation,
+		ContentPackVersionID: contentPackVersionID, PayloadKind: in.PayloadKind,
 		CreatedAt: now, UpdatedAt: now,
 	},
 		ActionID: in.ActionID, CatalogCode: in.CatalogCode, SessionID: in.SessionID,
@@ -250,11 +257,6 @@ func (s *Service) StartAction(_ context.Context, in ActionStartInput) (ActionRes
 		Environment: in.Environment, PlanKind: plan.Kind, EvidenceLevel: plan.EvidenceLevel,
 		ClientAction: plan.ClientAction, UnsupportedFields: plan.UnsupportedFields,
 		ShareURL: in.PlanPayload.ShareURL, RequestHash: requestHash,
-	}
-	contentPackVersionID := ""
-	if in.PayloadKind == PayloadKindMedia {
-		// media 路线的版本引用由 httpapi 随输入解析冻结(3553 已采用版本)。
-		contentPackVersionID = in.ContentPackVersionID
 	}
 	if _, err := s.db.Exec(`INSERT INTO publish_handoffs
 		(id, tenant_id, store_id, participation_id, attempt_id, platform, scenario,

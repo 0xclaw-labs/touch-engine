@@ -64,6 +64,9 @@ func NewDouyinHTTP(key, secret, queryURL, bearer string) *DouyinHTTP {
 	return &DouyinHTTP{ClientKey: key, ClientSecret: secret, BaseURL: "https://open.douyin.com", QueryURL: queryURL, QueryBearer: bearer, Client: officialClient()}
 }
 func (c *DouyinHTTP) credential(ctx context.Context, ticket bool) (string, error) {
+	if strings.TrimSpace(c.ClientKey) == "" || strings.TrimSpace(c.ClientSecret) == "" {
+		return "", fmt.Errorf("douyin official credentials missing")
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := time.Now()
