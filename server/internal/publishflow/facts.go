@@ -59,6 +59,10 @@ const (
 	SignalWakeAttempt        SignalKind = "wake_attempt"
 	SignalMediaHandoff       SignalKind = "media_handoff"
 
+	// Non-customer merchant matrix receipts — STRICTLY SEPARATED from customer
+	// publish evidence and customer UGC rewards (HUI-2390).
+	SignalMerchantMatrixReceipt SignalKind = "merchant_matrix_receipt"
+
 	// Stronger lifecycle events.
 	SignalStaffConfirm    SignalKind = "staff_confirm"
 	SignalOfficialReceipt SignalKind = "official_receipt"
@@ -67,8 +71,8 @@ const (
 	SignalMediaFailure    SignalKind = "media_failure"
 )
 
-// IsWeakSignal reports whether k is a client/weak signal that must NEVER
-// escalate publish status to official published confirmation.
+// IsWeakSignal reports whether k is a client/weak or non-customer signal that
+// must NEVER escalate customer publish status to official published confirmation.
 func IsWeakSignal(k SignalKind) bool {
 	switch k {
 	case SignalH5Return,
@@ -78,7 +82,8 @@ func IsWeakSignal(k SignalKind) bool {
 		SignalSelfReport,
 		SignalCustomerClick,
 		SignalWakeAttempt,
-		SignalMediaHandoff:
+		SignalMediaHandoff,
+		SignalMerchantMatrixReceipt:
 		return true
 	default:
 		return false
