@@ -370,7 +370,7 @@ func (s *Store) DashboardOps(tenantID, storeScope string, start, end time.Time, 
 	if facts.OfficialConfirmedAttempts, err = s.opsScalar("official_attempts",
 		`SELECT COUNT(DISTINCT f.attempt_id)
 		 FROM reward_official_facts f
-		 JOIN campaigns c ON c.id=f.campaign_id
+		 JOIN campaigns c ON c.id=f.campaign_id AND c.tenant_id=f.tenant_id
 		 WHERE `+ofCond.clause+fmt.Sprintf(inWin, "f.created_at", "f.created_at"),
 		append(append([]any{}, ofCond.args...), w.startTS, w.endTS)); err != nil {
 		return facts, dims, err
@@ -531,7 +531,7 @@ func (s *Store) DashboardOps(tenantID, storeScope string, start, end time.Time, 
 		urCond = urCond.with(" AND a.platform=?", f.Platform)
 	}
 	if facts.LayerUserReported, err = s.opsScalar("layer_user_reported",
-		`SELECT COUNT(*) FROM customer_publish_attempts a JOIN campaigns c ON c.id=a.campaign_id
+		`SELECT COUNT(*) FROM customer_publish_attempts a JOIN campaigns c ON c.id=a.campaign_id AND c.tenant_id=a.tenant_id
 		 WHERE `+urCond.clause+fmt.Sprintf(inWin, "a.created_at", "a.created_at"),
 		append(append([]any{}, urCond.args...), w.startTS, w.endTS)); err != nil {
 		return facts, dims, err
@@ -556,14 +556,15 @@ func (s *Store) DashboardOps(tenantID, storeScope string, start, end time.Time, 
 		return facts, dims, err
 	}
 	if facts.Leads.PendingSync, err = s.opsScalar("leads_pending_sync",
-		`SELECT COUNT(*) FROM lead_submissions l WHERE `+leadWin+` AND l.sync_state='pending_sync'`, leadArgs); err != nil {
+		`SELECT COUNT(*) FROM lead_submissions l WHERE `+leadWin+
+			` AND l.sync_state='pending_sync' AND l.revoke_source_revision=0`, leadArgs); err != nil {
 		return facts, dims, err
 	}
 	// 已获客确认:ACK 五元组落库(crm_received + receiver_state='stored');Notify
-	// 投递成功(delivered)只停 pending_sync,绝不算已获客。
+	// 投递成功(delivered)只停 pending_sync,绝不算已获客;已触发撤回水位永不计入。
 	if facts.Leads.ReceiverConfirmed, err = s.opsScalar("leads_receiver_confirmed",
 		`SELECT COUNT(*) FROM lead_submissions l WHERE `+leadWin+
-			` AND l.sync_state='crm_received' AND l.receiver_state='stored'`, leadArgs); err != nil {
+			` AND l.sync_state='crm_received' AND l.receiver_state='stored' AND l.revoke_source_revision=0`, leadArgs); err != nil {
 		return facts, dims, err
 	}
 	if facts.Leads.Revoked, err = s.opsScalar("leads_revoked",
@@ -707,7 +708,7 @@ func (s *Store) DashboardOps(tenantID, storeScope string, start, end time.Time, 
 	}
 	if facts.Anomalies.PendingReview, err = s.opsScalar("pending_review",
 		`SELECT COUNT(*) FROM customer_publish_attempts a
-		 JOIN campaigns c ON c.id=a.campaign_id
+		 JOIN campaigns c ON c.id=a.campaign_id AND c.tenant_id=a.tenant_id
 		 WHERE `+prCond.clause+`
 		   AND NOT EXISTS (SELECT 1 FROM reward_benefits b
 		     WHERE b.tenant_id=a.tenant_id AND b.participation_id=a.id)`, prCond.args); err != nil {
@@ -739,7 +740,7 @@ func (s *Store) DashboardOps(tenantID, storeScope string, start, end time.Time, 
 	for target, op := range map[*int64]string{&facts.Anomalies.ReversedInWindow: "reverse", &facts.Anomalies.ExpiredInWindow: "expire"} {
 		if *target, err = s.opsScalar("op_"+op,
 			`SELECT COUNT(*) FROM reward_operations o
-			 JOIN reward_benefits rb ON rb.id=o.benefit_id
+			 JOIN reward_benefits rb ON rb.id=o.benefit_id AND rb.tenant_id=o.tenant_id
 			 WHERE o.tenant_id=? AND o.op=?`+opExtra+
 				fmt.Sprintf(inWin, "o.created_at", "o.created_at"),
 			concat([]any{tenantID, op}, opArgs, []any{w.startTS, w.endTS})); err != nil {

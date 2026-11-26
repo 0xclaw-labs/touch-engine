@@ -77,7 +77,7 @@ func (s *Server) handlePublicLeadForm(w http.ResponseWriter, r *http.Request) {
 	}
 	marketing := form.MarketingOptinEnabled
 	// the shown notice version must match what we will require consent for
-	if form.NoticeVersion != notice.Version {
+	if form.NoticeVersion != "" && form.NoticeVersion != notice.Version {
 		notice.Version = form.NoticeVersion // form pins the version it was configured with
 	}
 	merchant := ""
@@ -131,11 +131,6 @@ func (s *Server) handlePublicLeadSubmit(w http.ResponseWriter, r *http.Request) 
 		fail(w, http.StatusBadRequest, "consent_required", "explicit consent is required to store a lead")
 		return
 	}
-	notice := leads.CurrentNotice()
-	if in.ConsentVersion != notice.Version {
-		fail(w, http.StatusBadRequest, "notice_version_mismatch", "consent must reference the notice version shown to you")
-		return
-	}
 	phone, err := leads.NormalizePhone(in.Phone)
 	if err != nil {
 		fail(w, http.StatusBadRequest, "bad_phone", "phone must be a valid mainland mobile number")
@@ -145,6 +140,10 @@ func (s *Server) handlePublicLeadSubmit(w http.ResponseWriter, r *http.Request) 
 		fail(w, http.StatusBadRequest, "bad_request", "name is too long")
 		return
 	}
+	if len([]rune(strings.TrimSpace(in.Wechat))) > 100 {
+		fail(w, http.StatusBadRequest, "bad_request", "wechat is too long")
+		return
+	}
 	form, err := s.St.GetLeadFormByCampaign(res.Campaign.ID)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && !form.Enabled) {
 		fail(w, http.StatusConflict, "lead_capture_not_open", "this campaign does not accept leads")
@@ -152,6 +151,14 @@ func (s *Server) handlePublicLeadSubmit(w http.ResponseWriter, r *http.Request) 
 	}
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "internal", "lead form lookup failed")
+		return
+	}
+	expectedVersion := form.NoticeVersion
+	if expectedVersion == "" {
+		expectedVersion = leads.CurrentNotice().Version
+	}
+	if in.ConsentVersion != expectedVersion {
+		fail(w, http.StatusBadRequest, "notice_version_mismatch", "consent must reference the notice version shown to you")
 		return
 	}
 	if in.MarketingOptin && !form.MarketingOptinEnabled {
@@ -481,7 +488,7 @@ func (s *Server) handlePublicStoreLeadForm(w http.ResponseWriter, r *http.Reques
 		fail(w, http.StatusInternalServerError, "internal", "lead form lookup failed")
 		return
 	}
-	if form.NoticeVersion != notice.Version {
+	if form.NoticeVersion != "" && form.NoticeVersion != notice.Version {
 		notice.Version = form.NoticeVersion // form pins the version it was configured with
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -526,11 +533,6 @@ func (s *Server) handlePublicStoreLeadSubmit(w http.ResponseWriter, r *http.Requ
 		fail(w, http.StatusBadRequest, "consent_required", "explicit consent is required to store a lead")
 		return
 	}
-	notice := leads.CurrentNotice()
-	if in.ConsentVersion != notice.Version {
-		fail(w, http.StatusBadRequest, "notice_version_mismatch", "consent must reference the notice version shown to you")
-		return
-	}
 	phone, err := leads.NormalizePhone(in.Phone)
 	if err != nil {
 		fail(w, http.StatusBadRequest, "bad_phone", "phone must be a valid mainland mobile number")
@@ -540,6 +542,10 @@ func (s *Server) handlePublicStoreLeadSubmit(w http.ResponseWriter, r *http.Requ
 		fail(w, http.StatusBadRequest, "bad_request", "name is too long")
 		return
 	}
+	if len([]rune(strings.TrimSpace(in.Wechat))) > 100 {
+		fail(w, http.StatusBadRequest, "bad_request", "wechat is too long")
+		return
+	}
 	form, err := s.St.GetLeadFormByStore(pub.StoreID)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && !form.Enabled) {
 		fail(w, http.StatusConflict, "lead_capture_not_open", "this store does not accept leads")
@@ -547,6 +553,14 @@ func (s *Server) handlePublicStoreLeadSubmit(w http.ResponseWriter, r *http.Requ
 	}
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "internal", "lead form lookup failed")
+		return
+	}
+	expectedVersion := form.NoticeVersion
+	if expectedVersion == "" {
+		expectedVersion = leads.CurrentNotice().Version
+	}
+	if in.ConsentVersion != expectedVersion {
+		fail(w, http.StatusBadRequest, "notice_version_mismatch", "consent must reference the notice version shown to you")
 		return
 	}
 	if in.MarketingOptin && !form.MarketingOptinEnabled {

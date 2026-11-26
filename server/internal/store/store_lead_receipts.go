@@ -18,7 +18,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"strconv"
 	"strings"
 )
 
@@ -177,9 +176,10 @@ func (s *Store) AckLeadReceipt(tenantID, submissionRef, receiverID string, in Le
 		return LeadReceipt{}, false, ErrUnknownSourceEvent
 	}
 
-	// revocation waterline: a stored ack for a revoked lead is the late replay
-	// path — refuse it so the contact cannot resurrect past the watermark.
-	if in.ReceiverState == ReceiverStateStored && lead.RevokeSourceRevision > 0 {
+	// revocation waterline: once revoked (RevokeSourceRevision > 0), no stored
+	// ACK can ever resurrect the contact, and a stale revoked ACK below the
+	// waterline revision cannot falsely mark revocation convergence complete.
+	if lead.RevokeSourceRevision > 0 && (in.ReceiverState == ReceiverStateStored || in.SourceRevision < lead.RevokeSourceRevision) {
 		return LeadReceipt{}, false, ErrRevocationWaterline
 	}
 
@@ -207,12 +207,16 @@ func (s *Store) AckLeadReceipt(tenantID, submissionRef, receiverID string, in Le
 		return LeadReceipt{}, false, err
 	}
 
+	auditDetail, _ := json.Marshal(map[string]any{
+		"receipt_id":      rec.ID,
+		"source_event_id": rec.SourceEventID,
+		"source_revision": rec.SourceRevision,
+		"receiver_state":  rec.ReceiverState,
+	})
 	if _, err := tx.Exec(
 		`INSERT INTO lead_audit(id,tenant_id,submission_ref,action,detail,actor,created_at) VALUES(?,?,?,?,?,?,?)`,
 		newID("laud_"), lead.TenantID, submissionRef, "receiver_ack",
-		`{"receipt_id":"`+rec.ID+`","source_event_id":"`+rec.SourceEventID+`","source_revision":`+
-			strconv.Itoa(rec.SourceRevision)+`,"receiver_state":"`+rec.ReceiverState+`"}`,
-		"receiver:"+receiverID, now()); err != nil {
+		string(auditDetail), "receiver:"+receiverID, now()); err != nil {
 		return LeadReceipt{}, false, err
 	}
 

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -378,7 +379,9 @@ func ScanForContactPII(s string) []string {
 // ---- client IP rate limit (single instance, in-memory sliding window) --------------
 
 // RateLimiter allows max events per window per key (client IP), single process.
+// Safe for concurrent use across HTTP handler goroutines.
 type RateLimiter struct {
+	mu     sync.Mutex
 	max    int
 	window time.Duration
 	now    func() time.Time
@@ -392,6 +395,8 @@ func NewRateLimiter(max int, window time.Duration) *RateLimiter {
 
 // Allow records a hit for key and reports whether it is within budget.
 func (l *RateLimiter) Allow(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	t := l.now()
 	cutoff := t.Add(-l.window)
 	kept := l.hits[key][:0]

@@ -390,9 +390,22 @@ func (s *Store) CountLeadStates(tenantID string) ([]LeadStateCount, error) {
 // Admin-surface only; the contact columns are the merchant's own authorized
 // source-domain data, the response shape is whitelisted in httpapi.
 func (s *Store) ListLeadsByTenant(tenantID string, limit int) ([]LeadSubmission, error) {
-	rows, err := s.DB.Query(
-		`SELECT `+leadCols+` FROM lead_submissions WHERE tenant_id=? ORDER BY created_at DESC LIMIT ?`,
-		tenantID, limit)
+	return s.ListLeadsByScope(tenantID, "", limit)
+}
+
+// ListLeadsByScope lists authorized leads within the caller's server-resolved
+// tenant and optional store scope, newest first. Filtering in SQL avoids
+// truncating a store manager's rows behind another store's newer leads.
+func (s *Store) ListLeadsByScope(tenantID, storeScope string, limit int) ([]LeadSubmission, error) {
+	q := `SELECT ` + leadCols + ` FROM lead_submissions WHERE tenant_id=?`
+	args := []any{tenantID}
+	if storeScope != "" {
+		q += ` AND store_id=?`
+		args = append(args, storeScope)
+	}
+	q += ` ORDER BY created_at DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.DB.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -418,9 +431,24 @@ type LeadTenantStateCount struct {
 }
 
 func (s *Store) CountTenantLeadStates(tenantID string) ([]LeadTenantStateCount, error) {
-	rows, err := s.DB.Query(
-		`SELECT sync_state, receiver_state, COUNT(1) FROM lead_submissions WHERE tenant_id=? GROUP BY sync_state, receiver_state`,
-		tenantID)
+	return s.CountLeadStatesByScope(tenantID, "")
+}
+
+// CountLeadStatesByScope aggregates lead sync×receiver buckets strictly inside
+// the server-resolved tenant and optional store scope so store-scoped members
+// never see other stores' counts. Any row with a revocation waterline (>0) is
+// normalized into the revoked bucket and never counted as live or received.
+func (s *Store) CountLeadStatesByScope(tenantID, storeScope string) ([]LeadTenantStateCount, error) {
+	q := `SELECT CASE WHEN sync_state='revoked' OR revoke_source_revision>0 THEN 'revoked' ELSE sync_state END,
+		receiver_state, COUNT(1)
+		FROM lead_submissions WHERE tenant_id=?`
+	args := []any{tenantID}
+	if storeScope != "" {
+		q += ` AND store_id=?`
+		args = append(args, storeScope)
+	}
+	q += ` GROUP BY 1, receiver_state`
+	rows, err := s.DB.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
