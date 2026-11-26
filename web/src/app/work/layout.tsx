@@ -29,6 +29,10 @@ function WorkShell({ children }: { children: ReactNode }) {
       {/* HUI-2222：确认与核销入口由开关+角色决定，判定收口在 lib/work/service-desk */}
       <WorkFrame
         tenantName={session.tenantName}
+        role={session.role}
+        tenantId={session.tenantId}
+        options={session.options}
+        onSwitchTenant={session.switchTenant}
         serviceDesk={serviceDeskEntryVisible(session.features, session.role)}
       >
         <div key={session.tenantId}>{children}</div>

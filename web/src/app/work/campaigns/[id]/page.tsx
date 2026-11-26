@@ -10,6 +10,7 @@ import { isPastEnd, surfaceLabel } from "@/lib/product-finish";
 import { formatCampaignWindow } from "@/lib/public-time";
 import { takenList } from "@/lib/campaign-detail";
 import { refusalCopy } from "@/lib/campaign-config";
+import { buildWorkContextHref, storeWorkspaceEntryHref } from "@/lib/work/workbench-shell";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 interface Campaign {
@@ -181,7 +182,7 @@ export default function CampaignDetailPage() {
             </TabsList>
             <TabsContent value="config" className="tk-gap">
           {session.role!=="org_owner"?<p className="tk-note">活动承诺由负责人维护。当前角色可到<a href={`/work/service?campaign=${encodeURIComponent(id)}`}>店员台办理顾客事项</a>。</p>:promotion?<CampaignConfigPanel campaignId={id} campaignTitle={campaign.title} campaignBody={campaign.public_content} campaignStoreId={campaign.store_id} campaignStoreName={storeName} onAuthorityChanged={()=>void load()}/>:<section className="tk-section"><h2 className="tk-section-title">活动目标</h2><p>本活动展示门店本次服务与咨询信息。</p><button className="tk-quiet" type="button" onClick={()=>setPromotion(true)}>增加内容推广与优惠承诺</button></section>}
-          <p><a href={`/work/rewards?campaign=${encodeURIComponent(id)}`}>管理优惠库存、待处理与旧券履约</a></p>
+          <p><a href={buildWorkContextHref("/work/rewards", { store: campaign.store_id, campaign: id, returnOrigin: `/work/campaigns/${id}` })}>管理优惠库存、待处理与旧券履约</a></p>
           <p><button className="tk-quiet" type="button" onClick={()=>setLegacy(v=>!v)}>{legacy?"收起历史制作记录":"核对历史制作交接记录"}</button></p>
           {legacy?<CampaignLegacyHistory campaignId={id} endsAt={campaign.ends_at}/>:null}
             </TabsContent>
@@ -216,7 +217,7 @@ export default function CampaignDetailPage() {
                 <li key={tag.id}>{tag.label} {tag.code} {tag.status === "disabled" ? "停用" : "启用"}</li>
               ))}
             </ul>
-            <p><a href="/admin">去批量生成标签</a></p>
+            <p><a href={campaign.store_id ? storeWorkspaceEntryHref(campaign.store_id, { panel: "entrances", returnOrigin: `/work/campaigns/${id}` }) : buildWorkContextHref("/work/touchpoints", { campaign: id, returnOrigin: `/work/campaigns/${id}` })}>管理桌卡与碰触入口</a></p>
           </section>
             </TabsContent>
           </Tabs>
