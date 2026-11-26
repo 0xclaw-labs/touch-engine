@@ -37,14 +37,124 @@ export interface CheckoutRef {
   app_id: string;
   launch_target_id: string;
   checkout_ref?: string;
+  remote_checkout_ref?: string;
+  out_trade_no?: string;
+  provider?: string;
   checkout_url?: string;
+  code_url?: string;
+  return_url?: string;
   state?: string; // checkout_pending | paid | activated | failed
+  remote_status?: string; // pending | paid | mismatch | failed | cancelled
+  sync_pending?: boolean;
+  expires_at?: string;
+  price_digest?: string;
   quote_ref?: string;
   order_ref?: string;
+  order_kind?: string;
   amount_minor?: number;
   currency?: string;
   fail_reason?: string;
   reason?: string;
+}
+
+export interface OrderMilestoneView {
+  key: string;
+  label: string;
+  status: string; // done | in_progress | pending | failed | stale
+  occurred_at?: string;
+  operator?: string;
+  evidence_ref?: string;
+  detail?: string;
+}
+
+export interface ContinuityNextStepView {
+  code: string;
+  domain: string;
+  summary: string;
+  action_label: string;
+  target_path: string;
+  owner: string; // merchant | agent | platform
+  allow_retry_payment: boolean;
+  forbid_repeat_purchase: boolean;
+}
+
+export interface OrderContinuityView {
+  order_ref: string;
+  order_kind: string;
+  lifecycle_stage: string;
+  paid: boolean;
+  service_active: boolean;
+  hardware_delivered: boolean;
+  hardware_pending: boolean;
+  refund_in_progress: boolean;
+  refunded_minor: number;
+  refund_count: number;
+  binding_stale_count: number;
+  milestones: OrderMilestoneView[];
+  next_step: ContinuityNextStepView;
+}
+
+export interface BillingContinuityException {
+  code: string;
+  domain: string;
+  object_ref?: string;
+  summary: string;
+  action_label: string;
+  target_path: string;
+  owner: string;
+}
+
+export interface BillingContinuityView {
+  catalog_readiness: {
+    ready: boolean;
+    available_plans: string[];
+    missing_reason?: string;
+    next_step?: { summary: string; action_label: string; target_path: string; owner: string };
+  };
+  payer_authority: {
+    can_pay: boolean;
+    actor_role: string;
+    payer_principal?: string;
+    payer_grant_ref?: string;
+    missing_reason?: string;
+    next_step?: { summary: string; action_label: string; target_path: string; owner: string };
+  };
+  checkout_channel: {
+    ready: boolean;
+    reason?: string;
+    next_step?: { summary: string; action_label: string; target_path: string; owner: string };
+  };
+  hardware_summary?: {
+    total_orders: number;
+    paid_orders: number;
+    delivered_cards: number;
+    pending_acceptance_cards: number;
+    stale_cards: number;
+    paid_not_delivered_count: number;
+  };
+  exceptions: BillingContinuityException[];
+}
+
+export interface AgencyTodoItemView {
+  id: string;
+  category: "pending_onboarding" | "missing_config" | "hardware_acceptance" | "renewal" | "exception";
+  tenant_id: string;
+  tenant_name: string;
+  relation_id: string;
+  object_ref: string;
+  object_label: string;
+  impact: string;
+  status: string;
+  domain: string;
+  owner: string;
+  can_actor_handle: boolean;
+  target_path: string;
+  next_step: string;
+}
+
+export interface AgencyTodosView {
+  as_of: string;
+  items: AgencyTodoItemView[];
 }
 
 export interface SubscriptionView {
@@ -281,13 +391,71 @@ export function blocksNewSubscription(order: Pick<BillingOrderView, "kind" | "st
 // 接通,绝不发明跳转地址;续付 URL 只由服务端响应即时给出)。PR-3 前端接续
 // 面挂此门;既有 checkout.available 门的语义由本函数钉死为真值语义。
 export function canContinueCheckout(checkout: CheckoutRef | undefined | null): boolean {
-  return Boolean(checkout?.available && checkout.checkout_ref && checkout.checkout_url);
+  return Boolean(checkout?.available && checkout.checkout_ref && (checkout.checkout_url || checkout.code_url));
+}
+
+export function lifecycleStageText(stage: string): string {
+  switch (stage) {
+    case "pending_payment":
+      return "待支付（原单已登记）";
+    case "payment_paid":
+      return "已确认支付（等待工程确认开动）";
+    case "service_activating":
+      return "已付款 · 服务开通同步中（切勿重复购买）";
+    case "service_active":
+      return "已生效";
+    case "hardware_pending":
+      return "硬件已付款 · 实卡待交付验收（已付款不等于实卡已交付）";
+    case "refund_in_progress":
+      return "同单退款处理中（禁止再次付款）";
+    case "failed":
+      return "办理失败";
+    case "cancelled":
+      return "已撤单";
+    default:
+      return stage || "未知";
+  }
+}
+
+export function milestoneStatusText(status: string): string {
+  switch (status) {
+    case "done":
+      return "已完成";
+    case "in_progress":
+      return "进行中";
+    case "failed":
+      return "异常";
+    case "stale":
+      return "已失效（需重新核对）";
+    default:
+      return "待发生";
+  }
+}
+
+export function agencyTodoCategoryText(category: string): string {
+  switch (category) {
+    case "pending_onboarding":
+      return "待开通";
+    case "missing_config":
+      return "补配置";
+    case "hardware_acceptance":
+      return "实卡验收";
+    case "renewal":
+      return "续费";
+    case "exception":
+      return "异常";
+    default:
+      return category || "待办";
+  }
 }
 
 // available=false 的诚实文案矩阵(reason 分诊;页面只复述权威事实,永不说
 // 「已扣款/已到账」这类本仓无权断言的话)。
 export function checkoutUnavailableText(checkout: CheckoutRef | undefined | null): string {
   if (!checkout) return "支付接续尚未开通。原单已保留，可继续回查；请联系平台完成接入，无需重新下单。";
+  if (checkout.sync_pending) {
+    return "公共收银侧已记录付款结果，正在等待服务端权威同步至原订单；请回查原单，无需重复付款。";
+  }
   switch (checkout.reason) {
     case "original_payer_required":
       return "原付款授权已变化，请由原付款人或平台核对这笔原单。查看原单不会授予付款权限。";
@@ -301,6 +469,10 @@ export function checkoutUnavailableText(checkout: CheckoutRef | undefined | null
       return "这笔原单已不在待支付状态，请按回查结果继续办理，无需再次付款。";
     case "checkout_unavailable":
       return "公共结算侧收银尚未接通：这次没有生成可续付引用；报价与原单都已保留，可继续回查，无需重新报价或重新发起。";
+    case "price_changed":
+      return "原报价版本已变更或过期，未生成新的收费单；请先刷新生效价格目录后再确认。";
+    case "order_already_paid":
+      return "这笔原单已确认付款或正在处理中，禁止再次付款；请回查原单状态。";
     default:
       return "支付接续尚未开通。原单已保留，可继续回查；请联系平台完成接入，无需重新下单。";
   }

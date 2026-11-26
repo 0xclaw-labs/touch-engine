@@ -18,7 +18,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { failureText, useMerchantSession, type MerchantSession } from "@/components/work/merchant-session";
 import { AgentBanner, ACTION_LABELS, type AccessEffective, type AgencyRel } from "@/components/work/settings/settings-desk";
-import { nextOrderStep, subscriptionStatusText, type SubscriptionView, type BillingOrderView } from "@/lib/billing";
+import {
+  agencyTodoCategoryText,
+  nextOrderStep,
+  subscriptionStatusText,
+  type AgencyTodoItemView,
+  type AgencyTodosView,
+  type SubscriptionView,
+  type BillingOrderView,
+} from "@/lib/billing";
 import { surfaceLabel } from "@/lib/product-finish";
 import { SharedLogin, type SignInBridge } from "@/components/login/SharedLogin";
 
@@ -100,6 +108,7 @@ function AgencyLogin({ session }: { session: MerchantSession }) {
 
 function AgencyDesk({ session }: { session: MerchantSession }) {
   const [jobs, setJobs] = useState<Record<string, { service?: SubscriptionView; orders: BillingOrderView[]; error?: string }>>({});
+  const [todos, setTodos] = useState<AgencyTodoItemView[]>([]);
   const drawerVersion = useRef(0);
   const [phase, setPhase] = useState<"loading" | "error" | "empty" | "ready">("loading");
   const [error, setError] = useState("");
@@ -129,7 +138,10 @@ function AgencyDesk({ session }: { session: MerchantSession }) {
       setPhase("empty");
       return;
     }
-    const relRes = await fetch("/api/agency/relations/granted", { headers: { "x-tenant-id": scopes[0].tenant_id } });
+    const [relRes, todosRes] = await Promise.all([
+      fetch("/api/agency/relations/granted", { headers: { "x-tenant-id": scopes[0].tenant_id } }),
+      fetch("/api/agency/todos", { headers: { "x-tenant-id": scopes[0].tenant_id } }),
+    ]);
     if (!relRes.ok) {
       setError(failureText(relRes.status, {}));
       setPhase("error");
@@ -137,6 +149,12 @@ function AgencyDesk({ session }: { session: MerchantSession }) {
     }
     const relData = (await relRes.json().catch(() => ({}))) as { items?: GrantedRelation[] };
     const granted = (relData.items ?? []).filter((r) => !r.revoked_at);
+    if (todosRes.ok) {
+      const todosData = (await todosRes.json().catch(() => ({}))) as Partial<AgencyTodosView>;
+      setTodos(Array.isArray(todosData.items) ? todosData.items : []);
+    } else {
+      setTodos([]);
+    }
     setMerchants(granted.map((rel) => ({ rel, name: rel.tenant_name || "已授权商家" })));
     const facts = await Promise.all(granted.map(async (rel) => {
       if (!(rel.allowed_actions ?? []).includes("renewal")) return [rel.id, { orders: [], error: "未获续费协助授权，请商家负责人办理账单与交付事项。" }] as const;
@@ -257,6 +275,38 @@ function AgencyDesk({ session }: { session: MerchantSession }) {
         </p>
       ) : null}
       {phase === "empty" ? <p className="tk-state" data-state="empty">还没有商家授权你代管。授权建立后这里会列出商家。</p> : null}
+
+      {phase === "ready" ? (
+        <section className="tk-section" data-section="agency-pending-tasks">
+          <h2 className="tk-section-title">授权商户待办事项</h2>
+          {todos.length === 0 ? (
+            <p className="tk-state" data-state="empty" data-field="tasks-empty">
+              当前已授权商户没有待处理的开通、配置、实卡验收、续费或异常事项（不生成示例任务）。
+            </p>
+          ) : (
+            <ul className="tk-list" data-testid="agency-task-list">
+              {todos.map((item) => (
+                <li key={item.id} data-role="agency-task-row">
+                  <strong>[{agencyTodoCategoryText(item.category)}] {item.object_label}</strong>
+                  <p>{item.impact}</p>
+                  <p className="tk-note">
+                    状态：{item.status} · 责任方：{item.owner === "agent" ? "当前代理可办" : item.owner === "merchant" ? "需交由商家负责人办理" : "需平台处理"}
+                  </p>
+                  <p className="tk-note">下一步：{item.next_step}</p>
+                  <button
+                    className="tk-quiet"
+                    type="button"
+                    data-action="enter-task"
+                    onClick={() => enter(item.tenant_id, item.target_path || "/work/billing")}
+                  >
+                    {item.can_actor_handle ? "受控进入办理" : "受控进入回查"}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      ) : null}
 
       {phase === "ready" ? (
         <section className="tk-section" data-section="merchants">

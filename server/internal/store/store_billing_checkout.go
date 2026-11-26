@@ -24,49 +24,89 @@ import (
 	"github.com/bianjiefilm/touch-engine/server/internal/billing"
 )
 
-// BillingCheckoutRefRow mirrors one billing_checkout_refs row.
+// BillingCheckoutRefRow mirrors one billing_checkout_refs row (0139 + 0141).
 type BillingCheckoutRefRow struct {
-	ID          string `json:"id"`
-	TenantID    string `json:"tenant_id"`
-	HandoffID   string `json:"handoff_id,omitempty"`
-	QuoteRef    string `json:"quote_ref,omitempty"`
-	CheckoutRef string `json:"checkout_ref"`
-	OrderRef    string `json:"order_ref"`
-	State       string `json:"state"`
-	AmountMinor int64  `json:"amount_minor"`
-	Currency    string `json:"currency"`
-	PayerRef    string `json:"payer_ref,omitempty"`
-	PaymentRef  string `json:"payment_ref,omitempty"`
-	FailReason  string `json:"fail_reason,omitempty"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
+	ID                 string `json:"id"`
+	TenantID           string `json:"tenant_id"`
+	HandoffID          string `json:"handoff_id,omitempty"`
+	QuoteRef           string `json:"quote_ref,omitempty"`
+	CheckoutRef        string `json:"checkout_ref"`
+	OrderRef           string `json:"order_ref"`
+	OrderKind          string `json:"order_kind"`
+	State              string `json:"state"`
+	AmountMinor        int64  `json:"amount_minor"`
+	Currency           string `json:"currency"`
+	PayerRef           string `json:"payer_ref,omitempty"`
+	PayerGrantRef      string `json:"payer_grant_ref,omitempty"`
+	PayerGrantRevision int64  `json:"payer_grant_revision,omitempty"`
+	PricingVersion     string `json:"pricing_version,omitempty"`
+	IntentKey          string `json:"intent_key,omitempty"`
+	RemoteCheckoutRef  string `json:"remote_checkout_ref,omitempty"`
+	OutTradeNo         string `json:"out_trade_no,omitempty"`
+	Provider           string `json:"provider,omitempty"`
+	RemoteStatus       string `json:"remote_status,omitempty"`
+	ReturnTarget       string `json:"return_target,omitempty"`
+	PriceDigest        string `json:"price_digest,omitempty"`
+	ExpiresAt          string `json:"expires_at,omitempty"`
+	PaymentRef         string `json:"payment_ref,omitempty"`
+	FailReason         string `json:"fail_reason,omitempty"`
+	CreatedAt          string `json:"created_at"`
+	UpdatedAt          string `json:"updated_at"`
+}
+
+// BillingCheckoutRemoteMeta carries authoritative non-URL metadata returned by
+// public-ai Mint/Inspect (code_url / launch_url / return_url NEVER land in DB).
+type BillingCheckoutRemoteMeta struct {
+	RemoteCheckoutRef string
+	OutTradeNo        string
+	Provider          string
+	RemoteStatus      string
+	ReturnTarget      string
+	PriceDigest       string
+	ExpiresAt         string
 }
 
 // NewBillingCheckoutRef is one merchant-initiated continuation registration.
 // Everything is server-assembled (tenant/handoff/quote/amount/payer); the
 // browser never supplies money facts.
 type NewBillingCheckoutRef struct {
-	TenantID    string
-	HandoffID   string
-	QuoteRef    string
-	OrderRef    string
-	AmountMinor int64
-	Currency    string
-	PayerRef    string
-	// CheckoutRef 留空 = 本地铸造(上游 PR-4 到位后改为透传公共侧返回引用,
-	// 表结构与调用方零改动);非空 = 显式登记(恢复/测试路径)。
+	TenantID           string
+	HandoffID          string
+	QuoteRef           string
+	OrderRef           string
+	OrderKind          string // content_production (default) | subscription | hardware
+	AmountMinor        int64
+	Currency           string
+	PayerRef           string
+	PayerGrantRef      string
+	PayerGrantRevision int64
+	PricingVersion     string
+	IntentKey          string
+	ReturnTarget       string
+	// CheckoutRef 留空 = 本地铸造稳定的 ck_* 路由键;非空 = 显式登记(恢复/测试路径)。
 	CheckoutRef string
 }
 
-const billingCheckoutRefCols = `id,tenant_id,handoff_id,quote_ref,checkout_ref,order_ref,state,
-amount_minor,currency,payer_ref,payment_ref,fail_reason,created_at,updated_at`
+const billingCheckoutRefCols = `id,tenant_id,handoff_id,quote_ref,checkout_ref,order_ref,order_kind,state,
+amount_minor,currency,payer_ref,payer_grant_ref,payer_grant_revision,pricing_version,intent_key,
+remote_checkout_ref,out_trade_no,provider,remote_status,return_target,price_digest,expires_at,
+payment_ref,fail_reason,created_at,updated_at`
 
 func scanBillingCheckoutRef(row interface{ Scan(...any) error }) (BillingCheckoutRefRow, error) {
 	var r BillingCheckoutRefRow
 	err := row.Scan(&r.ID, &r.TenantID, &r.HandoffID, &r.QuoteRef, &r.CheckoutRef, &r.OrderRef,
-		&r.State, &r.AmountMinor, &r.Currency, &r.PayerRef, &r.PaymentRef, &r.FailReason,
-		&r.CreatedAt, &r.UpdatedAt)
+		&r.OrderKind, &r.State, &r.AmountMinor, &r.Currency, &r.PayerRef, &r.PayerGrantRef,
+		&r.PayerGrantRevision, &r.PricingVersion, &r.IntentKey, &r.RemoteCheckoutRef, &r.OutTradeNo,
+		&r.Provider, &r.RemoteStatus, &r.ReturnTarget, &r.PriceDigest, &r.ExpiresAt,
+		&r.PaymentRef, &r.FailReason, &r.CreatedAt, &r.UpdatedAt)
 	return r, err
+}
+
+func normalizedCheckoutOrderKind(kind string) string {
+	if kind == "" {
+		return "content_production"
+	}
+	return kind
 }
 
 // sameCheckoutRefIntent compares the immutable server-assembled facts of a
@@ -74,7 +114,8 @@ func scanBillingCheckoutRef(row interface{ Scan(...any) error }) (BillingCheckou
 // only for explicit registrations (mint requests reuse the standing ref).
 func sameCheckoutRefIntent(row BillingCheckoutRefRow, in NewBillingCheckoutRef, explicitRef bool) bool {
 	same := row.AmountMinor == in.AmountMinor && row.Currency == in.Currency &&
-		row.HandoffID == in.HandoffID && row.QuoteRef == in.QuoteRef
+		row.HandoffID == in.HandoffID && row.QuoteRef == in.QuoteRef &&
+		normalizedCheckoutOrderKind(row.OrderKind) == normalizedCheckoutOrderKind(in.OrderKind)
 	if explicitRef {
 		same = same && row.CheckoutRef == in.CheckoutRef
 	}
@@ -96,14 +137,20 @@ func (s *Store) UpsertBillingCheckoutRef(in NewBillingCheckoutRef, at string) (B
 	if ref == "" {
 		ref = newID("ck_")
 	}
+	orderKind := normalizedCheckoutOrderKind(in.OrderKind)
 	// Insert first obtains the write lock before reading (same order as
 	// createBillingOrderTx): competing requests read the committed winner.
 	result, err := s.DB.Exec(`INSERT INTO billing_checkout_refs
-		(id,tenant_id,handoff_id,quote_ref,checkout_ref,order_ref,state,amount_minor,currency,payer_ref,payment_ref,fail_reason,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		(id,tenant_id,handoff_id,quote_ref,checkout_ref,order_ref,order_kind,state,
+		 amount_minor,currency,payer_ref,payer_grant_ref,payer_grant_revision,pricing_version,intent_key,
+		 remote_checkout_ref,out_trade_no,provider,remote_status,return_target,price_digest,expires_at,
+		 payment_ref,fail_reason,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(tenant_id,order_ref) DO NOTHING`,
-		newID("bcr_"), in.TenantID, in.HandoffID, in.QuoteRef, ref, in.OrderRef,
-		billing.CheckoutStatePending, in.AmountMinor, in.Currency, in.PayerRef, "", "", at, at)
+		newID("bcr_"), in.TenantID, in.HandoffID, in.QuoteRef, ref, in.OrderRef, orderKind,
+		billing.CheckoutStatePending, in.AmountMinor, in.Currency, in.PayerRef, in.PayerGrantRef,
+		in.PayerGrantRevision, in.PricingVersion, in.IntentKey, "", "", "", "", in.ReturnTarget, "", "",
+		"", "", at, at)
 	if err != nil {
 		return BillingCheckoutRefRow{}, false, err
 	}
@@ -268,4 +315,104 @@ func (s *Store) MarkBillingCheckoutActivated(tenantID, checkoutRef, at string) (
 	row.FailReason = ""
 	row.UpdatedAt = at
 	return row, false, nil
+}
+
+// UpdateBillingCheckoutRemoteMetadata records non-URL authoritative metadata
+// returned by public-ai Mint/Inspect (remote_checkout_ref/out_trade_no/provider/
+// remote_status/return_target/price_digest/expires_at). It NEVER advances local
+// payment/activation state and refuses if remote_checkout_ref would drift.
+func (s *Store) UpdateBillingCheckoutRemoteMetadata(tenantID, checkoutRef string, meta BillingCheckoutRemoteMeta, at string) (BillingCheckoutRefRow, error) {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return BillingCheckoutRefRow{}, err
+	}
+	defer tx.Rollback()
+	row, err := scanBillingCheckoutRef(tx.QueryRow(
+		`SELECT `+billingCheckoutRefCols+` FROM billing_checkout_refs WHERE tenant_id=? AND checkout_ref=?`,
+		tenantID, checkoutRef))
+	if errors.Is(err, sql.ErrNoRows) {
+		return BillingCheckoutRefRow{}, ErrNotFound
+	}
+	if err != nil {
+		return BillingCheckoutRefRow{}, err
+	}
+	if row.RemoteCheckoutRef != "" && meta.RemoteCheckoutRef != "" && row.RemoteCheckoutRef != meta.RemoteCheckoutRef {
+		return row, ErrBillingIdempotencyConflict
+	}
+	next := row
+	if meta.RemoteCheckoutRef != "" {
+		next.RemoteCheckoutRef = meta.RemoteCheckoutRef
+	}
+	if meta.OutTradeNo != "" {
+		next.OutTradeNo = meta.OutTradeNo
+	}
+	if meta.Provider != "" {
+		next.Provider = meta.Provider
+	}
+	if meta.RemoteStatus != "" {
+		next.RemoteStatus = meta.RemoteStatus
+	}
+	if meta.ReturnTarget != "" {
+		next.ReturnTarget = meta.ReturnTarget
+	}
+	if meta.PriceDigest != "" {
+		next.PriceDigest = meta.PriceDigest
+	}
+	if meta.ExpiresAt != "" {
+		next.ExpiresAt = meta.ExpiresAt
+	}
+	// 无实质变化时零写入,避免覆盖激活落行时刻(updated_at 确定性纪律)。
+	if next.RemoteCheckoutRef == row.RemoteCheckoutRef &&
+		next.OutTradeNo == row.OutTradeNo &&
+		next.Provider == row.Provider &&
+		next.RemoteStatus == row.RemoteStatus &&
+		next.ReturnTarget == row.ReturnTarget &&
+		next.PriceDigest == row.PriceDigest &&
+		next.ExpiresAt == row.ExpiresAt {
+		return row, nil
+	}
+	// 已激活行保持原激活落行时间戳(§2b occurred_at 重发字节恒等)。
+	updatedAt := at
+	if row.State == billing.CheckoutStateActivated {
+		updatedAt = row.UpdatedAt
+	}
+	if _, err := tx.Exec(`UPDATE billing_checkout_refs
+		SET remote_checkout_ref=?,out_trade_no=?,provider=?,remote_status=?,
+		    return_target=?,price_digest=?,expires_at=?,updated_at=?
+		WHERE tenant_id=? AND checkout_ref=?`,
+		next.RemoteCheckoutRef, next.OutTradeNo, next.Provider, next.RemoteStatus,
+		next.ReturnTarget, next.PriceDigest, next.ExpiresAt, updatedAt, tenantID, checkoutRef); err != nil {
+		return row, err
+	}
+	if err := tx.Commit(); err != nil {
+		return BillingCheckoutRefRow{}, err
+	}
+	next.UpdatedAt = updatedAt
+	return next, nil
+}
+
+// ListBillingCheckoutRefs lists tenant-scoped checkout continuation rows,
+// optionally filtered by order_kind.
+func (s *Store) ListBillingCheckoutRefs(tenantID, orderKind string) ([]BillingCheckoutRefRow, error) {
+	q := `SELECT ` + billingCheckoutRefCols + ` FROM billing_checkout_refs WHERE tenant_id=?`
+	args := []any{tenantID}
+	if orderKind != "" {
+		q += ` AND order_kind=?`
+		args = append(args, orderKind)
+	}
+	q += ` ORDER BY created_at DESC, id LIMIT 200`
+	rows, err := s.DB.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []BillingCheckoutRefRow{}
+	for rows.Next() {
+		r, err := scanBillingCheckoutRef(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }

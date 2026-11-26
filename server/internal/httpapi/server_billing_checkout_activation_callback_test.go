@@ -46,6 +46,36 @@ func newCheckoutCallbackStub(t *testing.T) *checkoutCallbackStub {
 	st := &checkoutCallbackStub{}
 	st.code.Store(http.StatusCreated)
 	st.ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/v1/billing/touch-orders/checkout" {
+			if r.Method == http.MethodPost {
+				var req struct {
+					SourceOrderRef string `json:"source_order_ref"`
+					ReturnTarget   string `json:"return_target"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"checkout_ref":     "tco_" + req.SourceOrderRef,
+					"out_trade_no":     "OTN_" + req.SourceOrderRef,
+					"source_app":       "touch-engine",
+					"source_order_ref": req.SourceOrderRef,
+					"status":           "pending",
+					"code_url":         "weixin://wxpay/bizpayurl?pr=" + req.SourceOrderRef,
+					"return_target":    req.ReturnTarget,
+					"return_url":       "https://touch.test/work/billing",
+				})
+				return
+			}
+			ref := r.URL.Query().Get("source_order_ref")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"checkout_ref":     "tco_" + ref,
+				"out_trade_no":     "OTN_" + ref,
+				"source_app":       "touch-engine",
+				"source_order_ref": ref,
+				"status":           "pending",
+				"code_url":         "weixin://wxpay/bizpayurl?pr=" + ref,
+			})
+			return
+		}
 		raw, _ := io.ReadAll(r.Body)
 		st.mu.Lock()
 		st.bodies = append(st.bodies, string(raw))
@@ -302,15 +332,20 @@ func TestAuthorityCallbackProducerUnknownRefIsLoudReleaseNotPending(t *testing.T
 }
 
 func TestAuthorityCallbackUnconfiguredKeepsLocalFact(t *testing.T) {
-	// BillingBaseURL 在场但 token 缺席 = 回发缝未配置:诚实跳过,本地事实照落。
-	f := checkoutFixture(t) // BillingBaseURL=https://billing.test,无 BillingToken
+	// 先通过已接通的 seam 建立原单引用,随后撤销 BillingToken 模拟回发缝未配置:
+	// 诚实跳过回发,本地事实照落。
+	f := checkoutFixture(t)
 	storeID, handoffID := seedContinuationHandoff(t, f, "q_cb_3", "idem-cb-3")
 	if _, err := f.s.St.MarkProductionHandoffSubmitted(f.tenA, handoffID, "task_cb_3"); err != nil {
 		t.Fatalf("mark submitted: %v", err)
 	}
 	path := "/api/v1/stores/" + storeID + "/content-production-handoffs/" + handoffID + "/checkout"
 	status, out := f.do2(t, "POST", path, "sess-owner-a", f.tenA, "")
+	if status != 201 {
+		t.Fatalf("continuation = %d %v", status, out)
+	}
 	ref := out["checkout"].(map[string]any)["checkout_ref"].(string)
+	f.s.Cfg.FeatureBillingCheckout = false // 关闭出站能力(回发缝未配置)
 	status, out = f.doService(t, "POST", "/api/v1/billing/authority/events", fmt.Sprintf(
 		`{"tenant_id":%q,"checkout_ref":%q,"source":"pai-billing","event_id":"evt-paid-cb3","type":"payment_paid","payload":{"payment_ref":"pay_cb3"},"amount_minor":12345600,"currency":"CNY"}`,
 		f.tenA, ref))

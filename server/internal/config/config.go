@@ -456,6 +456,9 @@ func (c Config) Gate() []string {
 		if strings.TrimSpace(c.BillingBaseURL) == "" {
 			problems = append(problems, "FEATURE_BILLING_CHECKOUT=on requires PLATFORM_BILLING_BASE_URL (公共结算侧 checkout seam)")
 		}
+		if strings.TrimSpace(c.BillingToken) == "" {
+			problems = append(problems, "FEATURE_BILLING_CHECKOUT=on requires PLATFORM_BILLING_TOKEN (公共结算侧 touch-orders Mint/Inspect/NotifyActivated 凭据)")
+		}
 		// GoBoost UNIFIED_BRIDGE 半环教训(HUI-4664 R3 §3):只通 checkout 通道
 		// 而不登记 billing_authority 事件生产者 = 付款成功但 Touch 永不开通。
 		if !c.hasBillingAuthorityProducer() {

@@ -232,12 +232,39 @@ func (s *Server) handleBillingAuthorityEvent(w http.ResponseWriter, r *http.Requ
 			if !replayed {
 				status = http.StatusCreated
 			}
-			// 统一契约 v1.1 D3:payment_paid 落 paid(或其重放命中
-			// paid/activated)后,若制作 handoff 已提交任务,本地自主推进
-			// activated 并回发 activation_active 给 producer;回发可重试失败
-			// 时本请求答 503,渠道重试的重放会再触发(桥式自愈,与 producer
-			// 侧统一姿态)。非 payment_paid 事件不触发。
-			if body.Type == billing.EventPaymentPaid &&
+			// 统一契约 v1.1 D3:
+			//   - 制作原单(cph_*):payment_paid 落 paid 后,若制作 handoff 已提交任务,
+			//     本地自主推进 activated 并回发 activation_active 给 producer;
+			//   - 订阅/硬件原单(bo_*):将 payment_paid / activation_active /
+			//     activation_failed 幂等同步到 billing_orders(同 source+event_id
+			//     去重),并在订阅 activation_active 后回发 §2b 终态戳。
+			if row.OrderKind == billing.KindSubscription || row.OrderKind == billing.KindHardware {
+				if body.Type == billing.EventPaymentPaid || body.Type == billing.EventActivationActive || body.Type == billing.EventActivationFailed {
+					orderRow, _, oerr := s.St.ApplyBillingOrderEvent(tenantID, row.OrderRef, billing.AuthorityEventInput{
+						Source: source, EventID: eventID, Type: body.Type, OccurredAt: occurredAt, Payload: body.Payload,
+					}, nowRFC3339())
+					if oerr != nil && !errors.Is(oerr, store.ErrNotFound) {
+						writeAuthorityError(w, oerr)
+						return
+					}
+					if body.Type == billing.EventActivationActive && row.State == billing.CheckoutStateActivated && s.checkoutCallbackConfigured() {
+						if cerr := s.postCheckoutActivationActiveWithSubscription(row, body.Payload.SubscriptionRef, body.Payload.PaidUntil); cerr != nil {
+							if errors.Is(cerr, errRetryableDelivery) {
+								s.Log.Printf("billing_checkout_callback_pending checkout_ref=%s err=%v", row.CheckoutRef, cerr)
+								fail(w, http.StatusServiceUnavailable, "activation_callback_pending",
+									"activation fact consumed; the activation_active send-back to the producer is retryably pending")
+								return
+							}
+							s.Log.Printf("billing_checkout_callback_violation checkout_ref=%s err=%v", row.CheckoutRef, cerr)
+						}
+					}
+					writeJSON(w, status, map[string]any{
+						"replayed": replayed, "checkout_ref": row.CheckoutRef,
+						"order_ref": row.OrderRef, "state": row.State, "order": orderRow,
+					})
+					return
+				}
+			} else if body.Type == billing.EventPaymentPaid &&
 				(row.State == billing.CheckoutStatePaid || row.State == billing.CheckoutStateActivated) {
 				var ok bool
 				row, ok = s.checkoutSelfActivation(w, tenantID, row)
