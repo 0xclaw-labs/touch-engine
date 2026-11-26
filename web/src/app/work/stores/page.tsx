@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { failureText, useSession } from "@/components/work/merchant-session";
 import { surfaceLabel } from "@/lib/product-finish";
+import { isCurrentTenantPayload, resolveStoreEntry } from "@/lib/work/workbench-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -48,10 +49,14 @@ export default function StoresPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [edit, setEdit] = useState<{ id: string; name: string; address: string } | null>(null);
   const owner = session.role === "org_owner";
+  const requestSeq = useRef(0);
 
   const load = useCallback(async () => {
+    const seq = ++requestSeq.current;
+    const reqTenant = session.tenantId;
     setPhase("loading");
     const res = await session.api("GET", "stores");
+    if (seq !== requestSeq.current || !isCurrentTenantPayload(reqTenant, session.tenantId)) return;
     if (!res.ok) {
       setError(failureText(res.status, res.data));
       setPhase("error");
@@ -66,7 +71,9 @@ export default function StoresPage() {
         typeof (it as StoreRec).id === "string" && (it as StoreRec).id !== "",
     );
     setStores(items);
-    if (items.length === 1 && new URLSearchParams(window.location.search).get("manage") !== "1") router.replace(`/work/stores/${encodeURIComponent(items[0].id)}`);
+    const manage = new URLSearchParams(window.location.search).get("manage") === "1";
+    const entry = resolveStoreEntry(items, { manage });
+    if (entry.mode === "auto_single") router.replace(entry.href);
     setPhase(items.length === 0 ? "empty" : "ready");
   }, [session, router]);
 

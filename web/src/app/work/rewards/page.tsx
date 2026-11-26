@@ -9,6 +9,7 @@ import { toRFC3339,benefitKindLabel,verificationModeLabel,type PublishConfigReco
 import { DateTimeField } from "@/components/ui/date-time-field";
 import { formatCampaignWindow } from "@/lib/public-time";
 import { rewardPresentation, surfaceLabel } from "@/lib/product-finish";
+import { readWorkReturnContext } from "@/lib/work/workbench-shell";
 import { rewardNotice, type RewardView } from "@/lib/publish-reward";
 import {
   couponOutcomeText,
@@ -108,6 +109,7 @@ export default function RewardsPage() {
   const [stores, setStores] = useState<StoreRec[]>([]);
   const [storeId, setStoreId] = useState("");
   const [offers, setOffers] = useState<StoreDealOfferView[]>([]);
+  const [returnOrigin, setReturnOrigin] = useState("");
 
   const loadLedger = useCallback(
     async (cid: string) => {
@@ -154,12 +156,13 @@ export default function RewardsPage() {
       }
       const items = Array.isArray(campaignRes.data.items) ? (campaignRes.data.items as Campaign[]) : [];
       setCampaigns(items);
-      const requested=new URLSearchParams(window.location.search).get("campaign");
-      setCampaignId(items.some(item=>item.id===requested)?requested!:items[0]?.id ?? "");
+      const origin = readWorkReturnContext(window.location.search, "");
+      setReturnOrigin(origin.hasExplicitReturn ? origin.returnHref : "");
+      setCampaignId(items.some((item) => item.id === origin.campaignId) ? origin.campaignId : items[0]?.id ?? "");
       if (storesRes && storesRes.ok && Array.isArray(storesRes.data.items)) {
         const recs = storesRes.data.items as StoreRec[];
         setStores(recs);
-        setStoreId(recs[0]?.id ?? "");
+        setStoreId(recs.some((item) => item.id === origin.storeId) ? origin.storeId : recs[0]?.id ?? "");
       }
       if (accountRes.ok) {
         const presented = presentAccountSeparation(accountRes.data as unknown as SeparationView);
@@ -278,6 +281,13 @@ export default function RewardsPage() {
 
   return (
     <main>
+      {returnOrigin ? (
+        <p className="tk-note">
+          <a className="tk-quiet" data-action="return-origin" href={returnOrigin}>
+            返回原位置
+          </a>
+        </p>
+      ) : null}
       <h1 className="tk-title">优惠库存与履约</h1>
       <p className="tk-lead">
         未知奖励不是已发放。发放与核销是两条事实；更正撤销保留原发放事实，不删账。

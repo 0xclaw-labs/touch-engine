@@ -262,7 +262,7 @@ export function MerchantWorkbench({
                 {tasks.map((task) => (
                   <li key={`${task.kind}-${task.object_id}`}>
                     <a href={`#campaign-${task.object_id}`}>{task.title}</a>
-                    <span className="tk-admin-muted"> · {task.state}</span>
+                    <span className="tk-admin-muted"> · {humanStateLabel(task.state)}</span>
                   </li>
                 ))}
               </ul>
@@ -302,13 +302,9 @@ export function MerchantWorkbench({
               </ul>
             ) : null}
             {(payload.content?.selections ?? []).length > 0 ? (
-              <ul>
-                {payload.content?.selections?.map((item) => (
-                  <li key={`${item.campaign_id}-${item.asset_id}`}>
-                    已选素材 {item.asset_id}
-                  </li>
-                ))}
-              </ul>
+              <p className="tk-admin-muted">
+                已为当前活动选定 {payload.content?.selections?.length ?? 0} 份可用素材。
+              </p>
             ) : null}
             {payload.content?.actions?.some(
               (action) => action.id === "edit_copy" && action.shown,
@@ -451,12 +447,12 @@ export function MerchantWorkbench({
                         type="button"
                         data-testid={`enter-leads-${card.campaign_id}`}
                         onClick={() => {
-                          const plan = planTaskHandoff(
+                          planTaskHandoff(
                             "view_campaign_leads",
                             card.campaign_id,
                           );
                           setNotice(
-                            `已准备进入获客查看本活动线索。碰一碰不读取联系人。交接 ${plan.kind}`,
+                            "已准备进入获客查看本活动线索。碰一碰不直接读取联系人明细。",
                           );
                         }}
                       >
@@ -477,6 +473,25 @@ export function MerchantWorkbench({
   );
 }
 
+function humanStateLabel(raw: string): string {
+  switch (raw) {
+    case "draft":
+      return "草稿";
+    case "active":
+      return "进行中";
+    case "paused":
+      return "已暂停";
+    case "ended":
+      return "已结束";
+    case "expired":
+      return "已过期";
+    case "pending_sync":
+      return "待同步";
+    default:
+      return "状态待核对";
+  }
+}
+
 function ActivityGroup({
   label,
   items,
@@ -492,7 +507,7 @@ function ActivityGroup({
         {items.map((item) => (
           <li key={item.id}>
             <a href={`#campaign-${item.object_id}`}>{item.title}</a>
-            <span className="tk-admin-muted"> · {item.status}</span>
+            <span className="tk-admin-muted"> · {humanStateLabel(item.status)}</span>
           </li>
         ))}
       </ul>
@@ -582,7 +597,7 @@ function prepareHandoff(
     return;
   }
   if (appId === "product-image") {
-    const plan = planTaskHandoff("make_campaign_image", campaignId);
+    planTaskHandoff("make_campaign_image", campaignId);
     void fetch("/api/eco-nav/campaign-image", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -600,7 +615,7 @@ function prepareHandoff(
         }
         const verb = data.resolution === "restored" ? "恢复" : "创建";
         setNotice(
-          `产品图已${verb}工程 ${data.project_id}。这不是发布成功。交接 ${plan.kind}`,
+          `产品图已${verb}制作工程。完成后请回本页选用，这里不是发布成功。`,
         );
       })
       .catch(() => setNotice("产品图没有创建或恢复工程"));
@@ -608,8 +623,8 @@ function prepareHandoff(
   }
   const kind =
     appId === "leads" ? "view_campaign_leads" : "make_campaign_video";
-  const plan = planTaskHandoff(kind, campaignId);
+  planTaskHandoff(kind, campaignId);
   setNotice(
-    `已准备${appId}交接（${plan.nav_intent}）。手工切换应用不会创建目标项目，也不会记成发布成功。`,
+    "已准备好外部工具协作入口。手工切换应用不会创建目标项目，也不会记成发布成功。",
   );
 }

@@ -40,8 +40,10 @@ export interface TodayInput {
 
 export interface TodayItem {
   id: string;
+  object?: string;
   title: string;
   href: string;
+  returnOrigin?: string;
   impact?: string;
   status?: string;
   action?: string;

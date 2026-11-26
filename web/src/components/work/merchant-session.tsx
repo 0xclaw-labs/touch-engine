@@ -110,7 +110,7 @@ function Login({ session }: { session: MerchantSession }) {
     <main className="tk-page">
       {/* 产品声音保留（页题+导语）；表单本体是统一组件（卡内自带品牌头，不再重复 kicker）。 */}
       <h1 className="tk-title">今天要做的事</h1>
-      <p className="tk-lead">登录后看今天的活动、门店、素材、触达、留资和还不能当成完成的奖励。</p>
+      <p className="tk-lead">登录后进入门店工作区，配置基础服务、办理顾客事项并查看经营结果。</p>
       <SharedLogin signIn={signIn} />
     </main>
   );
