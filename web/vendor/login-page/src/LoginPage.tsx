@@ -133,15 +133,17 @@ function genericErrorMessage(err: unknown, messages: LoginPageProps["messages"])
   return messages?.generic ? messages.generic(err) : loginErrorMessage(err);
 }
 
-/** 缺省 nextResolver：只接受站内以 / 开头且不以 // 开头的 ?next=，否则回 /（开放重定向红线）。 */
-function defaultNextResolver(search: string): string {
-  const raw = new URLSearchParams(search).get("next");
-  if (!raw || !raw.startsWith("/") || raw.startsWith("//")) return "/";
-  return raw;
+function isOnSitePath(path: string): boolean {
+  if (!path.startsWith("/") || path.startsWith("//")) return false;
+  if (path.includes("\\") || /[\u0000-\u001f\u007f]/.test(path)) return false;
+  return true;
 }
 
-function isOnSitePath(path: string): boolean {
-  return path.startsWith("/") && !path.startsWith("//");
+/** 缺省 nextResolver：只接受站内安全路径（拒绝 //、反斜杠与控制字符），否则回 /（开放重定向红线）。 */
+function defaultNextResolver(search: string): string {
+  const raw = new URLSearchParams(search).get("next");
+  if (!raw || !isOnSitePath(raw)) return "/";
+  return raw;
 }
 
 /**
@@ -296,7 +298,8 @@ export function LoginPage({
     if (busy) return;
     const name = username.trim();
     if (!name || !password) {
-      setError("请填写用户名和密码。");
+      const idLabel = messages?.passwordIdentifierLabel ?? "用户名";
+      setError(`请填写${idLabel}和密码。`);
       return;
     }
     setError(null);

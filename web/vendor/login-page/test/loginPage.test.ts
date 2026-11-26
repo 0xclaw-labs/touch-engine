@@ -690,4 +690,30 @@ test("输码屏副标随开放注册自动切换、支持 messages.otpSent/passw
     elements(tPw).some((el) => el.props?.label === "邮箱"),
     "messages.passwordIdentifierLabel 可覆写密码框标签",
   );
+  // 空提交错误文案随 passwordIdentifierLabel 联动
+  await elements(tPw).find((el) => el.type === "form")!.props.onSubmit({ preventDefault() {} });
+  const tPwErr = hCustom.render("LoginPage", customProps);
+  assert.equal(alertText(tPwErr), "请填写邮箱和密码。");
+
+  // 反斜杠与控制字符 nextOverride 必须回落 /（防开放重定向）
+  const navigated: string[] = [];
+  const hNext = pageHarness({});
+  const badNextProps = {
+    ...baseProps,
+    nextOverride: "/\\evil.example",
+    modes: { otp: false, password: true },
+    auth: {
+      async startEmailCode() {},
+      async verifyEmailCode() { return {}; },
+      async signIn() { return { ok: true }; },
+    },
+    navigate(p: string) { navigated.push(p); },
+  } as LoginPageProps;
+  let tNext = hNext.render("LoginPage", badNextProps);
+  const fields = elements(tNext).filter((el) => el.props?.label === "用户名" || el.props?.label === "密码");
+  fields[0].props.onChange("u@example.com");
+  fields[1].props.onChange("secret123");
+  tNext = hNext.render("LoginPage", badNextProps);
+  await elements(tNext).find((el) => el.type === "form")!.props.onSubmit({ preventDefault() {} });
+  assert.deepEqual(navigated, ["/"]);
 });
