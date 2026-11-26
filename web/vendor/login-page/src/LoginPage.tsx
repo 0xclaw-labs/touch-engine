@@ -133,9 +133,17 @@ function genericErrorMessage(err: unknown, messages: LoginPageProps["messages"])
   return messages?.generic ? messages.generic(err) : loginErrorMessage(err);
 }
 
+function hasControlChar(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
 function isOnSitePath(path: string): boolean {
   if (!path.startsWith("/") || path.startsWith("//")) return false;
-  if (path.includes("\\") || /[\u0000-\u001f\u007f]/.test(path)) return false;
+  if (path.includes("\\") || hasControlChar(path)) return false;
   return true;
 }
 
