@@ -179,24 +179,25 @@ func (s *Server) handleWorkLeads(w http.ResponseWriter, r *http.Request) {
 	}
 	c := callerFrom(r)
 	scopeStore := callerStoreScope(c) // '' = tenant level
+	if (callerIsStoreManager(c) || callerStoreLimited(c)) && scopeStore == "" {
+		fail(w, http.StatusForbidden, authz.ReasonOutOfScope, "store-scoped member has no store scope")
+		return
+	}
 	if !s.requireScopedAction(c, authz.ActionReadList, authz.RecordScope{
 		TenantID: c.Member.TenantID, StoreID: scopeStore,
 	}, false, w) {
 		return
 	}
-	rows, err := s.St.ListLeadsByTenant(c.Member.TenantID, 200)
+	rows, err := s.St.ListLeadsByScope(c.Member.TenantID, scopeStore, 200)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "internal", "lead list failed")
 		return
 	}
 	items := make([]map[string]any, 0, len(rows))
 	for _, lead := range rows {
-		if scopeStore != "" && lead.StoreID != scopeStore {
-			continue // store-scope members only see their own store's rows
-		}
 		items = append(items, workLeadView(lead))
 	}
-	counts, err := s.St.CountTenantLeadStates(c.Member.TenantID)
+	counts, err := s.St.CountLeadStatesByScope(c.Member.TenantID, scopeStore)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "internal", "lead stats failed")
 		return
@@ -207,8 +208,8 @@ func (s *Server) handleWorkLeads(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case row.SyncState == "revoked":
 			stats["revoked"] += row.Count
-		case row.SyncState == "crm_received" && row.ReceiverState != "":
-			stats["receiver_received"] += row.Count // 持久化 ACK 落库=已获客
+		case row.SyncState == "crm_received" && row.ReceiverState == store.ReceiverStateStored:
+			stats["receiver_received"] += row.Count // 持久化 ACK(stored) 落库=已获客
 		case row.SyncState == "pending_sync":
 			stats["pending_sync"] += row.Count // 待同步≠已获客
 		}

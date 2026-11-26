@@ -248,6 +248,9 @@ func (s *Server) handleLeadAck(w http.ResponseWriter, r *http.Request) {
 // auditAckRefused records refusals that matter for audit (fabricated events,
 // resurrection attempts). It never carries contact data.
 func (s *Server) auditAckRefused(tenantID, ref, serviceID, receiptID, reason string) {
-	_ = s.St.AppendLeadAudit(tenantID, ref, "ack_refused",
-		`{"reason":"`+reason+`","receipt_id":"`+receiptID+`"}`, "receiver:"+serviceID)
+	detail, _ := json.Marshal(map[string]string{
+		"reason":     reason,
+		"receipt_id": receiptID,
+	})
+	_ = s.St.AppendLeadAudit(tenantID, ref, "ack_refused", string(detail), "receiver:"+serviceID)
 }
