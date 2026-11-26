@@ -8,7 +8,7 @@ import { login, screenshot, seedCodes } from "../support/helpers";
 
 async function loginAtRoot(page: Page, email: string, password: string): Promise<void> {
   await page.goto("/");
-  await page.getByLabel("用户名").fill(email);
+  await page.getByLabel("邮箱").fill(email);
   await page.getByLabel("密码", { exact: true }).fill(password);
   await page.getByRole("button", { name: "登录" }).click();
 }
@@ -26,7 +26,7 @@ async function campaignCount(page: Page): Promise<number> {
 test("anonymous visitor at / sees the login page, not the today desk", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "今天要做的事" })).toBeVisible();
-  await expect(page.getByLabel("用户名")).toBeVisible();
+  await expect(page.getByLabel("邮箱")).toBeVisible();
   await expect(page.getByRole("heading", { name: "今天", exact: true })).toHaveCount(0);
   await screenshot(page, "hui-2222-anonymous-root");
 });
@@ -83,7 +83,7 @@ test("switching org clears the previous org's campaigns and responses", async ({
 
 test("principal without memberships gets a clear no-org message, never a tenant id field", async ({ page }) => {
   await page.goto("/");
-  await page.getByLabel("用户名").fill("nobody@e2e.test");
+  await page.getByLabel("邮箱").fill("nobody@e2e.test");
   await page.getByLabel("密码", { exact: true }).fill("e2e-pass-nobody");
   await page.getByRole("button", { name: "登录" }).click();
   await expect(page.getByText("当前账号没有可进入的组织。")).toBeVisible({ timeout: 15_000 });
@@ -97,7 +97,7 @@ test("expired/lost session returns to login; signing in again recovers", async (
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "今天要做的事" })).toBeVisible();
   const seed = await seedCodes();
-  await page.getByLabel("用户名").fill(seed.email);
+  await page.getByLabel("邮箱").fill(seed.email);
   await page.getByLabel("密码", { exact: true }).fill(seed.password);
   await page.getByRole("button", { name: "登录" }).click();
   await expect(page.getByRole("heading", { name: "今天", exact: true })).toBeVisible();
@@ -155,7 +155,7 @@ test("unauthenticated visit to a protected page logs in and stays on that page",
   await page.goto("/work/stores");
   // 门闸登录面(统一组件),不是组织数据。
   await expect(page.getByRole("heading", { name: "今天要做的事" })).toBeVisible();
-  await page.getByLabel("用户名").fill(seed.email);
+  await page.getByLabel("邮箱").fill(seed.email);
   await page.getByLabel("密码", { exact: true }).fill(seed.password);
   await page.getByRole("button", { name: "登录" }).click();
   // 登录后回原工作页:URL 不变、上下文保持(同一路由被门闸放行)。
@@ -168,7 +168,7 @@ test("a whitelisted ?return= target takes the merchant back in-app after login",
   const seed = await seedCodes();
   await page.goto("/?return=/work/campaigns");
   await expect(page.getByRole("heading", { name: "今天要做的事" })).toBeVisible();
-  await page.getByLabel("用户名").fill(seed.email);
+  await page.getByLabel("邮箱").fill(seed.email);
   await page.getByLabel("密码", { exact: true }).fill(seed.password);
   await page.getByRole("button", { name: "登录" }).click();
   await expect(page).toHaveURL(/\/work\/campaigns$/);
@@ -181,7 +181,7 @@ test("external, protocol-relative and encoded ?return= targets are dropped", asy
   for (const evil of ["https://evil.example/x", "//evil.example", "%2F%2Fevil.example", "/work/stores?store_id=smuggled"]) {
     await page.context().clearCookies();
     await page.goto(`/?return=${encodeURIComponent(evil)}`);
-    await page.getByLabel("用户名").fill(seed.email);
+    await page.getByLabel("邮箱").fill(seed.email);
     await page.getByLabel("密码", { exact: true }).fill(seed.password);
     await page.getByRole("button", { name: "登录" }).click();
     // 不离站:白名单拒绝后留在本应用根路径(今日台),永不导航到外域或走私参数路径。

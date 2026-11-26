@@ -15,6 +15,7 @@ import { copyJobClosed, copyJobKey, copyUsability, handoffHasFormalJump } from "
 import { acceptTenantPayload } from "@/lib/eco-nav/touch-shell";
 import { failureText } from "@/lib/failure-copy";
 import { SharedLogin, createBffSignIn } from "@/components/login/SharedLogin";
+import { buildPortalLoginUrl } from "@/lib/portal-sso";
 import { toJsonBody } from "@/lib/http-json";
 import { observeSsoAccountChanges, resetWorkspaceAfterSso, resetWorkspaceForAccountChange } from "@/lib/sso-workspace-reset";
 import {
@@ -777,10 +778,24 @@ function AdminWorkspace({ onAccountChanged }: { onAccountChanged: () => void }) 
       );
     }
     if (orgPhase === "none") {
+      const switchAccountHref = buildPortalLoginUrl({
+        promptLogin: true,
+        currentOrigin: typeof window !== "undefined" ? window.location.origin : null,
+        currentPathname: "/admin",
+      });
       return (
         <main className="tk-admin-narrow">
           <h1>商家后台</h1>
           <p data-state="empty">当前账号没有可进入的组织。</p>
+          <p>当前账号尚未开通碰一碰团队席位，请联系管理员开通，或切换其他已开通账号。</p>
+          <p>
+            <a href={switchAccountHref} className="tk-admin-btn" data-action="switch-account">
+              切换其他账号
+            </a>{" "}
+            <button type="button" className="tk-admin-btn" data-action="logout" onClick={() => void logout()}>
+              退出当前账号
+            </button>
+          </p>
         </main>
       );
     }

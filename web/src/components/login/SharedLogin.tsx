@@ -5,9 +5,11 @@
 // BFF /api/auth/login，Go 后端验 identity 后落 touch_session——BFF/Go 零改动。
 // 错误面统一收口 failure-copy（HUI-2628：状态码/机器码不出用户界面）。
 
-import { LoginPage, ApiFailure } from "@painuo/login-page";
+import { useEffect, useState } from "react";
+import { LoginPage, ApiFailure, type SsoConfig } from "@painuo/login-page";
 
 import { loginFailureText } from "@/lib/failure-copy";
+import { canUsePortalSso, startPortalSso } from "@/lib/portal-sso";
 
 import styles from "./shared-login.module.css";
 
@@ -27,24 +29,40 @@ export function createBffSignIn(): SignInBridge {
     });
     const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     if (!res.ok) {
-      throw new ApiFailure(loginFailureText(res.status, data), res.status, "login_rejected");
+      const code = typeof data.error === "string" && data.error ? data.error : "login_rejected";
+      throw new ApiFailure(loginFailureText(res.status, data), res.status, code);
     }
     return data;
   };
 }
 
 /**
- * 亮色薄包装。modes 固定密码单式（后端只有 password 登录，没有验证码端点）；
+ * 亮色薄包装。modes 固定密码单式（后端只有 password 登录，没有自建验证码端点）；
+ * 在官方生态域（*.modelxing.com）或显式配置开启时挂载统一门户 SSO 入口，让 OTP
+ * 免密用户一键经门户登录，不在纯密码页卡死；白标自定义品牌域保持隔离不展示。
  * brand.tagline 不覆写——包缺省「账号由主管理员开通，不能自助注册。」正是
  * 碰一碰的真实口径。
  */
 export function SharedLogin({
   signIn,
   onAuthenticated,
+  sso,
 }: {
   signIn: SignInBridge;
   onAuthenticated?: (result: Record<string, unknown>) => void;
+  sso?: SsoConfig;
 }) {
+  const [detectedSso, setDetectedSso] = useState(false);
+
+  useEffect(() => {
+    if (sso !== undefined) return;
+    if (typeof window === "undefined") return;
+    setDetectedSso(canUsePortalSso(window.location, process.env.NEXT_PUBLIC_TOUCH_SSO_ENABLED));
+  }, [sso]);
+
+  const effectiveSso: SsoConfig | undefined =
+    sso ?? (detectedSso ? { available: true, start: () => startPortalSso() } : undefined);
+
   return (
     <div className={styles.light}>
       <LoginPage
@@ -52,9 +70,11 @@ export function SharedLogin({
         modes={{ otp: false, password: true }}
         brand={{ name: "碰一碰", media: null }}
         auth={{ signIn }}
+        sso={effectiveSso}
         onAuthenticated={(result) => onAuthenticated?.(result)}
         navigate={() => {}}
         messages={{
+          passwordIdentifierLabel: "邮箱",
           generic: (e: unknown) =>
             e instanceof ApiFailure
               ? loginFailureText(e.status, { error: e.code })

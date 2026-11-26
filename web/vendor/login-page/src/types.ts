@@ -20,6 +20,10 @@ export type BrandConfig = {
    * kind="video"（缺省）播放 src、poster 起播前垫帧；kind="image" 只渲染静帧
    * src（poster 不用）——高闪烁素材退静帧用，reduced-motion 降级同走 img。 */
   media?: { src: string; poster: string; kind?: "video" | "image" } | null;
+  /** 头部静态品牌标志（无眼共享符号，paino-visual vendor 资产）。
+   * 缺省不渲染（宿主未接入时维持纯字标版式）；alt 由宿主给定——
+   * 与品牌名文字并用时传空串（装饰用法）。 */
+  mark?: { src: string; alt: string };
 };
 
 export type ModesConfig = { otp?: boolean; password?: boolean };
@@ -33,10 +37,14 @@ export type LinksConfig = {
   register?: string;
 };
 
-/** 错误文案覆写口：缺省表与 goboost-fd lib/errors.ts 对齐。 */
+/** 错误文案与标签覆写口：缺省表与 goboost-fd lib/errors.ts 对齐。 */
 export type LoginMessages = {
-  /** 验证码错误（invalid_otp / 401）文案；缺省「验证码不正确或已过期」。 */
+  /** 验证码错误（invalid_otp / invalid_code / 401）文案；缺省「验证码不正确或已过期」。 */
   otpInvalid?: string;
+  /** 输码屏副标文案覆写；缺省按是否开放注册（links.register）自动切换。 */
+  otpSent?: string;
+  /** 密码登录标识输入框标签覆写；缺省「用户名」。 */
+  passwordIdentifierLabel?: string;
   /** 其余错误的整体覆写，回传原始错误；缺省走包内 loginErrorMessage 等价表。 */
   generic?: (e: unknown) => string;
 };

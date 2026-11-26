@@ -9,6 +9,9 @@ export function failureText(status: number, data: Record<string, unknown>): stri
   if (data.error === "store_required") {
     return "这次没有完成：活动还没有关联门店。先到「门店」添加或选好门店，再操作一次。";
   }
+  if (data.error === "not_member" || data.error === "membership_required") {
+    return "当前账号尚未开通该组织的团队席位，暂无法进入。请联系管理员开通，或前往统一门户切换其他已开通账号。";
+  }
   if (status === 401) {
     return "当前登录状态已失效。请重新登录后继续原来的操作。";
   }
