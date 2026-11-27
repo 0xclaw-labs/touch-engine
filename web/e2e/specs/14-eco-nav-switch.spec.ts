@@ -30,7 +30,7 @@ async function redeem(page: Page, tenantId: string, jumpToken: string) {
 /** 在根页登录(可指定凭据);多组织 principal 自动选中记忆租户。 */
 async function loginAtRoot(page: Page, email: string, password: string): Promise<void> {
   await page.goto("/");
-  await page.getByLabel("用户名").fill(email);
+  await page.getByLabel("邮箱").fill(email);
   await page.getByLabel("密码", { exact: true }).fill(password);
   await page.getByRole("button", { name: "登录" }).click();
 }

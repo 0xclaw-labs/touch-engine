@@ -4,7 +4,7 @@ import { test, expect, type Page } from "@playwright/test";
 // engineering fixture in identity-stub.mjs; no real identity/payment proof.
 async function signIn(page: Page, email: string) {
   await page.goto("/");
-  await page.getByLabel("用户名").fill(email);
+  await page.getByLabel("邮箱").fill(email);
   await page.getByLabel("密码", { exact: true }).fill("e2e-pass-123");
   await page.getByRole("button", { name: "登录", exact: true }).click();
   await expect(page.getByRole("heading", { name: "今天要做的事", exact: true })).toBeVisible();

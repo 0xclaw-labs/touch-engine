@@ -15,6 +15,7 @@ import { copyJobClosed, copyJobKey, copyUsability, handoffHasFormalJump } from "
 import { acceptTenantPayload } from "@/lib/eco-nav/touch-shell";
 import { failureText } from "@/lib/failure-copy";
 import { SharedLogin, createBffSignIn } from "@/components/login/SharedLogin";
+import { canUsePortalSso, portalBrowser, switchPortalAccount } from "@/lib/portal-sso";
 import { toJsonBody } from "@/lib/http-json";
 import { observeSsoAccountChanges, resetWorkspaceAfterSso, resetWorkspaceForAccountChange } from "@/lib/sso-workspace-reset";
 import {
@@ -152,6 +153,7 @@ function AdminWorkspace({ onAccountChanged }: { onAccountChanged: () => void }) 
   const [brandName, setBrandName] = useState("");
   const [supportLine, setSupportLine] = useState("");
   const [error, setError] = useState("");
+  const [switchingAccount, setSwitchingAccount] = useState(false);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [stores, setStores] = useState<StoreRec[]>([]);
   // 待办计数：工作台 my_tasks 长度上抛，供侧栏 Badge 呈现。
@@ -567,6 +569,23 @@ function AdminWorkspace({ onAccountChanged }: { onAccountChanged: () => void }) 
     onAccountChanged();
   }
 
+  async function switchAccount() {
+    setError("");
+    setSwitchingAccount(true);
+    try {
+      const ok = await switchPortalAccount({
+        next: "/admin",
+        currentPathname: "/admin",
+        onCleared: () => resetWorkspaceForAccountChange(window.localStorage),
+      });
+      if (!ok) {
+        setError("退出没有完成，请重试。当前身份仍需核验。");
+      }
+    } finally {
+      setSwitchingAccount(false);
+    }
+  }
+
   // ---- HUI-1665 NFC 标签操作(全部 owner-only,服务端裁决) -----------------
 
   async function nfcFail(res: { ok: boolean; status: number; data: Record<string, unknown> }) {
@@ -777,10 +796,34 @@ function AdminWorkspace({ onAccountChanged }: { onAccountChanged: () => void }) 
       );
     }
     if (orgPhase === "none") {
+      const allowPortalSwitch = canUsePortalSso(
+        portalBrowser.location(),
+        process.env.NEXT_PUBLIC_TOUCH_SSO_ENABLED,
+      );
       return (
         <main className="tk-admin-narrow">
           <h1>商家后台</h1>
           <p data-state="empty">当前账号没有可进入的组织。</p>
+          <p>当前账号尚未开通碰一碰团队席位，请联系管理员开通，或切换其他已开通账号。</p>
+          {error ? <p data-state="error">{error}</p> : null}
+          <p>
+            {allowPortalSwitch ? (
+              <>
+                <button
+                  type="button"
+                  className="tk-admin-btn"
+                  data-action="switch-account"
+                  disabled={switchingAccount}
+                  onClick={() => void switchAccount()}
+                >
+                  切换其他账号
+                </button>{" "}
+              </>
+            ) : null}
+            <button type="button" className="tk-admin-btn" data-action="logout" onClick={() => void logout()}>
+              退出当前账号
+            </button>
+          </p>
         </main>
       );
     }

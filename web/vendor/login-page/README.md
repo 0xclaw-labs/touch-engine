@@ -20,7 +20,7 @@ import { LoginPage } from "@painuo/login-page";
 
 | prop | 类型 | 缺省 | 说明 |
 |---|---|---|---|
-| `brand` | `{ name; tagline?; accent?; media? }` | 必填 | `tagline` 缺省「账号由主管理员开通，不能自助注册。」（开放注册产品必须覆写）；`accent` 覆写时 `{ base, hover, weak, onAccent }` 四值必须齐全；`media` 为 split 右栏媒体，`null` = 底色+字标垫 |
+| `brand` | `{ name; tagline?; accent?; media?; mark? }` | 必填 | `tagline` 缺省「账号由主管理员开通，不能自助注册。」（开放注册产品必须覆写）；`accent` 覆写时 `{ base, hover, weak, onAccent }` 四值必须齐全；`media` 为 split 右栏媒体，`null` = 底色+字标垫；`mark` 为头部静态品牌标志 `{ src, alt }`（无眼共享符号），缺省不渲染 |
 | `modes` | `{ otp?; password? }` | 双开 | `otp: false` → 固定密码态；`password: false` → 固定验证码态；双边关回退双开显分段 |
 | `auth` | `Partial<AuthAdapter>` | 内建客户端 | 叠加覆写 `startEmailCode` / `verifyEmailCode` / `signIn`，签名与 goboost-fd `lib/auth.ts` 对齐 |
 | `identifierTransform` | `(identifier: string) => string` | 原样提交 | 密码登录标识变换：legacy 用户名 → identity 合成邮箱（如 `<external_key 小写>@users.dhuman.modelxing.com`）；只作用于内建 auth 路径，OTP 的 email 输入不经过它 |

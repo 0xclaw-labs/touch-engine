@@ -19,7 +19,7 @@ export async function login(page: Page): Promise<void> {
   const seed = await seedCodes();
   if (!seed.email || !seed.password) throw new Error("[helpers] seed.json 缺 owner 凭据（env.mjs seed 未写入？）");
   await page.goto("/admin");
-  await page.getByLabel("用户名").fill(seed.email);
+  await page.getByLabel("邮箱").fill(seed.email);
   await page.getByLabel("密码", { exact: true }).fill(seed.password);
   await page.getByRole("button", { name: "登录" }).click();
   // 登录视图是 main.tk-admin-narrow；单一成员关系选中后渲染 main.tk-admin-shell

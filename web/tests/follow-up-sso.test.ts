@@ -21,3 +21,27 @@ it("does not relay the code to an untrusted forwarded host", () => {
 });
 it("forwards only Identity-issued canonical cookies after same-origin exchange", async () => { exchange.mockResolvedValue({ status: 200, setCookie: ["touch-engine_session=identity-cookie; Secure; HttpOnly; Path=/"] }); const res = await POST(new NextRequest("https://touch-followup.modelxing.com/api/auth/sso/exchange", { method: "POST", headers: { host: "touch-followup.modelxing.com", origin: "https://touch-followup.modelxing.com", "content-type": "application/x-www-form-urlencoded" }, body: "code=original&return_target=/lead-follow-up-return/hnd_" + "b".repeat(32) })); expect(res.status).toBe(303); expect(res.headers.get("set-cookie")).toContain("touch-engine_session=identity-cookie"); expect(res.headers.get("location")).toContain("/lead-follow-up-return/hnd_"); });
 it("rejects cross-origin or missing Identity session cookie", async () => { const make = (origin: string) => new NextRequest("https://touch-followup.modelxing.com/api/auth/sso/exchange", { method: "POST", headers: { host: "touch-followup.modelxing.com", origin, "content-type": "application/x-www-form-urlencoded" }, body: "code=original" }); expect((await POST(make("https://evil.example"))).status).toBe(400); expect(exchange).not.toHaveBeenCalled(); exchange.mockResolvedValue({ status: 200, setCookie: [] }); expect((await POST(make("https://touch-followup.modelxing.com"))).status).toBe(400); });
+it("renders switch-account guidance with prompt=login when identity rejects with 403 membership_required", async () => {
+  exchange.mockResolvedValue({ status: 403, setCookie: [] });
+  const res = await POST(
+    new NextRequest("https://touch-followup.modelxing.com/api/auth/sso/exchange", {
+      method: "POST",
+      headers: {
+        host: "touch-followup.modelxing.com",
+        origin: "https://touch-followup.modelxing.com",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: "code=original",
+    }),
+  );
+  expect(res.status).toBe(403);
+  expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+  expect(res.headers.get("cache-control")).toBe("no-store");
+  expect(res.headers.get("content-security-policy")).toBe(
+    "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+  );
+  const html = await res.text();
+  expect(html).toContain("尚未开通团队席位");
+  expect(html).toContain("切换其他账号");
+  expect(html).toContain("https://auth.modelxing.com/login?app=touch-engine&amp;prompt=login");
+});

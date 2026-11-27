@@ -30,6 +30,16 @@ describe("failureText 产品语句", () => {
     expect(text).toMatch(/先|请/);
   });
 
+  it("not_member 与 membership_required 给出团队席位与切换账号引导，不泄漏机器码", () => {
+    for (const code of ["not_member", "membership_required"]) {
+      const text = failureText(403, { error: code });
+      expect(text).toContain("团队席位");
+      expect(text).toContain("切换");
+      expect(text).not.toContain(code);
+      expect(text).not.toMatch(/\b\d{3}\b/);
+    }
+  });
+
   it("登录态/找不到/服务不可用/默认各有产品语句与下一步", () => {
     expect(failureText(401, {})).toMatch(/重新登录/);
     expect(failureText(403, {})).toMatch(/权限|重新登录/);

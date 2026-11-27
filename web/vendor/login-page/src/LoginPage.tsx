@@ -118,8 +118,13 @@ function loginErrorMessage(err: unknown): string {
 
 /** 验证码错误单独归一句话；其余走 generic（覆写口或缺省表）。 */
 function otpErrorMessage(err: unknown, messages: LoginPageProps["messages"]): string {
-  if (err instanceof ApiFailure && (err.code === "invalid_otp" || err.status === 401)) {
-    return messages?.otpInvalid ?? "验证码不正确或已过期";
+  if (err instanceof ApiFailure) {
+    if (err.code === "email_code_expired") {
+      return "验证码已过期，请重新获取。";
+    }
+    if (err.code === "invalid_otp" || err.code === "invalid_code" || err.status === 401) {
+      return messages?.otpInvalid ?? "验证码不正确或已过期";
+    }
   }
   return messages?.generic ? messages.generic(err) : loginErrorMessage(err);
 }
@@ -128,15 +133,25 @@ function genericErrorMessage(err: unknown, messages: LoginPageProps["messages"])
   return messages?.generic ? messages.generic(err) : loginErrorMessage(err);
 }
 
-/** 缺省 nextResolver：只接受站内以 / 开头且不以 // 开头的 ?next=，否则回 /（开放重定向红线）。 */
-function defaultNextResolver(search: string): string {
-  const raw = new URLSearchParams(search).get("next");
-  if (!raw || !raw.startsWith("/") || raw.startsWith("//")) return "/";
-  return raw;
+function hasControlChar(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
 }
 
 function isOnSitePath(path: string): boolean {
-  return path.startsWith("/") && !path.startsWith("//");
+  if (!path.startsWith("/") || path.startsWith("//")) return false;
+  if (path.includes("\\") || hasControlChar(path)) return false;
+  return true;
+}
+
+/** 缺省 nextResolver：只接受站内安全路径（拒绝 //、反斜杠与控制字符），否则回 /（开放重定向红线）。 */
+function defaultNextResolver(search: string): string {
+  const raw = new URLSearchParams(search).get("next");
+  if (!raw || !isOnSitePath(raw)) return "/";
+  return raw;
 }
 
 /**
@@ -291,7 +306,8 @@ export function LoginPage({
     if (busy) return;
     const name = username.trim();
     if (!name || !password) {
-      setError("请填写用户名和密码。");
+      const idLabel = messages?.passwordIdentifierLabel ?? "用户名";
+      setError(`请填写${idLabel}和密码。`);
       return;
     }
     setError(null);
@@ -328,14 +344,18 @@ export function LoginPage({
     : undefined;
   const rootClass = [compact ? styles.compact : styles.page, className].filter(Boolean).join(" ");
 
-  // 副标文案：输码屏固定发码提示；常态 brand.tagline 覆写（可传空串显式关闭，
-  // 宿主注册页用），未覆写才走缺省口径。空文案不渲染空 <p>。
+  // 副标文案：输码屏按开放/封闭口径提示（支持 messages.otpSent 覆写）；
+  // 常态 brand.tagline 覆写（可传空串显式关闭，宿主注册页用），未覆写才走缺省口径。
+  const defaultOtpSent = links?.register
+    ? "验证码已发送，10 分钟内有效；未注册邮箱验证通过后将自动创建账号。"
+    : "如果这个邮箱已开通，验证码已发送，10 分钟内有效。";
   const subText = onVerifyScreen
-    ? "如果这个邮箱已开通，验证码已发送，10 分钟内有效。"
+    ? (messages?.otpSent ?? defaultOtpSent)
     : (brand.tagline ?? defaultTagline);
 
   const head = (
     <div className={styles.head}>
+      {brand.mark ? <img className={styles.mark} src={brand.mark.src} alt={brand.mark.alt} /> : null}
       <h1 className={styles.brand}>{onVerifyScreen ? "输入验证码" : brand.name}</h1>
       {subText ? <p className={styles.sub}>{subText}</p> : null}
     </div>
@@ -436,7 +456,7 @@ export function LoginPage({
         <>
           <form onSubmit={onPassword} noValidate>
             <TextField
-              label="用户名"
+              label={messages?.passwordIdentifierLabel ?? "用户名"}
               value={username}
               onChange={setUsername}
               autoComplete="username"

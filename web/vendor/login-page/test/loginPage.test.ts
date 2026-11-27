@@ -593,6 +593,37 @@ test("集成：auth 覆写口接真实内建客户端，经注入 fetch 发起�
   assert.ok(elements(t2).some((el) => el.props?.inputMode === "numeric"), "发码成功进入 verify 态");
 });
 
+test("brand.mark 渲染头部标志 img；缺省不渲染（既有宿主零影响）", () => {
+  const harness = pageHarness({});
+  const withMark = harness.render("LoginPage", {
+    ...baseProps,
+    layout: "split",
+    brand: { name: "X", mark: { src: "/brand/logo-dark.svg?v=1.0.0", alt: "" } },
+  } as LoginPageProps);
+  const mark = elements(withMark).find(
+    (el) => el.type === "img" && el.props?.src === "/brand/logo-dark.svg?v=1.0.0",
+  );
+  assert.ok(mark, "mark 存在时应渲染头部标志 img");
+  assert.equal(mark?.props.alt, "", "alt 透传（与品牌名文字并用时装饰用法传空）");
+
+  const plain = harness.render("LoginPage", baseProps as LoginPageProps);
+  assert.ok(
+    !elements(plain).some((el) => el.type === "img"),
+    "缺省（无 mark）不渲染任何 img——split 无 media 时右栏为空",
+  );
+
+  const compactWithMark = pageHarness({}).render("LoginPage", {
+    ...baseProps,
+    layout: "compact",
+    brand: { name: "X", mark: { src: "/brand/logo-dark.svg?v=1.0.0", alt: "派诺" } },
+  } as LoginPageProps);
+  const compactMark = elements(compactWithMark).find(
+    (el) => el.type === "img" && el.props?.src === "/brand/logo-dark.svg?v=1.0.0",
+  );
+  assert.ok(compactMark, "compact 卡同样消费 mark");
+  assert.equal(compactMark?.props.alt, "派诺", "alt 由宿主给定");
+});
+
 test("tagline 空串显式关闭副标：常态不渲染空 <p>，输码屏发码提示不受影响", () => {
   const harness = pageHarness({});
   const props = {
@@ -608,4 +639,81 @@ test("tagline 空串显式关闭副标：常态不渲染空 <p>，输码屏发�
     JSON.stringify(t0).includes("账号由主管理员开通") === false,
     "空串是显式关闭，不落回缺省封闭口径",
   );
+});
+
+test("输码屏副标随开放注册自动切换、支持 messages.otpSent/passwordIdentifierLabel 覆写与 invalid_code/email_code_expired 映射", async () => {
+  const openProps = {
+    ...baseProps,
+    links: { register: "/register" },
+    auth: {
+      async startEmailCode() {},
+      async verifyEmailCode() {
+        throw new ApiFailure("expired", 400, "email_code_expired");
+      },
+      async signIn() {
+        return {};
+      },
+    },
+  } as LoginPageProps;
+  const hOpen = pageHarness({});
+  let tree = hOpen.render("LoginPage", openProps);
+  elements(tree)
+    .find((el) => el.props?.type === "email")!
+    .props.onChange("new@example.com");
+  tree = hOpen.render("LoginPage", openProps);
+  await elements(tree).find((el) => el.type === "form")!.props.onSubmit({ preventDefault() {} });
+  tree = hOpen.render("LoginPage", openProps);
+  const openJson = JSON.stringify(tree);
+  assert.ok(openJson.includes("未注册邮箱验证通过后将自动创建账号"), "开放注册输码屏不再误导「如果已开通」");
+  assert.ok(!openJson.includes("如果这个邮箱已开通"), "开放注册输码屏不应出现封闭条件文案");
+
+  // 触发 email_code_expired 映射
+  elements(tree)
+    .find((el) => el.props?.inputMode === "numeric")!
+    .props.onChange("123456");
+  await new Promise((r) => setTimeout(r, 0));
+  tree = hOpen.render("LoginPage", openProps);
+  assert.equal(alertText(tree), "验证码已过期，请重新获取。");
+
+  // 自定义 otpSent 与 passwordIdentifierLabel 覆写
+  const customProps = {
+    ...baseProps,
+    modes: { otp: false, password: true },
+    messages: {
+      otpSent: "自定义发码提示",
+      passwordIdentifierLabel: "邮箱",
+    },
+  } as LoginPageProps;
+  const hCustom = pageHarness({});
+  const tPw = hCustom.render("LoginPage", customProps);
+  assert.ok(
+    elements(tPw).some((el) => el.props?.label === "邮箱"),
+    "messages.passwordIdentifierLabel 可覆写密码框标签",
+  );
+  // 空提交错误文案随 passwordIdentifierLabel 联动
+  await elements(tPw).find((el) => el.type === "form")!.props.onSubmit({ preventDefault() {} });
+  const tPwErr = hCustom.render("LoginPage", customProps);
+  assert.equal(alertText(tPwErr), "请填写邮箱和密码。");
+
+  // 反斜杠与控制字符 nextOverride 必须回落 /（防开放重定向）
+  const navigated: string[] = [];
+  const hNext = pageHarness({});
+  const badNextProps = {
+    ...baseProps,
+    nextOverride: "/\\evil.example",
+    modes: { otp: false, password: true },
+    auth: {
+      async startEmailCode() {},
+      async verifyEmailCode() { return {}; },
+      async signIn() { return { ok: true }; },
+    },
+    navigate(p: string) { navigated.push(p); },
+  } as LoginPageProps;
+  let tNext = hNext.render("LoginPage", badNextProps);
+  const fields = elements(tNext).filter((el) => el.props?.label === "用户名" || el.props?.label === "密码");
+  fields[0].props.onChange("u@example.com");
+  fields[1].props.onChange("secret123");
+  tNext = hNext.render("LoginPage", badNextProps);
+  await elements(tNext).find((el) => el.type === "form")!.props.onSubmit({ preventDefault() {} });
+  assert.deepEqual(navigated, ["/"]);
 });
